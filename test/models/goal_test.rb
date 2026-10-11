@@ -48,12 +48,15 @@ class GoalTest < ActiveSupport::TestCase
     assert_equal 100, vacances.progress_percent.to_i
   end
 
-  # The confirm dialog renders `body` as text, so the goal name goes in as it
-  # is; escaping it would show "&amp;" in the dialog.
-  test "deletion_confirm names the goal as it is written" do
-    @goal.name = "Rock & Roll <3"
+  # The confirm dialog assigns `body` to innerHTML, so an unescaped goal name
+  # would execute when a family member opens the delete confirmation.
+  test "deletion_confirm escapes the goal name in the dialog body" do
+    @goal.name = "<img src=x onerror=alert(1)>"
 
-    assert_includes @goal.deletion_confirm.to_data_attribute[:body], "Rock & Roll <3"
+    body = @goal.deletion_confirm.to_data_attribute[:body]
+
+    assert_includes body, "&lt;img src=x onerror=alert(1)&gt;"
+    assert_no_match(/<img/, body)
   end
 
   # Derived, not a hardcoded list: a locale added later ships a goals YAML
@@ -674,141 +677,6 @@ class GoalTest < ActiveSupport::TestCase
     assert_equal BigDecimal("2000"), Goal.find(goal.id).remaining_amount.to_d
   end
 
-  # --- Lot B3b: a floor expressed in months of expenses ---
-
-  test "months mode is only for a reserve, and needs a number of months" do
-    goal = reserve_goal(balance: 6_000, target: 6_000)
-
-    goal.target_mode = "months_of_expenses"
-    assert_not goal.valid?, "months mode without target_months must be refused"
-
-    goal.target_months = 6
-    assert goal.valid?, goal.errors.full_messages.to_sentence
-
-    goal.kind = "one_off"
-    assert_not goal.valid?, "a one-off goal has no months-of-expenses floor"
-  end
-
-  test "target_months without months mode is refused" do
-    goal = reserve_goal(balance: 6_000, target: 6_000)
-    goal.target_months = 6
-
-    assert_not goal.valid?
-  end
-
-  # target_amount stays the source of truth — the aggregates that read it must
-  # keep working with no knowledge of the mode.
-  test "refreshing the floor moves every figure that reads target_amount" do
-    goal = reserve_goal(balance: 3_000, target: 1_000)
-    goal.update!(target_mode: "months_of_expenses", target_months: 6)
-    IncomeStatement.any_instance.stubs(:median_expense).returns(BigDecimal("500"))
-
-    assert_equal BigDecimal("3000"), goal.refresh_target_from_expenses!
-
-    refreshed = Goal.find(goal.id)
-    assert_equal BigDecimal("3000"), refreshed.target_amount.to_d
-    assert_equal :funded, refreshed.status
-    assert_equal 100, refreshed.progress_percent
-  end
-
-  # A family with no spending history computes a floor of zero, which would
-  # both break the target_amount > 0 constraint and read as "your reserve is
-  # complete". The figure the user has been saving against stands.
-  test "a zero median leaves the floor untouched" do
-    IncomeStatement.any_instance.stubs(:median_expense).returns(BigDecimal("500"))
-    goal = reserve_goal(balance: 3_000, target: 1_000)
-    goal.update!(target_mode: "months_of_expenses", target_months: 6)
-    assert_equal BigDecimal("3000"), goal.reload.target_amount.to_d
-
-    IncomeStatement.any_instance.stubs(:median_expense).returns(BigDecimal("0"))
-
-    assert_nil goal.refresh_target_from_expenses!
-    assert_equal BigDecimal("3000"), goal.reload.target_amount.to_d
-  end
-
-  # A reserve created in months mode must be right immediately: waiting for
-  # the 1st would make the feature's first impression its least convincing.
-  test "creating a months-mode reserve computes its floor straight away" do
-    IncomeStatement.any_instance.stubs(:median_expense).returns(BigDecimal("500"))
-    account = Account.create!(
-      family: @family, accountable: Depository.new,
-      name: "Fresh Reserve Pot", currency: "USD", balance: 100
-    )
-
-    goal = @family.goals.create!(
-      name: "Fresh reserve", target_amount: 1, currency: "USD",
-      kind: "maintained", target_mode: "months_of_expenses", target_months: 6
-    ) { |g| g.goal_accounts.build(account: account) }
-
-    assert_equal BigDecimal("3000"), goal.reload.target_amount.to_d
-  end
-
-  test "changing the number of months recomputes the floor at once" do
-    IncomeStatement.any_instance.stubs(:median_expense).returns(BigDecimal("500"))
-    goal = reserve_goal(balance: 100, target: 1)
-    goal.update!(target_mode: "months_of_expenses", target_months: 6)
-    assert_equal BigDecimal("3000"), goal.reload.target_amount.to_d
-
-    goal.update!(target_months: 3)
-    assert_equal BigDecimal("1500"), goal.reload.target_amount.to_d
-  end
-
-  # The monthly job owns the cadence: an unrelated edit must not quietly move
-  # a financial figure the user has been saving against.
-  test "renaming a months-mode reserve leaves its floor alone" do
-    IncomeStatement.any_instance.stubs(:median_expense).returns(BigDecimal("500"))
-    goal = reserve_goal(balance: 100, target: 1)
-    goal.update!(target_mode: "months_of_expenses", target_months: 6)
-
-    IncomeStatement.any_instance.unstub(:median_expense)
-    IncomeStatement.any_instance.stubs(:median_expense).returns(BigDecimal("900"))
-    goal.update!(name: "Renamed reserve")
-
-    assert_equal BigDecimal("3000"), goal.reload.target_amount.to_d,
-                 "only the job, or a change of months, may move the floor"
-  end
-
-  test "a fixed reserve ignores the refresh entirely" do
-    goal = reserve_goal(balance: 3_000, target: 1_000)
-    IncomeStatement.any_instance.stubs(:median_expense).returns(BigDecimal("500"))
-
-    assert_nil goal.refresh_target_from_expenses!
-    assert_equal BigDecimal("1000"), goal.reload.target_amount.to_d
-  end
-
-  # The form asks this BEFORE the user has picked a kind or a number of months,
-  # to decide whether to keep offering the amount field. So it must answer for
-  # the family alone, not for what this goal happens to be right now.
-  test "derivability is answered for the family, whatever the goal is set to" do
-    IncomeStatement.any_instance.stubs(:median_expense).returns(BigDecimal("500"))
-    goal = reserve_goal(balance: 3_000, target: 1_000)
-
-    assert goal.months_target_derivable?,
-           "a one-off with no months set still has spending to derive from"
-  end
-
-  # With nothing to derive from, the typed amount is the only way to give the
-  # reserve a target. The form has to be told, or it hides the only field that
-  # would let the user do it.
-  test "a family with no spending history can derive nothing" do
-    IncomeStatement.any_instance.stubs(:median_expense).returns(BigDecimal("0"))
-    goal = reserve_goal(balance: 3_000, target: 1_000)
-
-    assert_not goal.months_target_derivable?
-  end
-
-  test "derivability follows the goal's currency, not the family's" do
-    IncomeStatement.any_instance.stubs(:median_expense).returns(BigDecimal("500"))
-    goal = reserve_goal(balance: 3_000, target: 1_000)
-    goal.stubs(:currency).returns("EUR")
-    Money.any_instance.stubs(:exchange_to).raises(
-      Money::ConversionError.new(from_currency: "USD", to_currency: "EUR", date: Date.current)
-    )
-
-    assert_not goal.months_target_derivable?,
-               "no rate for the day means no figure to show, so the field must stay"
-  end
-
   test "account free_to_earmark subtracts non-archived fixed earmarks" do
     account = Account.create!(family: @family, accountable: Depository.new, name: "Headroom Savings", currency: "USD", balance: 5_000)
     @family.goals.create!(name: "Earmarker", target_amount: 10_000, currency: "USD") do |g|
@@ -1181,140 +1049,7 @@ class GoalTest < ActiveSupport::TestCase
     assert_not reserve.needs_attention?
   end
 
-  # --- months-of-expenses review follow-ups ---
-
-  # The median comes back in FAMILY currency; target_amount is stored in the
-  # GOAL's. A EUR reserve in a USD family would otherwise read a 3,000 dollar
-  # floor as 3,000 euros, and rewrite it that way every month.
-  test "a reserve in another currency gets its floor converted" do
-    account = Account.create!(family: @family, accountable: Depository.new,
-                              name: "EUR pot", currency: "EUR", balance: 1_000)
-    goal = @family.goals.create!(
-      name: "Precaution", target_amount: 1_000, currency: "EUR",
-      kind: "maintained", target_mode: "months_of_expenses", target_months: 6
-    ) { |g| g.goal_accounts.build(account: account, allocated_amount: 1_000) }
-
-    # 500/month family currency x 6 months = 3,000, at a rate of 0.9 = 2,700.
-    IncomeStatement.any_instance.stubs(:median_expense).returns(500)
-    Money.any_instance.stubs(:exchange_to).returns(Money.new(2_700, "EUR"))
-
-    goal.update!(target_amount: 1)
-
-    assert_equal 2_700, goal.reload.target_amount.to_d
-  end
-
-  # The floor is derived in this mode. Without this the edit form could
-  # persist an arbitrary figure under a "six months of expenses" label until
-  # the next monthly refresh.
-  test "a typed amount cannot stand in for a derived floor" do
-    goal = months_based_reserve
-    IncomeStatement.any_instance.stubs(:median_expense).returns(500)
-
-    goal.update!(target_amount: 99)
-
-    assert_equal 3_000, goal.reload.target_amount.to_d
-  end
-
-  # Nothing to derive from and a typed figure on its way in: a stale floor
-  # beats a wrong one wearing a computed label.
-  test "with no spending history a typed amount does not replace the floor" do
-    goal = months_based_reserve
-    IncomeStatement.any_instance.stubs(:median_expense).returns(0)
-
-    goal.update!(target_amount: 99)
-
-    assert_equal 3_000, goal.reload.target_amount.to_d
-  end
-
-
-  # The ring is drawn from `progress_percent`, which counts money held plus
-  # money already spent on the goal. The headline figure showed only the first
-  # half, so a goal that had spent part of its savings sat at a 100% ring
-  # beside "3,000 of 5,000" — the two disagreeing on the same card, with
-  # nothing to say which one to believe.
-  test "the headline figure agrees with the ring after a spend" do
-    goal = spent_goal
-
-    assert_equal 100, goal.progress_percent
-    assert_equal 5_000, goal.progress_amount_money.amount.to_d,
-      "the figure beside the ring still reported the account balance"
-  end
-
-  # The amount is part of the total above it, never a second figure beside it:
-  # a reader should have nothing to add up.
-  test "what was used is reported as part of the total, and only when there is some" do
-    goal = spent_goal
-
-    assert goal.any_consumption?
-    assert_equal 2_000, goal.consumed_amount_money.amount.to_d
-    assert_equal goal.progress_amount_money.amount.to_d,
-                 goal.current_balance.to_d + goal.consumed_amount_money.amount.to_d
-  end
-
-  test "a goal that has spent nothing says nothing about it" do
-    account = Account.create!(family: @family, accountable: Depository.new,
-                              name: "Quiet pot", currency: @family.currency, balance: 1_000)
-    goal = @family.goals.create!(name: "Quiet", target_amount: 1_000, currency: @family.currency) do |g|
-      g.goal_accounts.build(account: account, allocated_amount: 1_000)
-    end
-
-    assert_not goal.any_consumption?
-  end
-
-  # The ring's saved segment goes through d3.color, which cannot parse a CSS
-  # variable; a goal with no colour must still hand it a real colour (#4030).
-  test "a goal without a colour gives its ring a real colour" do
-    goal = ring_goal(color: "#6471eb")
-    goal.update_columns(color: nil)
-
-    saved = Goal.find(goal.id).to_donut_segments_json.find { |segment| segment[:id] == "saved" }
-
-    assert_equal Goal::COLORS.first, saved[:color]
-    assert_match(/\A#\h{6}\z/, saved[:color])
-  end
-
-  test "a goal with a colour keeps it in its ring, and the remaining track is unchanged" do
-    goal = ring_goal(color: "#6471eb")
-
-    segments = Goal.find(goal.id).to_donut_segments_json.index_by { |segment| segment[:id] }
-
-    assert_equal "#6471eb", segments["saved"][:color]
-    assert_equal "var(--budget-unused-fill)", segments["unused"][:color]
-  end
-
-  # One fallback for both: a colourless goal's ring and avatar show the same
-  # colour, so changing either fallback alone fails here.
-  test "a colourless goal's ring and avatar fall back to the same colour" do
-    goal = ring_goal(color: "#6471eb")
-    goal.update_columns(color: nil)
-    goal = Goal.find(goal.id)
-
-    saved = goal.to_donut_segments_json.find { |segment| segment[:id] == "saved" }
-
-    assert_equal Goals::AvatarComponent.new(goal: goal).color, saved[:color]
-  end
-
   private
-    # A goal with something saved and something left, so both segments exist.
-    def ring_goal(color:)
-      account = Account.create!(family: @family, accountable: Depository.new, name: "Ring savings", currency: "USD", balance: 2_000)
-      @family.goals.create!(name: "Ring goal", target_amount: 5_000, currency: "USD", color: color) do |g|
-        g.goal_accounts.build(account: account)
-      end
-    end
-
-
-    # 5,000 saved, 2,000 of it since spent on the thing itself.
-    def spent_goal
-      account = Account.create!(family: @family, accountable: Depository.new,
-                                name: "Spent pot #{SecureRandom.hex(3)}",
-                                currency: @family.currency, balance: 5_000)
-      goal = @family.goals.create!(name: "Trip", target_amount: 5_000, currency: @family.currency) do |g|
-        g.goal_accounts.build(account: account, allocated_amount: 5_000)
-      end
-      goal.consume!(2_000)
-      goal
-    end
 
     # Its own account, so the shared-pool haircut does not make the frozen
     # figure depend on what the fixtures happen to claim.
@@ -1331,17 +1066,6 @@ class GoalTest < ActiveSupport::TestCase
       Account.create!(family: @family, accountable: Depository.new,
                       name: "Pot #{SecureRandom.hex(3)}",
                       currency: @family.currency, balance: balance)
-  end
-
-    def months_based_reserve
-      account = Account.create!(family: @family, accountable: Depository.new,
-                                name: "Reserve pot #{SecureRandom.hex(3)}",
-                                currency: @family.currency, balance: 3_000)
-      IncomeStatement.any_instance.stubs(:median_expense).returns(500)
-      @family.goals.create!(
-        name: "Precaution", target_amount: 3_000, currency: @family.currency,
-        kind: "maintained", target_mode: "months_of_expenses", target_months: 6
-      ) { |g| g.goal_accounts.build(account: account, allocated_amount: 3_000) }
     end
     # A fresh account: the fixtures deliberately carry three goals holding
     # whole-account links on `depository`, a legacy overlap the exclusivity

@@ -19,9 +19,6 @@ class Entry < ApplicationRecord
   validates :reconciled_at, presence: true, if: -> { reconciled_by_statement_id.present? }
 
   has_many :child_entries, class_name: "Entry", foreign_key: :parent_entry_id, dependent: :destroy
-  # Read side only, so a transaction can say which bills it paid. The foreign key
-  # already nullifies on delete, so this adds no lifecycle behaviour.
-  has_many :recurring_allocations, dependent: nil, inverse_of: :entry
 
   delegated_type :entryable, types: Entryable::TYPES, dependent: :destroy
   accepts_nested_attributes_for :entryable
@@ -35,7 +32,6 @@ class Entry < ApplicationRecord
   validate :split_child_date_matches_parent
 
   before_destroy :prevent_individual_child_deletion, if: :split_child?
-  after_save :track_earliest_saved_date, if: :saved_change_to_date?
 
   scope :visible, -> {
     joins(:account).where(accounts: { status: [ "draft", "active" ] })
@@ -67,8 +63,9 @@ class Entry < ApplicationRecord
   # Pending transaction scopes - check Transaction.extra for provider pending flags
   # Works with any provider that stores pending status in extra["provider_name"]["pending"]
   scope :pending, -> {
+    conditions = Transaction::PENDING_PROVIDERS.map { |p| "(transactions.extra -> '#{p}' ->> 'pending')::boolean = true" }
     joins("INNER JOIN transactions ON transactions.id = entries.entryable_id AND entries.entryable_type = 'Transaction'")
-      .where(Transaction.pending_sql)
+      .where(conditions.join(" OR "))
   }
 
   scope :excluding_pending, -> {
@@ -102,24 +99,18 @@ class Entry < ApplicationRecord
     joins(:account).where(accounts: { family_id: family.id })
   end
 
-  # Uncategorized transaction entries on draft or active accounts.
+  # Uncategorized, non-transfer transaction entries on draft or active accounts.
   # Caller is responsible for scoping to accessible entries before applying this scope.
-  #
-  # Uses Transaction::UNCATEGORIZED_EXCLUDED_KINDS rather than TRANSFER_KINDS so
-  # the badge count and Quick Categorize wizard cover exactly what the
-  # Transactions "Uncategorized" filter lists — notably the budget-tracked
-  # loan_payment / investment_contribution transfers the dashboard already
-  # counts, which were previously uncategorizable from any surface (#2592).
   scope :uncategorized_transactions, -> {
     joins(:account)
       .joins("INNER JOIN transactions ON transactions.id = entries.entryable_id AND entries.entryable_type = 'Transaction'")
       .where(accounts: { status: %w[draft active] })
       .where(transactions: { category_id: nil })
-      .where.not(transactions: { kind: Transaction::UNCATEGORIZED_EXCLUDED_KINDS })
+      .where.not(transactions: { kind: Transaction::TRANSFER_KINDS })
       .where(entries: { excluded: false })
   }
 
-  # Returns uncategorized entries whose name matches the given filter string.
+  # Returns uncategorized, non-transfer entries whose name matches the given filter string.
   # Used by the Quick Categorize Wizard to preview which transactions a rule would affect.
   # @param entries [ActiveRecord::Relation] pre-scoped entries (caller controls authorization)
   def self.uncategorized_matching(entries, filter, transaction_type = nil)
@@ -165,7 +156,9 @@ class Entry < ApplicationRecord
   def self.reconcile_pending_duplicates(account: nil, dry_run: false, date_window: 8, amount_tolerance: 0.25)
     stats = { checked: 0, reconciled: 0, details: [] }
 
-    not_pending_sql = Transaction.not_pending_sql
+    not_pending_sql = Transaction::PENDING_PROVIDERS
+      .map { |p| "(transactions.extra -> '#{p}' ->> 'pending')::boolean IS NOT TRUE" }
+      .join(" AND ")
 
     # Get pending entries to check
     scope = Entry.pending.where(excluded: false)
@@ -295,19 +288,8 @@ class Entry < ApplicationRecord
     entryable.lock_saved_attributes!
   end
 
-  # Enqueues an account sync whose window starts at the earliest date this
-  # entry has occupied since it was loaded, so balances are recomputed from
-  # wherever the entry used to sit.
-  #
-  # Later saves (lock_saved_attributes!, mark_user_modified!) reset
-  # date_previously_was, so the earliest date tracked across saves is used too.
-  # Starting the window after the old date would seed the incremental balance
-  # calculation from a balance that still includes this entry.
-  #
-  # @return [void]
   def sync_account_later
-    sync_start_date = [ @earliest_saved_date, date_previously_was, date ].compact.min unless destroyed?
-    @earliest_saved_date = nil
+    sync_start_date = [ date_previously_was, date ].compact.min unless destroyed?
     account.sync_later(window_start_date: sync_start_date)
   end
 
@@ -476,9 +458,6 @@ class Entry < ApplicationRecord
           name: split_attrs[:name],
           amount: split_attrs[:amount],
           currency: currency,
-          notes: split_attrs[:notes],
-          import: import,
-          import_locked: import_locked,
           excluded: TRUTHY_VALUES.include?(split_attrs[:excluded]),
           entryable: child_transaction
         )
@@ -579,14 +558,6 @@ class Entry < ApplicationRecord
   end
 
   private
-
-    # Remembers the earliest date this entry had before any save that changed
-    # it, for sync_account_later to use as the sync window start.
-    #
-    # @return [Date]
-    def track_earliest_saved_date
-      @earliest_saved_date = [ @earliest_saved_date, date_before_last_save ].compact.min
-    end
 
     def cannot_unexclude_split_parent
       return unless excluded_changed?(from: true, to: false) && split_parent?

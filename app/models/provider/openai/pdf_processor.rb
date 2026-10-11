@@ -1,11 +1,9 @@
 class Provider::Openai::PdfProcessor
   include Provider::Openai::Concerns::UsageRecorder
 
-  attr_reader :client, :model, :pdf_content, :custom_provider, :langfuse_trace, :family, :max_response_tokens,
-              :processing_mode
+  attr_reader :client, :model, :pdf_content, :custom_provider, :langfuse_trace, :family, :max_response_tokens
 
-  def initialize(client, model: "", pdf_content: nil, custom_provider: false, langfuse_trace: nil, family: nil,
-                 max_response_tokens:, processing_mode: :auto)
+  def initialize(client, model: "", pdf_content: nil, custom_provider: false, langfuse_trace: nil, family: nil, max_response_tokens:)
     @client = client
     @model = model
     @pdf_content = pdf_content
@@ -13,7 +11,6 @@ class Provider::Openai::PdfProcessor
     @langfuse_trace = langfuse_trace
     @family = family
     @max_response_tokens = max_response_tokens
-    @processing_mode = processing_mode
   end
 
   def process
@@ -24,20 +21,11 @@ class Provider::Openai::PdfProcessor
 
     # Try text extraction first (works with all models)
     # Fall back to vision API with images if text extraction fails (for scanned PDFs)
-    response = case processing_mode
-    when :text
+    response = begin
       process_with_text_extraction
-    when :vision
+    rescue Provider::Openai::Error => e
+      Rails.logger.warn("Text extraction failed: #{e.message}, trying vision API with images")
       process_with_vision
-    when :auto
-      begin
-        process_with_text_extraction
-      rescue Provider::Openai::Error => e
-        Rails.logger.warn("Text extraction failed: #{e.message}, trying vision API with images")
-        process_with_vision
-      end
-    else
-      raise ArgumentError, "Unknown PDF processing mode: #{processing_mode.inspect}"
     end
 
     span&.end(output: response.to_h)
@@ -105,8 +93,6 @@ class Provider::Openai::PdfProcessor
 
     PdfProcessingResult = Provider::LlmConcept::PdfProcessingResult
 
-    # Summarize extracted PDF text using the existing uncapped text request.
-    # @return [Provider::LlmConcept::PdfProcessingResult] parsed document summary
     def process_with_text_extraction
       effective_model = model.presence || Provider::Openai::DEFAULT_MODEL
 
@@ -146,16 +132,20 @@ class Provider::Openai::PdfProcessor
     def extract_text_from_pdf
       return nil if pdf_content.blank?
 
-      Pdf::TextExtractor.pages(pdf_content).each_with_index.flat_map do |text, index|
-        [ "--- Page #{index + 1} ---", text ]
-      end.join("\n\n")
+      reader = PDF::Reader.new(StringIO.new(pdf_content))
+      text_parts = []
+
+      reader.pages.each_with_index do |page, index|
+        text_parts << "--- Page #{index + 1} ---"
+        text_parts << page.text
+      end
+
+      text_parts.join("\n\n")
     rescue => e
       Rails.logger.error("Failed to extract text from PDF: #{e.message}")
       nil
     end
 
-    # Summarize rendered pages using the endpoint's completion-limit contract.
-    # @return [Provider::LlmConcept::PdfProcessingResult] parsed document summary
     def process_with_vision
       effective_model = model.presence || Provider::Openai::DEFAULT_MODEL
 
@@ -185,13 +175,9 @@ class Provider::Openai::PdfProcessor
         messages: [
           { role: "system", content: instructions + "\n\nIMPORTANT: Respond with valid JSON only, no markdown or other formatting." },
           { role: "user", content: content }
-        ]
+        ],
+        max_tokens: max_response_tokens
       }
-      if Provider::Openai.native_pdf_completion_limit?(model: effective_model, custom_provider: custom_provider)
-        params[:max_completion_tokens] = max_response_tokens if max_response_tokens
-      else
-        params[:max_tokens] = max_response_tokens
-      end
 
       response = client.chat(parameters: params)
 
@@ -207,11 +193,6 @@ class Provider::Openai::PdfProcessor
       parse_response_generic(response)
     end
 
-    # Render each PDF page to a base64-encoded PNG using pdftoppm
-    # (poppler-utils). Distinguishes "renderer binary absent" (raise a coded
-    # Provider::Openai::Error with failure_code :render_missing_binary) from
-    # "renderer ran but rejected the input" (return [] so the caller can
-    # degrade to the text-extraction path unchanged).
     def convert_pdf_to_images
       return [] if pdf_content.blank?
 
@@ -219,34 +200,19 @@ class Provider::Openai::PdfProcessor
         pdf_path = File.join(tmpdir, "input.pdf")
         File.binwrite(pdf_path, pdf_content)
 
-        # Render via pdftoppm (poppler-utils). Kernel#system returns `nil` when
-        # the executable cannot be started (binary not installed) and `false`
-        # when it runs but exits non-zero (present but rejected the input).
+        # Convert PDF to PNG images using pdftoppm
         output_prefix = File.join(tmpdir, "page")
-        rendered = system("pdftoppm", "-png", "-r", "150", pdf_path, output_prefix)
-        raise binary_missing_error if rendered.nil?
+        system("pdftoppm", "-png", "-r", "150", pdf_path, output_prefix)
 
-        # Read all generated images (empty array when pdftoppm exited non-zero)
+        # Read all generated images
         image_files = Dir.glob(File.join(tmpdir, "page-*.png")).sort
         image_files.map do |img_path|
           Base64.strict_encode64(File.binread(img_path))
         end
       end
-    rescue Provider::Openai::Error
-      raise
     rescue => e
       Rails.logger.error("Failed to convert PDF to images: #{e.message}")
       []
-    end
-
-    # Coded error for the "pdftoppm not installed" case so the admin AI status
-    # page can show a concrete, actionable failure reason instead of a generic
-    # service error.
-    def binary_missing_error
-      Provider::Openai::Error.new(
-        "Could not convert PDF to images: pdftoppm (poppler-utils) is not installed",
-        failure_code: :render_missing_binary
-      )
     end
 
     def parse_response_generic(response)

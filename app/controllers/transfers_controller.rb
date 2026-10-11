@@ -4,8 +4,6 @@ class TransfersController < ApplicationController
   before_action :set_transfer, only: %i[show destroy update update_tags mark_as_recurring]
   before_action :set_accounts, only: %i[new create]
 
-  helper_method :new_transfer_idempotency_key
-
   def new
     @transfer = Transfer.new
     @from_account_id = params[:from_account_id]
@@ -45,8 +43,7 @@ class TransfersController < ApplicationController
       exchange_rate: transfer_params[:exchange_rate].presence&.to_d,
       source_fee_amount: transfer_params[:source_fee_amount],
       destination_fee_amount: transfer_params[:destination_fee_amount],
-      tag_ids: transfer_params[:tag_ids],
-      idempotency_key: submitted_idempotency_key
+      tag_ids: transfer_params[:tag_ids]
     ).create
 
     if @transfer.persisted?
@@ -64,7 +61,6 @@ class TransfersController < ApplicationController
     @transfer ||= Transfer.new
     @transfer.tag_ids = transfer_params[:tag_ids]
     @transfer.errors.add(:base, t(".exchange_rate_unavailable"))
-    @from_account_id = transfer_params[:from_account_id]
     set_accounts
     @tags = Current.family.tags.alphabetically
     render :new, status: :unprocessable_entity
@@ -72,30 +68,19 @@ class TransfersController < ApplicationController
     @transfer ||= Transfer.new
     @transfer.tag_ids = transfer_params[:tag_ids]
     @transfer.errors.add(:date, t(".date_invalid"))
-    @from_account_id = transfer_params[:from_account_id]
-    set_accounts
-    @tags = Current.family.tags.alphabetically
-    render :new, status: :unprocessable_entity
-  rescue Transfer::Creator::StaleIdempotencyKeyError
-    @transfer ||= Transfer.new
-    @transfer.tag_ids = transfer_params[:tag_ids]
-    @transfer.errors.add(:base, t(".stale_form"))
-    @from_account_id = transfer_params[:from_account_id]
     set_accounts
     @tags = Current.family.tags.alphabetically
     render :new, status: :unprocessable_entity
   end
 
   def update
-    return reject_transfer if rejecting?
-
     outflow_account = @transfer.outflow_transaction.entry.account
     return unless require_account_permission!(outflow_account, redirect_path: transactions_url)
 
     Transfer.transaction do
       update_transfer_status
       update_transfer_fees_and_amount
-      update_transfer_details
+      update_transfer_details unless transfer_update_params[:status] == "rejected"
     end
 
     respond_to do |format|
@@ -124,7 +109,8 @@ class TransfersController < ApplicationController
   end
 
   def destroy
-    return unless require_account_permission!(unlink_permission_account, redirect_path: transactions_url)
+    outflow_account = @transfer.outflow_transaction.entry.account
+    return unless require_account_permission!(outflow_account, redirect_path: transactions_url)
 
     @transfer.destroy!
     redirect_back_or_to transactions_url, notice: t(".success")
@@ -191,90 +177,24 @@ class TransfersController < ApplicationController
 
   private
     def set_transfer
-      # Finds the transfer and ensures the user has access to it. Unlinking
-      # (reject/destroy) only needs access to one side, so a user can undo a
-      # match against an account that is not shared with them. Any other
-      # update edits both entries, so it needs access to both sides.
+      # Finds the transfer and ensures the user has access to it
       accessible_transaction_ids = Current.family.transactions
         .joins(entry: :account)
         .merge(Account.accessible_by(Current.user))
         .select(:id)
 
-      scope = Transfer.where(id: params[:id])
-      inflow_accessible = scope.where(inflow_transaction_id: accessible_transaction_ids)
-      outflow_accessible = scope.where(outflow_transaction_id: accessible_transaction_ids)
-
-      accessible = if unlinking?
-        inflow_accessible.or(outflow_accessible)
-      elsif action_name == "update"
-        inflow_accessible.where(outflow_transaction_id: accessible_transaction_ids)
-      else
-        inflow_accessible
-      end
-
-      @transfer = accessible.first!
-    end
-
-    def rejecting?
-      params.dig(:transfer, :status) == "rejected"
-    end
-
-    def unlinking?
-      action_name == "destroy" || (action_name == "update" && rejecting?)
-    end
-
-    def reject_transfer
-      return unless require_account_permission!(unlink_permission_account, redirect_path: transactions_url)
-
-      @transfer.reject!
-
-      respond_to do |format|
-        format.html { redirect_back_or_to transactions_url, notice: t(".success") }
-        format.turbo_stream
-      end
-    end
-
-    # Unlinking (reject/destroy) needs write access to one endpoint, plus every
-    # account holding a fee transaction, since destroying the transfer deletes
-    # those fees. Returns the account to run the permission check against: the
-    # first one the user cannot write to, or a writable endpoint.
-    def unlink_permission_account
-      endpoints = [ @transfer.from_account, @transfer.to_account ].compact
-      fee_accounts = Account.where(id: @transfer.fee_transactions.joins(:entry).select("entries.account_id")).to_a
-      writable_ids = Current.family.accounts.writable_by(Current.user)
-                       .where(id: (endpoints + fee_accounts).map(&:id))
-                       .pluck(:id).to_set
-
-      writable_endpoint = endpoints.find { |account| writable_ids.include?(account.id) }
-      return endpoints.first unless writable_endpoint
-
-      fee_accounts.find { |account| !writable_ids.include?(account.id) } || writable_endpoint
+      @transfer = Transfer
+                    .where(id: params[:id])
+                    .where(inflow_transaction_id: accessible_transaction_ids)
+                    .first!
     end
 
     def transfer_params
       params.require(:transfer).permit(:from_account_id, :to_account_id, :amount, :date, :name, :excluded, :exchange_rate, :source_fee_amount, :destination_fee_amount, tag_ids: [])
     end
 
-    # Anti-double-submit token: a random UUID rendered fresh on every "new
-    # transfer" form load, echoed back on submit, only ever trusted to look
-    # like something we could have generated (see
-    # Transfer::Creator#find_existing_transfer for how it's used to
-    # de-duplicate).
-    UUID_FORMAT = /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
-    private_constant :UUID_FORMAT
-
-    def submitted_idempotency_key
-      key = params.dig(:transfer, :idempotency_key)
-      key if key.is_a?(String) && key.match?(UUID_FORMAT)
-    end
-
-    def new_transfer_idempotency_key
-      @new_transfer_idempotency_key ||= submitted_idempotency_key || SecureRandom.uuid
-    end
-
     def set_accounts
       @accounts = accessible_accounts
-        .active
         .alphabetically
         .includes(
           :account_providers,
