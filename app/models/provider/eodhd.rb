@@ -39,10 +39,6 @@ class Provider::Eodhd < Provider
     "XKRX" => "KS",
     "XBOM" => "BSE",
     "XNSE" => "NSE",
-    "XWAR" => "WAR",
-    # Still accept legacy rows / inputs that store the raw EODHD code as MIC.
-    # Persistence always canonicalizes WAR → XWAR via Security::MIC_ALIASES.
-    "WAR" => "WAR",
     "EUFUND" => "EUFUND"
   }.freeze
 
@@ -53,7 +49,7 @@ class Provider::Eodhd < Provider
     "TSE" => "XTKS", "MI" => "XMIL", "MC" => "XMAD",
     "OL" => "XOSL", "HE" => "XHEL", "CO" => "XCSE",
     "ST" => "XSTO", "KS" => "XKRX", "BSE" => "XBOM",
-    "NSE" => "XNSE", "WAR" => "XWAR"
+    "NSE" => "XNSE"
   }.freeze
 
   EODHD_COUNTRY_TO_CODE = {
@@ -62,7 +58,7 @@ class Provider::Eodhd < Provider
     "Japan" => "JP", "Australia" => "AU", "Hong Kong" => "HK",
     "Italy" => "IT", "Spain" => "ES", "Norway" => "NO",
     "Finland" => "FI", "Denmark" => "DK", "Sweden" => "SE",
-    "South Korea" => "KR", "India" => "IN", "Poland" => "PL"
+    "South Korea" => "KR", "India" => "IN"
   }.freeze
 
   EXCHANGE_CURRENCY = {
@@ -72,7 +68,6 @@ class Provider::Eodhd < Provider
     "OL" => "NOK", "HE" => "EUR", "CO" => "DKK",
     "ST" => "SEK", "KS" => "KRW", "BSE" => "INR",
     "NSE" => "INR",
-    "WAR" => "PLN",
     "EUFUND" => "EUR"
   }.freeze
 
@@ -222,10 +217,10 @@ class Provider::Eodhd < Provider
         raise InvalidSecurityPriceError, "Unexpected response format from EOD API"
       end
 
-      # Prefer the per-security currency cached from search (handles USD LSE
-      # listings, etc.), then fall back to the exchange default map — including
-      # legacy rows that still store the raw EODHD code as MIC (e.g. "WAR").
-      currency = currency_for(exchange_operating_mic: exchange_operating_mic, symbol: symbol)
+      # Prefer cached currency from search results; fall back to hardcoded map
+      cache_key = "eodhd:currency:#{symbol.upcase}:#{exchange_operating_mic}"
+      eodhd_exchange = MIC_TO_EODHD_EXCHANGE[exchange_operating_mic]
+      currency = Rails.cache.read(cache_key) || EXCHANGE_CURRENCY[eodhd_exchange]
 
       parsed.map do |resp|
         price = resp.dig("close")
@@ -280,22 +275,6 @@ class Provider::Eodhd < Provider
       else
         "#{symbol}.US"
       end
-    end
-
-    def currency_for(exchange_operating_mic:, symbol:)
-      # Accept legacy raw EODHD codes (e.g. WAR) and ISO MICs (XWAR).
-      # Use ::Security — bare Security here is Provider::SecurityConcept::Security.
-      eodhd_exchange = MIC_TO_EODHD_EXCHANGE[exchange_operating_mic] ||
-        MIC_TO_EODHD_EXCHANGE[::Security.canonical_exchange_operating_mic(exchange_operating_mic)]
-      symbol_key = symbol.to_s.upcase
-      cache_keys = [
-        "eodhd:currency:#{symbol_key}:#{exchange_operating_mic}",
-        "eodhd:currency:#{symbol_key}:#{::Security.canonical_exchange_operating_mic(exchange_operating_mic)}"
-      ].uniq
-
-      cache_keys.lazy.map { |key| Rails.cache.read(key) }.find(&:present?) ||
-        EXCHANGE_CURRENCY[eodhd_exchange] ||
-        EXCHANGE_CURRENCY[exchange_operating_mic]
     end
 
     # Cache key for tracking daily API usage
