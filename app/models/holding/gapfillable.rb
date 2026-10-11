@@ -4,7 +4,7 @@ module Holding::Gapfillable
   class_methods do
     def gapfill(holdings)
       filled_holdings = []
-      splits = splits_for(holdings)
+      provider_cash_equivalent_snapshots = provider_cash_equivalent_snapshots_for(holdings)
 
       holdings.group_by { |h| h.security_id }.each do |security_id, security_holdings|
         next if security_holdings.empty?
@@ -15,22 +15,19 @@ module Holding::Gapfillable
 
         sorted.first.date.upto(Date.current) do |date|
           holding = holdings_by_date[date]
+          provider_cash_equivalent = provider_cash_equivalent_for(
+            provider_cash_equivalent_snapshots,
+            account_id: previous_holding.account_id,
+            security_id: security_id,
+            date: date
+          )
 
           if holding
+            holding.cash_equivalent = provider_cash_equivalent unless provider_cash_equivalent.nil?
             filled_holdings << holding
             previous_holding = holding
           else
-            # Carry the previous day forward, through any split going ex today.
-            #
-            # A day with no price emits no holding, so a split on such a day
-            # used to be filled over with the pre-split share count and
-            # per-share cost -- and stayed that way for every day after it,
-            # which for a security whose prices have stopped means forever.
-            # A split moves no money: the count scales, the per-share price and
-            # cost move by the inverse, and the position's value is unchanged.
-            ratio = splits[[ security_id, date ]]
-            previous_holding = carry_through_split(previous_holding, ratio) if ratio
-
+            # Create a new holding based on the previous day's data
             filled_holdings << Holding::HoldingData.new(
               account_id: previous_holding.account_id,
               security_id: previous_holding.security_id,
@@ -39,6 +36,7 @@ module Holding::Gapfillable
               price: previous_holding.price,
               currency: previous_holding.currency,
               amount: previous_holding.amount,
+              cash_equivalent: provider_cash_equivalent.nil? ? previous_holding.cash_equivalent : provider_cash_equivalent,
               cost_basis: previous_holding.cost_basis,
               cost_basis_unknown: previous_holding.cost_basis_unknown
             )
@@ -50,35 +48,29 @@ module Holding::Gapfillable
     end
 
     private
-      # The splits these holdings could be filled across, by security and
-      # ex-date. One query for the whole set rather than one per filled day.
-      def splits_for(holdings)
-        return {} if holdings.empty?
+      def provider_cash_equivalent_snapshots_for(holdings)
+        account_ids = holdings.map(&:account_id).compact.uniq
+        security_ids = holdings.map(&:security_id).compact.uniq
+        return {} if account_ids.empty? || security_ids.empty?
 
-        Security::Split
-          .where(security_id: holdings.map(&:security_id).uniq, ex_date: holdings.min_by(&:date).date..Date.current)
-          .to_h { |split| [ [ split.security_id, split.ex_date ], split.ratio ] }
+        Holding
+          .where(account_id: account_ids, security_id: security_ids)
+          .where.not(account_provider_id: nil)
+          .order(:date, :created_at, :id)
+          .pluck(:account_id, :security_id, :date, :cash_equivalent)
+          .group_by { |account_id, security_id, _date, _cash_equivalent| [ account_id, security_id ] }
+          .transform_values { |snapshots| snapshots.map { |_, _, date, cash_equivalent| [ date, cash_equivalent ] } }
       end
 
-      # The same holding restated in post-split terms. `amount` is deliberately
-      # recomputed from the scaled count and the inverse-scaled price rather
-      # than carried, so the two cannot drift apart at the rounding the stored
-      # scale imposes.
-      def carry_through_split(holding, ratio)
-        qty = Security::Split.scale(holding.qty, ratio)
-        price = Security::Split.unscale(holding.price, ratio)
+      def provider_cash_equivalent_for(snapshots, account_id:, security_id:, date:)
+        security_snapshots = snapshots[[ account_id, security_id ]]
+        return nil if security_snapshots.blank?
 
-        Holding::HoldingData.new(
-          account_id: holding.account_id,
-          security_id: holding.security_id,
-          date: holding.date,
-          qty: qty,
-          price: price,
-          currency: holding.currency,
-          amount: qty * price,
-          cost_basis: holding.cost_basis && Security::Split.unscale(holding.cost_basis, ratio),
-          cost_basis_unknown: holding.cost_basis_unknown
-        )
+        first_later_snapshot_index = security_snapshots.bsearch_index { |snapshot_date, _| snapshot_date > date }
+        snapshot = security_snapshots[
+          [ (first_later_snapshot_index || security_snapshots.length) - 1, 0 ].max
+        ]
+        snapshot.last
       end
   end
 end
