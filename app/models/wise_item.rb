@@ -1,9 +1,7 @@
 # frozen_string_literal: true
 
 class WiseItem < ApplicationRecord
-  include Syncable, Provided, Unlinking, Encryptable, DestroyableLater
-
-  SCA_PRIVATE_KEY_ATTRIBUTE = "sca_private_key"
+  include Syncable, Provided, Unlinking, Encryptable
 
   # Raised rather than returned so no caller can mistake "not stored" for
   # "stored"; the controller turns it into the same panel error as any other
@@ -41,6 +39,11 @@ class WiseItem < ApplicationRecord
   scope :syncable, -> { active }
   scope :ordered, -> { order(created_at: :desc) }
   scope :needs_update, -> { where(status: :requires_update) }
+
+  def destroy_later
+    update!(scheduled_for_deletion: true)
+    DestroyJob.perform_later(self)
+  end
 
   def import_latest_wise_data(sync_start_date: nil)
     provider = wise_provider
@@ -153,8 +156,7 @@ class WiseItem < ApplicationRecord
   end
 
   def sca_encryption_available?
-    self.class.encryption_ready? &&
-      Array(self.class.encrypted_attributes).map(&:to_s).include?(SCA_PRIVATE_KEY_ATTRIBUTE)
+    self.class.encryption_ready?
   end
 
   def sca_public_key
@@ -207,14 +209,7 @@ class WiseItem < ApplicationRecord
       self.token = token&.strip
     end
 
-    # Scoped to writes of the key itself. An install that generated a key
-    # before this validation existed still has that value in the column, so
-    # validating on every save would reject every later write to the record,
-    # such as renaming the connection. (DestroyableLater sets the deletion flag
-    # with update_column, so deleting it no longer depends on this.) Refusing a
-    # NEW key is the point; refusing to let go of an old one is not.
     def sca_private_key_requires_encryption
-      return unless will_save_change_to_sca_private_key?
       return if sca_private_key.blank? || sca_encryption_available?
 
       errors.add(:sca_private_key, :encryption_unavailable)

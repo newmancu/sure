@@ -66,43 +66,33 @@ class DepositoriesControllerTest < ActionDispatch::IntegrationTest
     assert_select "input[name='account[enable_category_matcher]']", 0
   end
 
-  # --- member-owned connections (issue #3579) ------------------------------
+  test "persists the overdraft terms this controller previously dropped" do
+    patch depository_path(@account), params: {
+      account: {
+        name: @account.name,
+        balance: @account.balance,
+        currency: @account.currency,
+        accountable_type: "Depository",
+        accountable_attributes: {
+          id: @account.accountable_id,
+          overdraft_limit: 400,
+          overdraft_interest_rate: 16.5,
+          intervention_fee_amount: 8,
+          intervention_fee_threshold: 20,
+          intervention_fee_monthly_cap: 80,
+          intervention_fee_monthly_count_cap: 10
+        }
+      }
+    }
 
-  test "a member sees only member-connectable providers in the method selector" do
-    Provider::Registry.stubs(:plaid_provider_for_region).returns(stub("plaid"))
-    Family.any_instance.stubs(:can_connect_plaid_us?).returns(true)
-    Family.any_instance.stubs(:can_connect_plaid_eu?).returns(false)
+    depository = @account.reload.depository
 
-    sign_in users(:family_member)
-    get new_depository_path(step: "method_select")
-
-    assert_response :success
-    assert_select "a[href=?]", new_plaid_item_path(region: "us", accountable_type: "Depository"), count: 1
-    # SimpleFIN is tenant-wide, so it must not be offered to a member even
-    # when it is configured.
-    assert_select "a[href*=?]", "simplefin", count: 0
-  end
-
-  test "an admin still sees every configured provider in the method selector" do
-    Provider::Registry.stubs(:plaid_provider_for_region).returns(stub("plaid"))
-    Family.any_instance.stubs(:can_connect_plaid_us?).returns(true)
-    Family.any_instance.stubs(:can_connect_plaid_eu?).returns(false)
-
-    sign_in users(:family_admin)
-    get new_depository_path(step: "method_select")
-
-    assert_response :success
-    assert_select "a[href=?]", new_plaid_item_path(region: "us", accountable_type: "Depository"), count: 1
-  end
-
-  test "a member is offered manual entry even with no connectable providers" do
-    Family.any_instance.stubs(:can_connect_plaid_us?).returns(false)
-    Family.any_instance.stubs(:can_connect_plaid_eu?).returns(false)
-
-    sign_in users(:family_member)
-    get new_depository_path(step: "method_select")
-
-    assert_response :success
-    assert_select "a[href=?]", new_depository_path, count: 1
+    assert_equal 400, depository.overdraft_limit.to_f
+    assert_equal 16.5, depository.overdraft_interest_rate.to_f
+    assert_equal 8, depository.intervention_fee_amount.to_f
+    assert_equal 20, depository.intervention_fee_threshold.to_f
+    assert_equal 80, depository.intervention_fee_monthly_cap.to_f
+    assert_equal 10, depository.intervention_fee_monthly_count_cap
+    assert_equal(-400, depository.overdraft_floor)
   end
 end

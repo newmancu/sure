@@ -49,6 +49,23 @@ class IncomeStatement
     @income_totals_by_period[key] = build_period_total(classification: "income", period: period)
   end
 
+  # Every month of a window in ONE grouped query, keyed by the month's first
+  # day. get_category_trends asked for 12 to 24 months and paid a separate
+  # aggregation for each; the rows and the rollup are identical, only the
+  # grouping changes, so a series and a single month asked for on its own
+  # cannot disagree.
+  def monthly_category_totals(classification:, periods:)
+    return {} if periods.empty?
+
+    window = Period.custom(start_date: periods.first.start_date, end_date: periods.last.end_date)
+    by_month = monthly_totals_rows(window).select { |row| row.classification == classification }
+                                          .group_by(&:period_start)
+
+    periods.index_with do |period|
+      roll_up(classification: classification, totals: by_month[period.start_date.beginning_of_month] || [])
+    end
+  end
+
   def net_category_totals(period: Period.current_month)
     key = period_cache_key(period)
     @net_category_totals_by_period ||= {}
@@ -117,23 +134,6 @@ class IncomeStatement
   # `income_totals`/`expense_totals`, this isn't memoized per-period since
   # callers (e.g. a monthly bar chart) typically query several distinct
   # periods and account combinations in one request.
-  # Per-day expense totals (in family currency) across a period, powering the
-  # dashboard's cumulative spending chart. Same scoping as `expense_totals`.
-  def daily_expense_series(period:)
-    Rails.cache.fetch([
-      "income_statement", "daily_expense_series", family.id, user&.id,
-      included_account_ids_hash, period.start_date, period.end_date,
-      *cache_freshness_key
-    ]) do
-      DailyExpenseTotals.new(
-        family,
-        transactions_scope: family.transactions.visible.excluding_pending.in_period(period),
-        date_range: period.date_range,
-        included_account_ids: included_account_ids
-      ).call
-    end
-  end
-
   def totals_for(period, account_ids: nil)
     scope = family.transactions.visible.excluding_pending.in_period(period)
     scope = scope.where(entries: { account_id: account_ids }) if account_ids.present?
@@ -194,7 +194,12 @@ class IncomeStatement
 
     def build_period_total(classification:, period:)
       # Exclude pending transactions from budget calculations
-      totals = totals_for_period(period).select { |t| t.classification == classification }
+      roll_up(classification: classification, totals: totals_for_period(period).select { |t| t.classification == classification })
+    end
+
+    # The rollup, extracted so the per-month path and the whole-window path
+    # cannot drift. Whatever changes here changes both.
+    def roll_up(classification:, totals:)
       classification_total = totals.sum(&:total)
 
       uncategorized_category = family.categories.uncategorized
@@ -237,6 +242,24 @@ class IncomeStatement
       )
     end
 
+    # Cached on the same terms as totals_query, and not keyed on classification:
+    # one window yields both, so asking for expenses warms income too.
+    def monthly_totals_rows(window)
+      @monthly_totals_rows ||= {}
+      @monthly_totals_rows[period_cache_key(window)] ||= Rails.cache.fetch([
+        "income_statement", "monthly_totals_rows", "v1", family.id, user&.id, included_account_ids_hash,
+        window.start_date, window.end_date, family.entries_cache_version, family.accounts.maximum(:updated_at)&.to_i
+      ]) do
+        Totals.new(
+          family,
+          transactions_scope: family.transactions.visible.excluding_pending.in_period(window),
+          date_range: window.date_range,
+          included_account_ids: included_account_ids,
+          group_by_month: true
+        ).call
+      end
+    end
+
     def totals_for_period(period)
       @totals_for_period ||= {}
       @totals_for_period[period_cache_key(period)] ||=
@@ -272,21 +295,11 @@ class IncomeStatement
       @included_account_ids_hash ||= included_account_ids ? Digest::MD5.hexdigest(included_account_ids.sort.join(",")) : nil
     end
 
-    # An IncomeStatement is a request-scoped reporting snapshot, like its memoized
-    # period totals. Share these aggregate reads across totals and daily series.
-    # Rates and target currency can change without touching entries or accounts.
-    def cache_freshness_key
-      @cache_freshness_key ||= [
-        family.entries_cache_version, family.accounts.maximum(:updated_at)&.to_i,
-        family.currency, ExchangeRate.maximum(:updated_at)&.to_i
-      ]
-    end
-
     def totals_query(transactions_scope:, date_range:)
       sql_hash = Digest::MD5.hexdigest(transactions_scope.to_sql)
 
       Rails.cache.fetch([
-        "income_statement", "totals_query", "v2", family.id, user&.id, included_account_ids_hash, sql_hash, date_range.begin, date_range.end, *cache_freshness_key
+        "income_statement", "totals_query", "v2", family.id, user&.id, included_account_ids_hash, sql_hash, date_range.begin, date_range.end, family.entries_cache_version, family.accounts.maximum(:updated_at)&.to_i
       ]) { Totals.new(family, transactions_scope: transactions_scope, date_range: date_range, included_account_ids: included_account_ids).call }
     end
 
