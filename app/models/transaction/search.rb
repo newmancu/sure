@@ -2,9 +2,6 @@ class Transaction::Search
   include ActiveModel::Model
   include ActiveModel::Attributes
 
-  # Automatic-categorization provenance filter values (used by the view)
-  AI_STATUSES = %w[current history].freeze
-
   attribute :search, :string
   attribute :amount, :string
   attribute :amount_operator, :string
@@ -17,7 +14,6 @@ class Transaction::Search
   attribute :categories, array: true
   attribute :merchants, array: true
   attribute :tags, array: true
-  attribute :ai_status, array: true
   attribute :active_accounts_only, :boolean, default: true
 
   attr_reader :family, :accessible_account_ids
@@ -44,7 +40,6 @@ class Transaction::Search
       query = apply_status_filter(query, status)
       query = apply_merchant_filter(query, merchants)
       query = apply_tag_filter(query, tags)
-      query = apply_ai_status_filter(query, ai_status)
       query = EntrySearch.apply_search_filter(query, search)
       query = EntrySearch.apply_date_filters(query, start_date, end_date)
       query = EntrySearch.apply_amount_filter(query, amount, amount_operator)
@@ -57,12 +52,10 @@ class Transaction::Search
   # Compute totals for the specific search, excluding tax-advantaged accounts
   def totals
     @totals ||= begin
-      # v3: bumped because the Uncategorized filter's exclusion set changed
-      # (see #2592) -- without a version bump, a totals entry cached under
-      # the old logic would keep being served (same cache_key_base) after
-      # deploy, disagreeing with the (uncached) transactions_scope list
-      # until entries_cache_version next changes for that family.
-      Rails.cache.fetch("transaction_search_totals/v3/#{cache_key_base}") do
+      # Bump the version whenever Totals members or aggregation semantics change.
+      # v4 adds refund_money and nets refunds against expenses, not income; v3
+      # payloads have an incompatible Data layout and may survive deployment.
+      Rails.cache.fetch("transaction_search_totals/v4/#{cache_key_base}") do
         scope = transactions_scope
 
         # Exclude tax-advantaged accounts from totals calculation
@@ -72,11 +65,11 @@ class Transaction::Search
         result = scope
                   .select(
                     ActiveRecord::Base.sanitize_sql_array([
-                      "COALESCE(SUM(CASE WHEN entries.amount >= 0 AND transactions.kind NOT IN (?) THEN ABS(entries.amount * COALESCE(er.rate, 1)) ELSE 0 END), 0) as expense_total",
+                      "COALESCE(SUM(CASE WHEN (entries.amount >= 0 OR transactions.kind = 'refund') AND transactions.kind NOT IN (?) THEN entries.amount * COALESCE(er.rate, 1) ELSE 0 END), 0) as expense_total",
                       Transaction::TRANSFER_KINDS
                     ]),
                     ActiveRecord::Base.sanitize_sql_array([
-                      "COALESCE(SUM(CASE WHEN entries.amount < 0 AND transactions.kind NOT IN (?) THEN ABS(entries.amount * COALESCE(er.rate, 1)) ELSE 0 END), 0) as income_total",
+                      "COALESCE(SUM(CASE WHEN entries.amount < 0 AND transactions.kind != 'refund' AND transactions.kind NOT IN (?) THEN ABS(entries.amount * COALESCE(er.rate, 1)) ELSE 0 END), 0) as income_total",
                       Transaction::TRANSFER_KINDS
                     ]),
                     ActiveRecord::Base.sanitize_sql_array([
@@ -87,6 +80,7 @@ class Transaction::Search
                       "COALESCE(SUM(CASE WHEN entries.amount >= 0 AND transactions.kind IN (?) THEN ABS(entries.amount * COALESCE(er.rate, 1)) ELSE 0 END), 0) as transfer_outflow_total",
                       Transaction::TRANSFER_KINDS
                     ]),
+                    "COALESCE(SUM(CASE WHEN transactions.kind = 'refund' THEN -entries.amount * COALESCE(er.rate, 1) ELSE 0 END), 0) as refund_total",
                     "COUNT(entries.id) as transactions_count"
                   )
                   .joins(
@@ -99,6 +93,7 @@ class Transaction::Search
 
         Totals.new(
           count: result&.transactions_count.to_i,
+          refund_money: Money.new((result&.refund_total || 0), family.currency),
           income_money: Money.new((result&.income_total || 0), family.currency),
           expense_money: Money.new((result&.expense_total || 0), family.currency),
           transfer_inflow_money: Money.new((result&.transfer_inflow_total || 0), family.currency),
@@ -120,7 +115,7 @@ class Transaction::Search
   end
 
   private
-    Totals = Data.define(:count, :income_money, :expense_money, :transfer_inflow_money, :transfer_outflow_money)
+    Totals = Data.define(:count, :income_money, :expense_money, :refund_money, :transfer_inflow_money, :transfer_outflow_money)
 
     # Filter query to include only active accounts if requested
     def apply_active_accounts_filter(query, active_accounts_only_filter)
@@ -180,24 +175,15 @@ class Transaction::Search
     # Filter transactions by type (expense, income, or transfer)
     def apply_type_filter(query, types)
       return query unless types.present?
-      return query if types.sort == [ "expense", "income", "transfer" ]
-
-      case types.sort
-      when [ "transfer" ]
-        query.where(kind: Transaction::TRANSFER_KINDS)
-      when [ "expense" ]
-        query.where("entries.amount >= 0").where.not(kind: Transaction::TRANSFER_KINDS)
-      when [ "income" ]
-        query.where("entries.amount < 0").where.not(kind: Transaction::TRANSFER_KINDS)
-      when [ "expense", "transfer" ]
-        query.where("entries.amount >= 0 OR transactions.kind IN (?)", Transaction::TRANSFER_KINDS)
-      when [ "income", "transfer" ]
-        query.where("entries.amount < 0 OR transactions.kind IN (?)", Transaction::TRANSFER_KINDS)
-      when [ "expense", "income" ]
-        query.where.not(kind: Transaction::TRANSFER_KINDS)
-      else
-        query
+      scopes = types.uniq.filter_map do |type|
+        case type
+        when "transfer" then query.where(kind: Transaction::TRANSFER_KINDS)
+        when "refund" then query.where(kind: "refund")
+        when "expense" then query.where("entries.amount >= 0").where.not(kind: Transaction::TRANSFER_KINDS + [ "refund" ])
+        when "income" then query.where("entries.amount < 0").where.not(kind: Transaction::TRANSFER_KINDS + [ "refund" ])
+        end
       end
+      scopes.reduce { |combined, scope| combined.or(scope) } || query
     end
 
     # Filter transactions by merchant name
@@ -238,34 +224,6 @@ class Transaction::Search
         query.joins(:tags).where(tags: { name: real_tags }).distinct.select(:id)
       end
       query.where(id: matching_ids)
-    end
-
-    # Filter by automatic-categorization provenance. Uses EXISTS so a
-    # transaction with both an ai and a bayes enrichment row can't be
-    # duplicated in the list or double-counted in totals (see #3174).
-    def apply_ai_status_filter(query, statuses)
-      wanted = Array(statuses) & AI_STATUSES
-      return query if wanted.empty?
-
-      case wanted.sort
-      when [ "current" ]
-        query.where(auto_enrichment_exists_sql("de.value = to_jsonb(transactions.category_id::text)"), sources: Transaction::AUTO_CATEGORY_SOURCES)
-      when [ "history" ]
-        query
-          .where(auto_enrichment_exists_sql, sources: Transaction::AUTO_CATEGORY_SOURCES)
-          .where.not(auto_enrichment_exists_sql("de.value = to_jsonb(transactions.category_id::text)"), sources: Transaction::AUTO_CATEGORY_SOURCES)
-      else
-        query.where(auto_enrichment_exists_sql, sources: Transaction::AUTO_CATEGORY_SOURCES)
-      end
-    end
-
-    # Correlated EXISTS predicate over the transaction's automatic category
-    # enrichments. to_jsonb(NULL::text) is NULL, so an uncategorized
-    # transaction never satisfies the "matches current category" variant.
-    def auto_enrichment_exists_sql(extra_condition = nil)
-      sql = "EXISTS (SELECT 1 FROM data_enrichments de WHERE de.enrichable_type = 'Transaction' AND de.enrichable_id = transactions.id AND de.attribute_name = 'category_id' AND de.source IN (:sources)"
-      sql += " AND #{extra_condition}" if extra_condition
-      sql + ")"
     end
 
     # Filter transactions by status (pending or confirmed)
