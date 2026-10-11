@@ -89,7 +89,7 @@ class AccountsController < ApplicationController
     # date beside a table shaded against another.
     @as_of = Date.current
     @accessible_account_ids = Current.user.accessible_accounts.pluck(:id).to_set
-    @q = params.fetch(:q, {}).permit(:search, :uncategorized, status: [])
+    @q = params.fetch(:q, {}).permit(:search, status: [])
     entries = @account.entries.excluding_split_parents.search(@q).reverse_chronological.includes(:entryable)
     if statement_tab_active?
       build_statement_tab_data
@@ -122,8 +122,7 @@ class AccountsController < ApplicationController
       records: txn_entryables,
       associations: {
         transfer_as_outflow: { inflow_transaction: { entry: :account } },
-        # :category for the read-only category an inflow leg shows (Transaction#category_set_on_transfer_outflow?)
-        transfer_as_inflow: { outflow_transaction: [ :category, { entry: :account } ] }
+        transfer_as_inflow: { outflow_transaction: { entry: :account } }
       }
     ).call
 

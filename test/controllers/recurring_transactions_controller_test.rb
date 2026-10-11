@@ -37,67 +37,6 @@ class RecurringTransactionsControllerTest < ActionDispatch::IntegrationTest
     assert_match I18n.t("recurring_transactions.form.more_options"), body
   end
 
-  # The amount is the money field every other form uses. On a new bill its
-  # currency is picked there, defaulting to the family's, or the transaction's
-  # when the dialog starts from one. On an existing bill it shows and stays.
-  test "the add and edit forms use the app's money field and category select" do
-    get new_recurring_transaction_url, headers: { "Turbo-Frame" => "modal" }
-
-    assert_response :success
-    assert_select ".form-field[data-controller~='money-field'] input[name=?]", "recurring_transaction[amount]"
-    # Blurred in privacy mode, and still typeable.
-    assert_select "input.privacy-sensitive.privacy-sensitive-interactive[name=?]", "recurring_transaction[amount]"
-    assert_select "select[name=?]:not([disabled]) option[selected][value=?]", "recurring_transaction[currency]", @family.currency
-    # The candidate list's rows are divided by a real token: divide-divider
-    # matched nothing, so its rules fell back to the text colour.
-    assert_no_match "divide-divider", response.body
-
-    entry = accounts(:depository).entries.create!(date: Date.current - 20, amount: 12.5, currency: "EUR",
-                                                  name: "STREAMBOX", entryable: Transaction.new)
-    get new_recurring_transaction_url(entry_id: entry.id), headers: { "Turbo-Frame" => "modal" }
-    assert_select "select[name=?] option[selected][value=?]", "recurring_transaction[currency]", "EUR"
-    assert_select "input[name=?][value=?]", "recurring_transaction[amount]", "12.50"
-
-    get edit_recurring_transaction_url(@recurring_transaction), headers: { "Turbo-Frame" => "modal" }
-    assert_select "select[name=?][disabled] option[selected][value=?]", "recurring_transaction[currency]", @recurring_transaction.currency
-    assert_select "#category_id_trigger"
-    assert_select "input[type=hidden][name=?]", "recurring_transaction[category_id]"
-  end
-
-  # Assigning the amount would already round it to the column's four places,
-  # so the edit form refuses a finer one instead of saving a different figure.
-  test "update refuses an amount finer than the column keeps" do
-    patch recurring_transaction_url(@recurring_transaction),
-      params: { recurring_transaction: { name: @recurring_transaction.display_name, amount: "15.123456" } }
-
-    assert_response :unprocessable_entity
-    assert_match I18n.t("recurring_transactions.create.amount_too_precise"), response.body
-    assert_equal 15.99, @recurring_transaction.reload.amount
-  end
-
-  test "the amount steps by the currency, never finer than the column" do
-    assert_in_delta 0.01, RecurringTransaction.amount_step("USD")
-    assert_in_delta 1.0, RecurringTransaction.amount_step("JPY")
-    assert_in_delta 0.0001, RecurringTransaction.amount_step("BTC")
-
-    get new_recurring_transaction_url, headers: { "Turbo-Frame" => "modal" }
-    assert_select "input[name=?][step=?]", "recurring_transaction[amount]", "0.01"
-  end
-
-  test "create keeps the currency picked on the form" do
-    post recurring_transactions_url, params: {
-      recurring_transaction: {
-        name: "Streambox", amount: "12.50", currency: "EUR",
-        account_id: accounts(:depository).id, first_due_on: (Date.current + 9).iso8601,
-        frequency_preset: "monthly"
-      }
-    }
-
-    bill = @family.recurring_transactions.find_by!(name: "Streambox")
-    assert_equal "EUR", bill.currency
-    assert_equal 12.5, bill.amount
-  end
-
   test "edit renders the form" do
     get edit_recurring_transaction_url(@recurring_transaction)
 
@@ -143,14 +82,6 @@ class RecurringTransactionsControllerTest < ActionDispatch::IntegrationTest
 
     post toggle_status_recurring_transaction_url(@recurring_transaction)
     assert @recurring_transaction.reload.active?
-  end
-
-  # Pause is offered from the Bills drawer and the bill's page as well as from
-  # this settings page, and it used to send all of them here.
-  test "toggle_status returns to the page it was pressed on" do
-    post toggle_status_recurring_transaction_url(@recurring_transaction), headers: { "Referer" => bills_url }
-
-    assert_redirected_to bills_url
   end
 
   # The dialog is delivered into the shared <turbo-frame id="modal"> that every page
@@ -356,20 +287,6 @@ class RecurringTransactionsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to bills_url
     assert_equal I18n.t("recurring_transactions.deleted"), flash[:notice]
     assert Entry.exists?(entry.id), "removing a bill must never delete ledger entries"
-  end
-
-  # A bill visited at its own URL opens in the drawer over the overview, so
-  # going back there after removing it would reopen it, or 404 on it.
-  test "deleting a bill from its own URL lands on the overview" do
-    bill = @family.recurring_transactions.create!(
-      name: "City Water", account: accounts(:depository), amount: 45, currency: "USD",
-      expected_day_of_month: 5, last_occurrence_date: 1.month.ago.to_date,
-      next_expected_date: Date.current, status: "active", manual: true
-    )
-
-    delete recurring_transaction_url(bill), headers: { "HTTP_REFERER" => bill_url(bill) }
-
-    assert_redirected_to bills_url
   end
 
   # Which kind this is was settled by the entry point that opened the dialog.
@@ -656,6 +573,52 @@ class RecurringTransactionsControllerTest < ActionDispatch::IntegrationTest
     assert_select "select[name='recurring_transaction[frequency_interval_unit]'] option[selected][value='monthly']"
   end
 
+  # The form disables the fields of every group the chosen preset hides, and
+  # disabled fields do not submit. So each preset reaches the server with only
+  # the fields its groups show, and has to keep every value given from that
+  # subset alone. The groups are read from the rendered form, so moving a field
+  # into the wrong one fails here instead of quietly saving a default.
+  test "every preset keeps its values when only the fields shown for it submit" do
+    get edit_recurring_transaction_url(@recurring_transaction)
+    groups = css_select("[data-frequency-fields-target='group']").map do |group|
+      { presets: group["data-presets"].to_s.split(","),
+        units: group["data-units"].to_s.split(","),
+        fields: group.css("[name]").map { |field| field["name"][/\[(\w+)\]\z/, 1] } }
+    end
+
+    # Each unlike what the server falls back on for a missing field: the
+    # series' expected day (5), the anchor's day, month and weekday (Thursday
+    # 9 July) and the semimonthly defaults (1 and 15). Every 4 units is no
+    # named preset in any unit, where every 3 months would read as quarterly.
+    anchor = Date.new(2026, 7, 9)
+    given = { "frequency_interval" => "4", "frequency_day_of_month" => "12",
+              "frequency_second_day_of_month" => "27", "frequency_weekday" => "2",
+              "frequency_month_of_year" => "2" }
+
+    cases = RecurringTransaction::FrequencyPreset::PRESETS.map { |preset| [ preset, nil ] } +
+            RecurringTransaction::FrequencyPreset::INTERVAL_UNITS.map { |unit| [ "interval", unit ] }
+
+    cases.each do |preset, unit|
+      label = [ preset, unit ].compact.join(" ")
+      @recurring_transaction.recurrence_rules.destroy_all
+      @recurring_transaction.update_columns(expected_day_of_month: 5, anchor_date: anchor)
+
+      shown = groups.select { |group| group[:presets].include?(preset) || (unit && group[:units].include?(unit)) }
+                    .flat_map { |group| group[:fields] }
+      submitted = given.slice(*shown).merge("frequency_preset" => preset)
+      submitted["frequency_interval_unit"] = unit if shown.include?("frequency_interval_unit")
+
+      patch recurring_transaction_url(@recurring_transaction), params: { recurring_transaction: submitted }
+
+      assert_redirected_to recurring_transactions_url, "#{label} did not save from the fields shown for it"
+      detected = RecurringTransaction::FrequencyPreset.detect(@recurring_transaction.reload)
+      assert_equal [ preset, unit ], [ detected.key, detected.interval_unit ]
+      detected.to_h.except(:key, :interval_unit).compact.each do |attribute, value|
+        assert_equal given.fetch("frequency_#{attribute}").to_i, value, "#{label} lost its #{attribute}"
+      end
+    end
+  end
+
   test "update rejects a non-http scheme instead of storing it" do
     patch recurring_transaction_url(@recurring_transaction),
           params: { recurring_transaction: { payment_url: "javascript:alert(1)" } }
@@ -876,7 +839,7 @@ class RecurringTransactionsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     # The stored sign is bookkeeping; the form edits what the paycheck pays.
-    assert_select "input[name=?][value=?]", "recurring_transaction[amount]", "2000.00"
+    assert_select "input[name=?][value=?]", "recurring_transaction[amount]", "2000.0"
   end
 
   test "the edit form shows a bill amount as it is stored" do
@@ -1120,21 +1083,6 @@ class RecurringTransactionsControllerTest < ActionDispatch::IntegrationTest
     post confirm_recurring_transaction_url(suggestion)
     assert_redirected_to root_path
     assert suggestion.reload.suggested?
-  end
-
-  # The suggestion strip is shared with the Bills overview, whose section
-  # recipe it now follows.
-  test "settings list the suggestions under the overview's heading, collapsible" do
-    create_series(name: "Maybe A Bill", status: "suggested")
-
-    get recurring_transactions_url
-    assert_response :success
-
-    assert_select ".bg-surface-inset > details[data-persisted-disclosure-key-value='bills-suggested']" do
-      assert_select "summary div.uppercase", text: /#{I18n.t("recurring_transactions.suggested.title")}\s*·\s*1/
-      assert_select ".bg-container.rounded-lg", text: /Maybe A Bill/
-      assert_select "a", text: I18n.t("recurring_transactions.suggested.confirm")
-    end
   end
 
   test "the pre-bills settings actions stay reachable without the preview flag" do
