@@ -22,33 +22,13 @@ class OnchainWalletAccount::Processor
 
     security = resolve_security
     backfill_prices(security) if security
-    price = price_today(security)
-    amount = price ? value_at(price) : 0.to_d
+    price = security ? price_on(security, Date.current) : nil
+    amount = price ? (quantity * price).round(4) : 0.to_d
 
-    write_valuation(security, price, amount)
+    import_holding(security, price, amount) if security
+    update_balances(amount)
     materialize_movements(security) if security
     report_zero_valuation(security) if security && price.nil?
-  end
-
-  # Revalues an asset that did not move on chain at the latest stored price.
-  # @return [Boolean] whether the value changed
-  def revalue
-    return false unless account
-
-    security = resolve_security
-    price = price_today(security)
-    return false if price.nil?
-
-    amount = value_at(price)
-    return false if amount == account.balance && currency == account.currency
-
-    # Rolls the write back if the sync cannot be queued; the job itself is
-    # enqueued after commit (see ApplicationJob).
-    Account.transaction do
-      write_valuation(security, price, amount)
-      account.sync_later
-    end
-    true
   end
 
   # Converts movements that were recorded as display-only into trades, once a
@@ -73,7 +53,7 @@ class OnchainWalletAccount::Processor
     # throw), and the syncer's per-account rescue would otherwise skip this and
     # leave the chart with phantom cash until some unrelated sync ran. Zeroing a
     # legacy amount rewrites history, but only an account sync persists the
-    # recalculated balances, and an idle wallet may schedule none of its own.
+    # recalculated balances, and an idle wallet schedules none of its own.
     account.sync_later if amount_changed
 
     candidates = display_only_entries
@@ -96,19 +76,6 @@ class OnchainWalletAccount::Processor
 
     def quantity
       onchain_wallet_account.quantity.to_d
-    end
-
-    def price_today(security)
-      security ? price_on(security, Date.current) : nil
-    end
-
-    def value_at(price)
-      (quantity * price).round(4)
-    end
-
-    def write_valuation(security, price, amount)
-      import_holding(security, price, amount) if security
-      update_balances(amount)
     end
 
     def resolve_security
@@ -152,18 +119,19 @@ class OnchainWalletAccount::Processor
       (dates + [ Date.current ]).uniq
     end
 
+    # Find dates with recognized-currency prices available for wallet valuation.
     def priced_dates(security, dates)
-      @priced_dates ||= security.prices.where(date: dates.min..dates.max).pluck(:date).to_set
+      @priced_dates ||= security.prices.with_known_currency.where(date: dates.min..dates.max).pluck(:date).to_set
     end
 
     # The asset's price in the account's currency on (or most recently before)
     # a date, or nil when it isn't known. An asset with no price is tracked by
     # quantity and valued at zero rather than guessed at.
     def price_on(security, date)
-      price = security.prices.where(date: ..date).order(date: :desc).first
+      price = security.prices.with_known_currency.where(date: ..date).order(date: :desc).first
       return nil if price.nil?
 
-      convert(price.price.to_d, from: price.currency, date: date)
+      convert(price.price.to_d, from: Security::Price.normalized_currency(price.currency), date: date)
     end
 
     # Prices come from the crypto provider quoted in USD, so at most one
@@ -440,10 +408,10 @@ class OnchainWalletAccount::Processor
     # Trades need the price of that day, not the nearest one: valuing a
     # two-year-old transfer at today's price would invent a cost basis.
     def exact_price_on(security, date)
-      price = security.prices.find_by(date: date)
+      price = security.prices.with_known_currency.find_by(date: date)
       return nil if price.nil?
 
-      convert(price.price.to_d, from: price.currency, date: date)
+      convert(price.price.to_d, from: Security::Price.normalized_currency(price.currency), date: date)
     end
 
     # Stored payloads are written by this code, but a row that survived an older

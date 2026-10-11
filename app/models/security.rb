@@ -88,7 +88,6 @@ class Security < ApplicationRecord
 
   has_many :trades, dependent: :nullify, class_name: "Trade"
   has_many :prices, dependent: :destroy
-  has_many :splits, dependent: :destroy
 
   validates :ticker, presence: true
   validates :ticker, uniqueness: { scope: :exchange_operating_mic, case_sensitive: false }
@@ -249,19 +248,14 @@ class Security < ApplicationRecord
     self.class.exchange_name_for(exchange_operating_mic)
   end
 
+  # Return the latest usable quote, excluding legacy unrecognized currencies.
   def current_price
     @current_price ||= find_or_fetch_price
     return nil if @current_price.nil?
-    Money.new(@current_price.price, @current_price.currency)
+    Money.new(@current_price.price, Security::Price.normalized_currency(@current_price.currency))
   end
 
-  # How many shares one share held at the close of `from` has become by the
-  # close of `to`: the product of the ratios of splits whose ex-date falls
-  # after `from` and on or before `to`. 1 when there are none.
-  def split_factor_between(from, to)
-    splits.where(ex_date: (from + 1)..to).reduce(Rational(1)) { |factor, split| factor * split.ratio }
-  end
-
+  # Build a security choice using only prices that can be formatted as Money.
   def to_combobox_option
     ComboboxOption.new(
       symbol: ticker,

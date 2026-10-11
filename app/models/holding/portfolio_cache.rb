@@ -22,6 +22,7 @@ class Holding::PortfolioCache
     end
   end
 
+  # Select usable cached prices without letting malformed currencies abort portfolio valuation.
   def get_price(security_id, date, source: nil)
     security = @security_cache[security_id]
     raise SecurityNotFound.new(security_id, account.id) unless security
@@ -37,7 +38,7 @@ class Holding::PortfolioCache
     price = price_with_priority.price
     return nil unless price
 
-    price_money = Money.new(price.price, price.currency)
+    price_money = Money.new(price.price, Security::Price.normalized_currency(price.currency))
 
     begin
       converted_amount = price_money.exchange_to(account.currency, date: date).amount
@@ -57,60 +58,8 @@ class Holding::PortfolioCache
     @security_cache.map { |_, v| v[:security] }
   end
 
-  # The ratio of the split a security goes ex on this date, or nil when it
-  # has none. Nil, not 1, so a caller can leave an unsplit position untouched.
-  def get_split_ratio(security_id, date)
-    split_ratios[[ security_id, date ]]
-  end
-
-  # Every split within the account's history, oldest first.
-  def get_splits
-    splits
-  end
-
-  # How many shares one share held at the close of `from` has become by the
-  # close of `to`: the product of the ratios of the splits in between. 1 when
-  # there are none, so a caller can multiply unconditionally.
-  #
-  # Reads every split up to today, not only those within the account's
-  # history: a provider snapshot can be older than the account's first entry
-  # (an account with no entries starts yesterday), and a split between the
-  # snapshot and that start still changed the count it reported.
-  def split_factor_between(security_id, from, to)
-    return Rational(1) if from.nil? || to.nil? || from >= to
-
-    splits_through_today.reduce(Rational(1)) do |factor, split|
-      next factor unless split.security_id == security_id
-      next factor unless split.ex_date > from && split.ex_date <= to
-
-      factor * split.ratio
-    end
-  end
-
   private
     PriceWithPriority = Data.define(:price, :priority, :source)
-
-    # Only splits the holdings can see: from the account's start date, when
-    # its holdings begin, to today. A split announced for a future ex-date is
-    # not applied early; it takes effect when that date arrives.
-    def splits
-      @splits ||= Security::Split
-        .where(security_id: @security_cache.keys, ex_date: account.start_date..Date.current)
-        .order(:ex_date)
-        .to_a
-    end
-
-    # Every split up to today, however early, for carrying a snapshot forward.
-    def splits_through_today
-      @splits_through_today ||= Security::Split
-        .where(security_id: @security_cache.keys, ex_date: ..Date.current)
-        .order(:ex_date)
-        .to_a
-    end
-
-    def split_ratios
-      @split_ratios ||= splits.to_h { |split| [ [ split.security_id, split.ex_date ], split.ratio ] }
-    end
 
     def trades
       @trades ||= account.entries.includes(entryable: :security).trades.chronological.to_a
@@ -209,7 +158,26 @@ class Holding::PortfolioCache
           []
         end
 
-        all_prices = db_prices + trade_prices + holding_prices
+        all_prices, invalid_prices = (db_prices + trade_prices + holding_prices).partition do |candidate|
+          Security::Price.normalized_currency(candidate.price.currency).present?
+        end
+
+        if invalid_prices.any?
+          DebugLogEntry.capture(
+            category: "security_price_fetch",
+            level: "warn",
+            message: "Ignored portfolio prices with invalid currency",
+            source: self.class.name,
+            account: account,
+            metadata: {
+              security_id: security.id,
+              ticker: security.ticker,
+              count: invalid_prices.size,
+              dates: invalid_prices.map { |candidate| candidate.price.date }.uniq.first(10),
+              sources: invalid_prices.map(&:source).uniq
+            }
+          )
+        end
 
         # Index by date for O(1) lookup in get_price instead of O(N) linear scan
         prices_by_date = all_prices.group_by { |p| p.price.date }
