@@ -111,6 +111,7 @@ class Family::DataImporter
     Import.transaction do
       # Import in dependency order
       import_accounts(records["Account"] || [])
+      link_loan_collateral(records["Account"] || [])
       import_balances(records["Balance"] || [])
       import_categories(records["Category"] || [])
       import_tags(records["Tag"] || [])
@@ -351,6 +352,40 @@ class Family::DataImporter
       end
     end
 
+    # A loan's collateral is an account in the same export, so it can only be
+    # linked once every account exists and has its new id. In a single-file import
+    # a collateral id the file does not carry (the asset was left out of the
+    # export, or belongs to another family) leaves the loan unlinked rather than
+    # failing the import.
+    def link_loan_collateral(records)
+      records.each do |record|
+        data = record["data"] || {}
+        old_collateral_id = data.dig("accountable", "collateral_account_id")
+        next unless data["accountable_type"] == "Loan" && old_collateral_id.present?
+
+        loan_account = mapped_record(:accounts, data["id"], @family.accounts, record_type: "Account")
+        # Required, so a session import (chunked, strict) raises on a reference that
+        # has not been imported yet, as every other reference does, instead of
+        # dropping the link. A single-file import leaves such a loan unlinked.
+        collateral_id = mapped_id(:accounts, old_collateral_id, record_type: "Account", required: true)
+        next if loan_account.blank? || collateral_id.blank?
+
+        loan = loan_account.loan
+        next if loan.collateral_account_id == collateral_id
+        next if loan.update(collateral_account_id: collateral_id)
+
+        DebugLogEntry.capture(
+          category: "import",
+          level: "warn",
+          message: "Loan collateral not linked on import: #{loan.errors.full_messages.to_sentence}",
+          source: "Family::DataImporter",
+          family: @family,
+          account: loan_account,
+          metadata: { source_account_id: data["id"], source_collateral_account_id: old_collateral_id }
+        )
+      end
+    end
+
     def importable_account_status(status)
       status.to_s.in?(%w[active disabled draft]) ? status.to_s : "active"
     end
@@ -503,15 +538,9 @@ class Family::DataImporter
 
     # ProviderMerchant rows share the :merchants id-mapping namespace with
     # Merchant, so Transaction/RecurringTransaction merchant_id resolution below
-    # needs no changes to accept either source.
-    #
-    # A ProviderMerchant is shared by every family on the instance, and bank syncs
-    # find it by provider_merchant_id, which most providers derive from the payee
-    # name (e.g. "simplefin_" + MD5 of it). So an import only reuses one that
-    # already exists, as-is, and never creates one: otherwise any user could
-    # choose the name, logo and website that other families' synced transactions
-    # attach to. A merchant the instance does not know yet becomes this family's
-    # own FamilyMerchant.
+    # needs no changes to accept either source. A ProviderMerchant is shared
+    # across every family on the instance, so an existing match is reused as-is:
+    # an import never writes to a record it did not create.
     def import_provider_merchants(records)
       records.each do |record|
         data = record["data"]
@@ -525,20 +554,32 @@ class Family::DataImporter
           next
         end
 
-        if (merchant = ProviderMerchant.find_by_import_data(data, source))
-          increment_summary("ProviderMerchant", :updated)
-        else
-          merchant, created = FamilyMerchant.find_or_create_with_name(
-            @family,
-            data["name"],
-            logo_url: data["logo_url"],
-            website_url: data["website_url"]
-          )
-          increment_summary("ProviderMerchant", created ? :created : :updated)
-        end
+        merchant = ProviderMerchant.find_by_import_data(data, source)
+        merchant ||= create_provider_merchant(data, source)
+        created = merchant.previously_new_record?
 
         map_source!(:merchants, old_id, merchant)
+        increment_summary("ProviderMerchant", created ? :created : :updated)
       end
+    end
+
+    # ProviderMerchant does not support color, so a color in the file is not read.
+    # The savepoint keeps a lost race from aborting the surrounding import transaction.
+    # A race usually surfaces as the name-uniqueness validation (RecordInvalid) rather
+    # than the index (RecordNotUnique); either way, reuse the winner if it exists and
+    # let anything else propagate.
+    def create_provider_merchant(data, source)
+      ProviderMerchant.transaction(requires_new: true) do
+        ProviderMerchant.create!(
+          name: data["name"],
+          source: source,
+          provider_merchant_id: data["provider_merchant_id"].presence,
+          logo_url: data["logo_url"],
+          website_url: data["website_url"]
+        )
+      end
+    rescue ActiveRecord::RecordNotUnique, ActiveRecord::RecordInvalid
+      ProviderMerchant.find_by_import_data(data, source) || raise
     end
 
     def import_recurring_transactions(records)
@@ -1479,8 +1520,6 @@ class Family::DataImporter
 
     def resolve_multi_tag_action_value(action_data)
       value_ref = action_data["value_ref"]
-      validate_rule_text!(value_ref, field: "value_ref")
-      validate_rule_text!(action_data["value"], field: "value")
       refs = case value_ref
       when Array then value_ref
       when Hash then [ value_ref ]
@@ -1533,8 +1572,6 @@ class Family::DataImporter
 
     def rule_operand_value(data)
       raw_value = data["value"]
-      validate_rule_text!(raw_value, field: "value")
-      validate_rule_text!(data["value_ref"], field: "value_ref")
       value = raw_value.is_a?(String) ? raw_value.presence : raw_value
       value_ref_name = data.dig("value_ref", "name")
 
@@ -1542,12 +1579,6 @@ class Family::DataImporter
       return value unless value.nil?
 
       value_ref_name
-    end
-
-    def validate_rule_text!(value, field:)
-      return if DatabaseTextValidator.acceptable?(value)
-
-      raise InvalidRecordError.new(record_type: "Rule", field: field, value: "(invalid text)")
     end
 
     def uuid_like?(value)

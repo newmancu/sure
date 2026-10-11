@@ -47,6 +47,16 @@ class Loan < ApplicationRecord
   normalizes :insurance_rate_type, with: ->(value) { value.presence }
   validates :insurance_rate_type, inclusion: { in: Loan::Insurance::RATE_TYPES }, allow_nil: true
 
+  # The account types a loan can be secured by.
+  COLLATERAL_ACCOUNTABLE_TYPES = %w[Property Vehicle].freeze
+
+  # The asset that secures this loan, if the owner has said so. Optional, and
+  # judged only when the link itself changes: the loan form resubmits the id it
+  # already holds on every edit, so a validation that ran on every save would
+  # reject any edit of a loan whose asset has since become ineligible.
+  belongs_to :collateral_account, class_name: "Account", optional: true
+  validate :collateral_account_is_eligible, if: :will_save_change_to_collateral_account_id?
+
   # How much was borrowed for every unit the borrower put in. Nil without a
   # down payment recorded: a loan with no deposit is not infinitely leveraged,
   # it is a loan whose leverage nobody has told us.
@@ -465,6 +475,109 @@ class Loan < ApplicationRecord
     return Money.new(recorded_principal, account.currency) if recorded_principal&.positive?
 
     Money.new(account.first_valuation_amount, account.currency)
+  end
+
+  # Everyone who can see the loan's account, or will once it is saved: the rule
+  # behind the collateral link.
+  def self.viewers_of(loan_account)
+    users = loan_account.family.users
+    # A new account in a family that shares by default is visible to everyone in
+    # it the moment it exists, but its shares are written after validation.
+    return users.to_a if loan_account.new_record? && loan_account.family.share_all_by_default?
+
+    users.select { |user| loan_account.shared_with?(user) }
+  end
+
+  # The account this loan is being saved through, when it is. `loan.account` is
+  # read from the database (and is nil for a loan being created), so on a save
+  # through the account it describes the account as it WAS: a request that changes
+  # the currency and the collateral together would be judged on the old currency.
+  # Account hands itself over before validating; a loan saved on its own falls
+  # back to `account`.
+  attr_writer :owning_account
+
+  def owning_account
+    @owning_account || account
+  end
+
+  # What is wrong with the link as it stands: an id that names no account is
+  # refused here, as the foreign key would otherwise raise it as a server error,
+  # and a blank id is simply no link. Used by the validation and, for a loan being
+  # created, by Account.
+  def collateral_problems(loan_account: owning_account)
+    return [] if collateral_account_id.blank?
+    return [ "does not exist" ] if collateral_account.nil?
+
+    collateral_ineligibilities_for(collateral_account, loan_account: loan_account)
+  end
+
+  # Why `account` cannot secure this loan; empty when it can. The one definition
+  # shared by the validation and by the form's candidate list, so the list never
+  # offers an account the save would refuse.
+  #
+  # The checks that need the loan's own account are skipped until it exists: a
+  # loan being created is validated before it is attached to one.
+  # `viewers` lets a caller judging many accounts against one loan work the
+  # loan's viewers out once instead of once per account.
+  def collateral_ineligibilities_for(account, loan_account: owning_account, viewers: nil)
+    return [] if account.nil?
+
+    unless COLLATERAL_ACCOUNTABLE_TYPES.include?(account.accountable_type)
+      return [ "must be a property or vehicle" ]
+    end
+
+    problems = []
+
+    if loan_account&.family
+      # Another family's account has no standing to be visible to this one's
+      # viewers, so the family is the only thing worth saying about it.
+      return [ "must belong to the same family as the loan" ] unless account.family_id == loan_account.family_id
+
+      problems << "must use the same currency as the loan" unless account.currency == loan_account.currency
+
+      invisible = (viewers || collateral_viewers(loan_account)).reject { |user| account.shared_with?(user) }
+      if invisible.any?
+        problems << "must be visible to every loan viewer (missing: #{invisible.map(&:display_name).join(", ")})"
+      end
+    end
+
+    problems
+  end
+
+  # The accounts a viewer may pick as this loan's collateral: assets of the right
+  # type in the loan's family that they can see and that the save would accept.
+  # `family` and `currency` describe the account a new loan will be created on,
+  # which does not exist yet: the list judges against that account as the save
+  # will build it (the viewer as its owner, the family's currency when none is
+  # given), so the currency and visibility checks apply to a new loan too.
+  def self.collateral_candidates_for(loan, viewer:, family: nil, currency: nil)
+    family ||= loan.account&.family
+    return Account.none unless family && viewer
+
+    # Ids rather than records, so the stand-in is not added to the family's or
+    # the viewer's loaded associations.
+    loan_account = loan.owning_account ||
+      Account.new(family_id: family.id, owner_id: viewer.id, currency: currency.presence || family.currency)
+
+    scope = Account.accessible_by(viewer).visible
+      .where(family_id: family.id, accountable_type: COLLATERAL_ACCOUNTABLE_TYPES)
+
+    viewers = loan.send(:collateral_viewers, loan_account)
+    scope.order(:name)
+      .select { |candidate| loan.collateral_ineligibilities_for(candidate, loan_account: loan_account, viewers: viewers).empty? }
+  end
+
+  # Rejects an unknown or ineligible collateral account, so the form can show the
+  # reason rather than the database raising at the user.
+  private def collateral_account_is_eligible
+    collateral_problems.each { |problem| errors.add(:collateral_account, problem) }
+  end
+
+  # The collateral link answers to every viewer of the loan: a link the loan's
+  # viewers could not follow would show them a figure from an account they
+  # cannot see.
+  private def collateral_viewers(loan_account)
+    Loan.viewers_of(loan_account)
   end
 
   private def payment_ratios(payment, premium, total)
