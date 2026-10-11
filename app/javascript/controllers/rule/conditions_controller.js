@@ -2,7 +2,7 @@ import { Controller } from "@hotwired/stimulus";
 
 // Connects to data-controller="rule--conditions"
 export default class extends Controller {
-  static values = { conditionFilters: Array, valuelessOperators: Array };
+  static values = { conditionFilters: Array };
   static targets = [
     "destroyField",
     "filterValue",
@@ -12,7 +12,7 @@ export default class extends Controller {
   ];
 
   connect() {
-    // Hide value field on initial load for valueless operators (e.g. "is_null")
+    // Hide value field on initial load if operator is "is_null"
     this.#toggleValueFieldVisibility();
   }
 
@@ -123,14 +123,13 @@ export default class extends Controller {
   }
 
   #uniqueKey() {
-    this.keySequence = (this.keySequence ?? 0) + 1;
-    return Date.now() * 1000 + this.keySequence;
+    return Date.now();
   }
 
   #toggleValueFieldVisibility() {
     const operator = this.operatorSelectTarget.value;
 
-    if (this.valuelessOperatorsValue.includes(operator)) {
+    if (operator === "is_null") {
       this.filterValueTarget.classList.add("hidden");
       // Clear the value since it's not needed
       if (this.valueInputEl) {

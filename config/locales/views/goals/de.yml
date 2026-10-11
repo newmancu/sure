@@ -16,6 +16,7 @@ de:
     create:
       success: Ziel erstellt.
     destroy:
+      archive_first: Archivier das Ziel, bevor du es löschst.
       success: Ziel gelöscht.
     edit:
       heading: Ziel bearbeiten
@@ -47,7 +48,7 @@ de:
         notes_placeholder: Eine Erinnerung an dein späteres Ich …
         target_amount: Zielbetrag
         target_date: Zieldatum
-        whole_balance: "Leer: ganzer Saldo"
+        whole_balance: Ganzer Saldo
       save: Änderungen speichern
       subtypes:
         cd: Festgeld
@@ -184,10 +185,7 @@ de:
       confirm_complete_body_short: Du stehst bei %{progress} %, also %{saved} von %{target}. Wenn du abschließt, wird dieser Stand als dein Ergebnis festgehalten statt des ursprünglichen Ziels. Weiter, oder lieber schließen und das Ziel anpassen?
       confirm_complete_cta: Als erreicht markieren
       confirm_complete_title: Dieses Ziel als erreicht markieren?
-      confirm_delete_body: "%{name} und der zugehörige Verlauf der Zusagen werden endgültig entfernt. Deine verknüpften Konten, Salden und Transaktionen sind davon nicht betroffen. Wenn du es stattdessen als Beleg behalten willst, archivier es."
-      confirm_delete_cta: Ziel löschen
-      confirm_delete_title: Dieses Ziel löschen?
-      delete: Löschen
+      delete: Endgültig löschen
       edit: Bearbeiten
       empty:
         body: Überweis Geld auf dein verknüpftes Konto. Sure erkennt es beim nächsten Sync. Oder aktualisier den Saldo deines manuellen Kontos.
