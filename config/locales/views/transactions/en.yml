@@ -12,10 +12,13 @@ en:
         merchant_prompt: Select a merchant
         name_label: Name
         name_placeholder: Enter a name that will be applied to selected transactions
+        no_change: (no change)
         none: "(none)"
         notes_label: Notes
         notes_placeholder: Enter a note that will be applied to selected transactions
         overview: Overview
+        reconciled_status_hint: Only applies to manually-entered accounts (no bank sync).
+        reconciled_status_label: Reconciliation status
         save: Save
         tags_label: Tags
         transactions_section: Transactions
@@ -23,6 +26,7 @@ en:
     selection_bar:
       duplicate: Duplicate
       edit: Edit
+      reconcile: Reconcile
       selected: selected
     form:
       details: Details
@@ -35,9 +39,6 @@ en:
       category_search_placeholder: Search categories
       create_category: 'Create "%{name}"'
       create_category_error: Could not create category
-      create_as_subcategory: Add as a subcategory…
-      choose_parent: 'Create "%{name}" under:'
-      back_to_categories: Back
       date: Date
       description: Description
       description_placeholder: Describe transaction
@@ -61,11 +62,7 @@ en:
       updated: Transaction updated
     new:
       new_transaction: New transaction
-    transaction_category:
-      set_on_outflow: "The category belongs to the outgoing side of this transfer and can only be changed there"
     show:
-      category_set_on_hidden_outflow: "This is the incoming side of a transfer. Its category belongs to the outgoing side, on an account you cannot access, and can only be changed there."
-      category_set_on_outflow: "This is the incoming side of a transfer. Its category belongs to the outgoing side and can only be changed there, so budgets count it once."
       keep_both: No, keep both
       loan_payment: Loan Payment
       mark_recurring: Mark as Recurring
@@ -118,28 +115,7 @@ en:
       payee: "Payee"
       description: "Description"
       memo: "Memo"
-      original_description: "Original description"
-      payment_channel: "Payment channel"
-      transaction_code: "Transaction code"
       provider_extras: "Provider extras"
-      plaid_payment_meta_label: "Payment meta · %{name}"
-      plaid_counterparty_label: "Counterparty %{index}"
-      # Provider field names. The set is open-ended — anything not listed falls
-      # back to a humanized form of the provider's own identifier.
-      provider_extra_fields:
-        by_order_of: "By order of"
-        confidence_level: "Confidence level"
-        entity_id: "Entity ID"
-        logo_url: "Logo URL"
-        name: "Name"
-        payee: "Payee"
-        payer: "Payer"
-        phone_number: "Phone number"
-        ppd_id: "PPD ID"
-        reason: "Reason"
-        reference_number: "Reference number"
-        type: "Type"
-        website: "Website"
       transfer_or_debt_payment: "Transfer or Debt Payment?"
       open_matcher: "Open matcher"
       convert: "Convert"
@@ -190,6 +166,18 @@ en:
     dismiss_duplicate:
       success: Kept as separate transactions
       failure: Could not dismiss duplicate suggestion
+    reconcile:
+      success: Marked as %{status}
+      failure: Could not update reconciliation status
+      not_manual_account: Reconciliation status only applies to manually-entered accounts (no bank sync)
+      statuses:
+        unreconciled: Unreconciled
+        cleared: Cleared
+        reconciled: Reconciled
+      badge:
+        unreconciled_tooltip: "Not yet checked against a statement. Click to mark as cleared."
+        cleared_tooltip: "Confirmed on a statement, not yet fully reconciled. Click to mark as reconciled."
+        reconciled_tooltip: "Statement period fully reconciled. Click to reset to unreconciled."
     pending_duplicate_merge:
       possible_duplicate: Duplicate?
       possible_duplicate_short: Dup?
@@ -269,11 +257,11 @@ en:
         date: Date
         type: Type
         status: Status
+        reconcile_status: Reconciliation
         amount: Amount
         category: Category
         tag: Tag
         merchant: Merchant
-        ai: AI
     convert_to_trade:
       title: Convert to Security Trade
       description: Convert this transaction into a trade with security details
@@ -342,13 +330,6 @@ en:
           transfer: Transfer
           confirmed: Confirmed
           pending: Pending
-          ai_current: AI
-          ai_history: AI history
-        ai_filter:
-          current: AI
-          current_description: Category is still the one assigned automatically (AI or Bayes).
-          history: AI history
-          history_description: Was auto-categorized, but the category has been changed since.
         type_filter:
           expense: Expense
           income: Income
@@ -365,6 +346,7 @@ en:
         clear_filters: Clear filters
         date_filter: Date
         merchant_filter: Merchant
+        reconcile_status_filter: Reconciliation
         status_filter: Status
         tag_filter: Tag
         type_filter: Type
