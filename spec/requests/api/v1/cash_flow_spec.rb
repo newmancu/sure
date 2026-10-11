@@ -34,25 +34,20 @@ RSpec.describe 'API V1 Cash Flow', type: :request do
   let(:'X-Api-Key') { api_key.plain_key }
 
   path '/api/v1/cash_flow' do
-    get 'Show cash flow and optional Sankey graph' do
+    get 'Show monthly cash flow' do
       tags 'Cash Flow'
-      description 'Server-calculated income, spending, savings, and daily cumulative comparison in family currency. Uses the authenticated user’s finance accounts and Sure reporting rules. Browser sessions do not authenticate this public API.'
+      description 'Server-calculated income, spending, savings, and daily cumulative comparison in family currency. Uses the authenticated user’s finance accounts and Sure reporting rules.'
       parameter name: :month, in: :query, required: false, schema: { type: :string, format: :date }, description: 'Non-future first day YYYY-MM-01; defaults to the current month in the family time zone.'
-      parameter name: :include, in: :query, required: false, schema: { type: :string, enum: [ 'sankey' ] }, description: 'Append server-calculated graph to the monthly summary; cannot combine with view.'
-      parameter name: :view, in: :query, required: false, schema: { type: :string, enum: [ 'sankey' ] }, description: 'Graph-only envelope; omits daily comparison. Accepts month or an explicit date range; cannot combine with include.'
-      parameter name: :group_by, in: :query, required: false, schema: { type: :string, enum: %w[category account], default: 'category' }, description: 'Requires view=sankey. category: flows through one Cash Flow node; account: income categories flow through each account to expense categories (basis net_by_account).'
-      parameter name: :start_date, in: :query, required: false, schema: { type: :string, format: :date }, description: 'Inclusive ISO date. Requires end_date and view=sankey; cannot combine with month.'
-      parameter name: :end_date, in: :query, required: false, schema: { type: :string, format: :date }, description: 'Inclusive ISO date at or after start_date. Explicit ranges preserve their bounds, including future dates.'
       security [ { apiKeyAuth: [] } ]
       produces 'application/json'
 
       response '200', 'summary returned' do
-        schema anyOf: [ { '$ref' => '#/components/schemas/CashFlow' }, { '$ref' => '#/components/schemas/CashFlowGraph' } ]
+        schema '$ref' => '#/components/schemas/CashFlow'
 
         run_test!
       end
 
-      response '422', 'invalid query' do
+      response '422', 'invalid month' do
         schema '$ref' => '#/components/schemas/ErrorResponse'
         let(:month) { 'invalid' }
         run_test!
