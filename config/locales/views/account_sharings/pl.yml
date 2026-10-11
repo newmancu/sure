@@ -2,31 +2,30 @@
 pl:
   account_sharings:
     show:
-      exclude_from_finances: Wykluczaj z moich budżetów i raportów
-      finance_toggle_description: Uwzględniaj to konto w majątku netto, budżetach
-        i raportach
-      include_in_finances: Uwzględniaj w moich budżetach i raportach
+      title: Udostępnianie konta
+      subtitle: Zarządzaj tym, kto może przeglądać i używać tego konta
       member: Członek
-      no_members: Brak innych członków w Twoim %{moniker}, którym można udostępnić
-      owner_label: 'Właściciel: %{name}'
       permission: Uprawnienie
+      shared: Udostępnione
+      no_members: Brak innych członków w Twoim %{moniker}, którym można udostępnić
       permissions:
         full_control: Pełna kontrola
         full_control_description: Może przeglądać, edytować i zarządzać transakcjami
-        read_only: Tylko podgląd
-        read_only_description: Może tylko przeglądać dane konta
         read_write: Odczyt i zapis
         read_write_description: Może kategoryzować, tagować i dodawać notatki
+        read_only: Tylko podgląd
+        read_only_description: Może tylko przeglądać dane konta
       save: Zapisz ustawienia udostępniania
-      shared: Udostępnione
+      owner_label: 'Właściciel: %{name}'
       shared_with_count:
+        one: Udostępniono 1 członkowi
         few: Udostępniono %{count} członkom
         many: Udostępniono %{count} członkom
-        one: Udostępniono 1 członkowi
         other: Udostępniono %{count} członkom
-      subtitle: Zarządzaj tym, kto może przeglądać i używać tego konta
-      title: Udostępnianie konta
+      include_in_finances: Uwzględniaj w moich budżetach i raportach
+      exclude_from_finances: Wykluczaj z moich budżetów i raportów
+      finance_toggle_description: Uwzględniaj to konto w majątku netto, budżetach i raportach
     update:
-      finance_toggle_success: Zaktualizowano preferencję uwzględniania w finansach
-      not_owner: Tylko właściciel konta może zarządzać udostępnianiem
       success: Zaktualizowano ustawienia udostępniania
+      not_owner: Tylko właściciel konta może zarządzać udostępnianiem
+      finance_toggle_success: Zaktualizowano preferencję uwzględniania w finansach
