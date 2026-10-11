@@ -1,5 +1,5 @@
 class DS::FilledIcon < DesignSystemComponent
-  attr_reader :icon, :text, :hex_color, :size, :rounded, :variant, :description, :aria_hidden, :text_length, :class_name
+  attr_reader :icon, :text, :hex_color, :size, :rounded, :variant, :description, :aria_hidden
 
   VARIANTS = %i[default text surface container inverse].freeze
 
@@ -35,7 +35,7 @@ class DS::FilledIcon < DesignSystemComponent
   # "Apple" → "A"). The single letter is decorative — relying on AT
   # users to infer "Apple" from "A" is broken. Use `description:` to
   # surface the full label, or ensure the adjacent text node carries it.
-  def initialize(variant: :default, icon: nil, text: nil, hex_color: nil, size: "md", rounded: false, description: nil, aria_hidden: nil, text_length: 1, class_name: nil)
+  def initialize(variant: :default, icon: nil, text: nil, hex_color: nil, size: "md", rounded: false, description: nil, aria_hidden: nil)
     @variant = variant.to_sym
     @icon = icon
     @text = text
@@ -44,8 +44,6 @@ class DS::FilledIcon < DesignSystemComponent
     @rounded = rounded
     @description = description.presence
     @aria_hidden = aria_hidden.nil? ? @description.blank? : aria_hidden
-    @text_length = text_length
-    @class_name = class_name
   end
 
   def container_classes
@@ -53,8 +51,7 @@ class DS::FilledIcon < DesignSystemComponent
       "flex justify-center items-center shrink-0",
       size_classes,
       radius_classes,
-      transparent? ? "border" : solid_bg_class,
-      class_name
+      transparent? ? "border" : solid_bg_class
     )
   end
 
