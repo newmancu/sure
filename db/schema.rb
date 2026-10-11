@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_29_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pgcrypto"
@@ -372,7 +372,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
     t.index ["budget_id", "category_id"], name: "index_budget_categories_on_budget_id_and_category_id", unique: true
     t.index ["budget_id"], name: "index_budget_categories_on_budget_id"
     t.index ["category_id"], name: "index_budget_categories_on_category_id"
-    t.check_constraint "rolled_over_amount >= 0::numeric", name: "chk_budget_categories_rolled_over_amount_non_negative"
   end
 
   create_table "budget_shares", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
@@ -1123,6 +1122,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
     t.check_constraint "allocated_amount IS NULL OR allocated_amount >= 0::numeric", name: "chk_goal_accounts_allocation_non_negative"
   end
 
+  create_table "goal_expense_categories", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "category_id", null: false
+    t.datetime "created_at", null: false
+    t.uuid "goal_id", null: false
+    t.datetime "updated_at", null: false
+    t.index ["category_id"], name: "index_goal_expense_categories_on_category_id"
+    t.index ["goal_id", "category_id"], name: "index_goal_expense_categories_on_goal_id_and_category_id", unique: true
+    t.index ["goal_id"], name: "index_goal_expense_categories_on_goal_id"
+  end
+
   create_table "goal_pledges", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.uuid "account_id", null: false
     t.decimal "amount", precision: 19, scale: 4, null: false
@@ -1151,11 +1160,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
     t.string "currency", null: false
     t.uuid "family_id", null: false
     t.string "icon"
+    t.boolean "include_uncategorized_expenses", default: false, null: false
     t.string "kind", default: "one_off", null: false
     t.string "name", null: false
     t.text "notes"
     t.string "progress_basis", default: "balance", null: false
     t.string "state", default: "active", null: false
+    t.uuid "tag_id"
     t.decimal "target_amount", precision: 19, scale: 4, null: false
     t.date "target_date"
     t.string "target_mode", default: "fixed", null: false
@@ -1163,6 +1174,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
     t.datetime "updated_at", null: false
     t.index ["family_id", "state"], name: "index_goals_on_family_id_and_state"
     t.index ["family_id"], name: "index_goals_on_family_id"
+    t.index ["tag_id"], name: "index_goals_on_tag_id"
     t.check_constraint "char_length(name::text) <= 255", name: "chk_savings_goals_name_length"
     t.check_constraint "consumed_amount >= 0::numeric", name: "chk_goals_consumed_amount_non_negative"
     t.check_constraint "kind::text = ANY (ARRAY['one_off'::character varying::text, 'maintained'::character varying::text])", name: "chk_goals_kind_enum"
@@ -1593,7 +1605,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
     t.jsonb "variable_rate_schedule", default: {}, null: false
     t.check_constraint "down_payment IS NULL OR down_payment >= 0::numeric", name: "chk_loans_down_payment_non_negative"
     t.check_constraint "insurance_rate IS NULL OR insurance_rate >= 0::numeric", name: "chk_loans_insurance_rate_non_negative"
-    t.check_constraint "insurance_rate_type IS NULL OR (insurance_rate_type::text = ANY (ARRAY['level_term'::character varying::text, 'decreasing_life'::character varying::text]))", name: "chk_loans_insurance_rate_type"
+    t.check_constraint "insurance_rate_type IS NULL OR (insurance_rate_type::text = ANY (ARRAY['level_term'::character varying, 'decreasing_life'::character varying]::text[]))", name: "chk_loans_insurance_rate_type"
   end
 
   create_table "lunchflow_accounts", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
@@ -1611,7 +1623,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
     t.jsonb "raw_holdings_payload"
     t.jsonb "raw_payload"
     t.jsonb "raw_transactions_payload"
-    t.boolean "treat_balance_as_available_credit", default: false, null: false
     t.datetime "updated_at", null: false
     t.index ["account_id"], name: "index_lunchflow_accounts_on_account_id"
     t.index ["lunchflow_item_id", "account_id"], name: "index_lunchflow_accounts_on_item_and_account_id", unique: true, where: "(account_id IS NOT NULL)"
@@ -2333,20 +2344,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
     t.index ["security_id"], name: "index_security_prices_on_security_id"
   end
 
-  create_table "security_splits", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
-    t.datetime "created_at", null: false
-    t.integer "denominator", null: false
-    t.date "ex_date", null: false
-    t.integer "numerator", null: false
-    t.uuid "security_id", null: false
-    t.string "source", null: false
-    t.datetime "updated_at", null: false
-    t.index ["security_id", "ex_date"], name: "index_security_splits_on_security_id_and_ex_date", unique: true
-    t.index ["security_id"], name: "index_security_splits_on_security_id"
-    t.check_constraint "numerator <> denominator", name: "security_splits_not_one_to_one"
-    t.check_constraint "numerator > 0 AND denominator > 0", name: "security_splits_positive_terms"
-  end
-
   create_table "sessions", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.uuid "active_impersonator_session_id"
     t.datetime "created_at", null: false
@@ -2640,7 +2637,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
 
   create_table "tool_calls", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.datetime "created_at", null: false
-    t.jsonb "extra_content"
     t.jsonb "function_arguments"
     t.string "function_name"
     t.jsonb "function_result"
@@ -2685,7 +2681,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
     t.boolean "scheduled_for_deletion", default: false, null: false
     t.text "session_blob"
     t.string "status", default: "good", null: false
-    t.jsonb "timeline_cursors", default: {}, null: false
     t.datetime "updated_at", null: false
     t.index ["family_id", "brokerage_account_id"], name: "index_trade_republic_items_on_family_id_and_brokerage_account", unique: true, where: "((brokerage_account_id IS NOT NULL) AND (scheduled_for_deletion = false))"
     t.index ["family_id"], name: "index_trade_republic_items_on_family_id"
@@ -3016,10 +3011,13 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
   add_foreign_key "fio_items", "families"
   add_foreign_key "goal_accounts", "accounts", on_delete: :restrict
   add_foreign_key "goal_accounts", "goals", on_delete: :cascade
+  add_foreign_key "goal_expense_categories", "categories"
+  add_foreign_key "goal_expense_categories", "goals"
   add_foreign_key "goal_pledges", "accounts", on_delete: :restrict
   add_foreign_key "goal_pledges", "goals", on_delete: :cascade
   add_foreign_key "goal_pledges", "transactions", column: "matched_transaction_id", on_delete: :nullify
   add_foreign_key "goals", "families", on_delete: :cascade
+  add_foreign_key "goals", "tags"
   add_foreign_key "holdings", "account_providers"
   add_foreign_key "holdings", "accounts", on_delete: :cascade
   add_foreign_key "holdings", "securities"
@@ -3092,7 +3090,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
   add_foreign_key "rule_runs", "rules"
   add_foreign_key "rules", "families"
   add_foreign_key "security_prices", "securities"
-  add_foreign_key "security_splits", "securities", on_delete: :cascade
   add_foreign_key "sessions", "impersonation_sessions", column: "active_impersonator_session_id", on_delete: :nullify
   add_foreign_key "sessions", "users"
   add_foreign_key "simplefin_accounts", "simplefin_items"
