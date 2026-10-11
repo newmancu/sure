@@ -588,26 +588,22 @@ class User < ApplicationRecord
     preferences&.[]("last_seen_release_tag")
   end
 
-  def release_seen?(tag)
-    tag == last_seen_release_tag || Array(preferences&.[]("seen_release_tags")).include?(tag)
-  end
-
   def mark_release_seen!(tag)
-    parsed_release_tag_version!(tag)
+    tag_version = parsed_release_tag_version!(tag)
 
     with_lock do
-      # Acknowledgement is about identity, not version precedence: hotfix tags
-      # sort before their base release, and users can switch release channels.
-      # Merge after reloading under the lock so stale tabs cannot lose tags.
-      seen_tags = Array(preferences&.[]("seen_release_tags"))
-      legacy_tag = last_seen_release_tag
-      seen_tags += [ legacy_tag ] if parsed_release_tag_version(legacy_tag)
-      seen_tags = (seen_tags + [ tag ]).uniq
+      current = last_seen_release_tag
 
-      update!(preferences: (preferences || {}).merge(
-        "seen_release_tags" => seen_tags,
-        "last_seen_release_tag" => tag
-      ))
+      # Never regress the marker: a stale tab (or an old app version during a
+      # rolling deploy) must not make an already-acknowledged release look
+      # unseen again. A previously stored malformed tag is overwritten by the
+      # next valid dismissal so the account can recover.
+      if current
+        current_version = parsed_release_tag_version(current)
+        next if current_version && tag_version < current_version
+      end
+
+      update!(preferences: (preferences || {}).merge("last_seen_release_tag" => tag))
     end
   end
 
@@ -651,14 +647,6 @@ class User < ApplicationRecord
   # Per-widget height preset override ("compact" | "auto" | "tall"); nil = use default.
   def dashboard_section_height(section_key)
     preferences&.dig("dashboard_section_layout", section_key, "height")
-  end
-
-  CASHFLOW_SANKEY_GROUPINGS = IncomeStatement::CashFlowGraph::GROUPINGS.keys.freeze
-
-  # Preview cash-flow Sankey: flows by category (default) or through each account.
-  def cashflow_sankey_group_by
-    group_by = preferences&.dig("cashflow_sankey_group_by")
-    CASHFLOW_SANKEY_GROUPINGS.include?(group_by) ? group_by : "category"
   end
 
   # Per-widget column-span override ("single" | "full"); nil = use default.
