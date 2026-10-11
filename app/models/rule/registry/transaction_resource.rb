@@ -1,26 +1,19 @@
 class Rule::Registry::TransactionResource < Rule::Registry
-  CONDITION_FILTER_CLASSES = [
-    Rule::ConditionFilter::TransactionName,
-    Rule::ConditionFilter::TransactionAmount,
-    Rule::ConditionFilter::TransactionType,
-    Rule::ConditionFilter::TransactionMerchant,
-    Rule::ConditionFilter::TransactionCategory,
-    Rule::ConditionFilter::TransactionTag,
-    Rule::ConditionFilter::TransactionDetails,
-    Rule::ConditionFilter::TransactionNotes,
-    Rule::ConditionFilter::TransactionAccount
-  ].freeze
-
-  def self.condition_filter_keys
-    CONDITION_FILTER_CLASSES.map(&:key)
-  end
-
   def resource_scope
     family.transactions.visible.with_entry.merge(Entry.excluding_split_parents).where(entry: { date: rule.effective_date.. })
   end
 
   def condition_filters
-    CONDITION_FILTER_CLASSES.map { |filter_class| filter_class.new(rule) }
+    [
+      Rule::ConditionFilter::TransactionName.new(rule),
+      Rule::ConditionFilter::TransactionAmount.new(rule),
+      Rule::ConditionFilter::TransactionType.new(rule),
+      Rule::ConditionFilter::TransactionMerchant.new(rule),
+      Rule::ConditionFilter::TransactionCategory.new(rule),
+      Rule::ConditionFilter::TransactionDetails.new(rule),
+      Rule::ConditionFilter::TransactionNotes.new(rule),
+      Rule::ConditionFilter::TransactionAccount.new(rule)
+    ]
   end
 
   def action_executors
@@ -35,11 +28,8 @@ class Rule::Registry::TransactionResource < Rule::Registry
       Rule::ActionExecutor::SendEmailNotification.new(rule)
     ]
 
-    if auto_categorization_enabled? || existing_action?("auto_categorize")
+    if ai_enabled?
       enabled_executors << Rule::ActionExecutor::AutoCategorize.new(rule)
-    end
-
-    if auto_merchant_detection_enabled? || existing_action?("auto_detect_merchants")
       enabled_executors << Rule::ActionExecutor::AutoDetectMerchants.new(rule)
     end
 
@@ -47,15 +37,7 @@ class Rule::Registry::TransactionResource < Rule::Registry
   end
 
   private
-    def auto_categorization_enabled?
-      family.resolved_categorization_provider.present?
-    end
-
-    def auto_merchant_detection_enabled?
-      Provider::Registry.preferred_llm_provider.present?
-    end
-
-    def existing_action?(action_type)
-      rule.actions.any? { |action| action.action_type == action_type }
+    def ai_enabled?
+      Provider::Registry.get_provider(:openai).present?
     end
 end
