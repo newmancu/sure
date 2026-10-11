@@ -34,7 +34,7 @@ module EntriesTestHelper
     Entry.create! entry_defaults.merge(entry_attributes)
   end
 
-  def create_trade(security, account:, qty:, date:, price: nil, currency: "USD", fee: 0)
+  def create_trade(security, account:, qty:, date:, price: nil, currency: "USD")
     trade_price = price || Security::Price.find_by!(security: security, date: date).price
 
     trade = Trade.new \
@@ -42,7 +42,6 @@ module EntriesTestHelper
       security: security,
       price: trade_price,
       currency: currency,
-      fee: fee,
       investment_activity_label: qty > 0 ? "Buy" : "Sell"
 
     account.entries.create! \
@@ -53,20 +52,20 @@ module EntriesTestHelper
       entryable: trade
   end
 
-  def create_transfer(from_account:, to_account:, amount:, date: Date.current, currency: "USD", source_fee_amount: 0, destination_fee_amount: 0)
+  def create_transfer(from_account:, to_account:, amount:, date: Date.current, currency: "USD")
     outflow_transaction = Transaction.create!(kind: "funds_movement")
     inflow_transaction = Transaction.create!(kind: "funds_movement")
 
     transfer = Transfer.create!(
       outflow_transaction: outflow_transaction,
-      inflow_transaction: inflow_transaction,
-      amount: amount.abs
+      inflow_transaction: inflow_transaction
     )
 
+    # Create entries for both accounts
     from_account.entries.create!(
       name: "Transfer to #{to_account.name}",
       date: date,
-      amount: amount.abs,
+      amount: -amount.abs,
       currency: currency,
       entryable: outflow_transaction
     )
@@ -74,36 +73,10 @@ module EntriesTestHelper
     to_account.entries.create!(
       name: "Transfer from #{from_account.name}",
       date: date,
-      amount: -(amount.abs),
+      amount: amount.abs,
       currency: currency,
       entryable: inflow_transaction
     )
-
-    if source_fee_amount > 0
-      fee_tx = Transaction.create!(
-        kind: "standard",
-        entry: from_account.entries.create!(
-          name: "Transfer fee to #{to_account.name}",
-          date: date,
-          amount: source_fee_amount,
-          currency: currency,
-        )
-      )
-      transfer.fee_transactions << fee_tx
-    end
-
-    if destination_fee_amount > 0
-      fee_tx = Transaction.create!(
-        kind: "standard",
-        entry: to_account.entries.create!(
-          name: "Transfer fee from #{from_account.name}",
-          date: date,
-          amount: destination_fee_amount,
-          currency: currency,
-        )
-      )
-      transfer.fee_transactions << fee_tx
-    end
 
     transfer
   end

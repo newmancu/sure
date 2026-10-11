@@ -9,7 +9,6 @@ import '../providers/categories_provider.dart';
 import '../providers/merchants_provider.dart';
 import '../providers/tags_provider.dart';
 import '../providers/transactions_provider.dart';
-import '../l10n/app_localizations.dart';
 
 class TransactionEditScreen extends StatefulWidget {
   final OfflineTransaction transaction;
@@ -78,7 +77,6 @@ class _TransactionEditScreenState extends State<TransactionEditScreen> {
   }
 
   Future<void> _save() async {
-    final l = AppLocalizations.of(context);
     if (!_formKey.currentState!.validate() || widget.transaction.id == null) {
       return;
     }
@@ -98,8 +96,8 @@ class _TransactionEditScreenState extends State<TransactionEditScreen> {
       if (!mounted) return;
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(l.transactionEditSessionExpired),
+        const SnackBar(
+          content: Text('Session expired. Please login again.'),
           backgroundColor: Colors.red,
         ),
       );
@@ -132,8 +130,8 @@ class _TransactionEditScreenState extends State<TransactionEditScreen> {
       SnackBar(
         content: Text(
           success
-              ? l.transactionEditUpdated
-              : transactionsProvider.error ?? l.transactionEditUpdateFailed,
+              ? 'Transaction updated'
+              : transactionsProvider.error ?? 'Failed to update transaction',
         ),
         backgroundColor: success ? Colors.green : Colors.red,
       ),
@@ -145,34 +143,32 @@ class _TransactionEditScreenState extends State<TransactionEditScreen> {
   }
 
   String? _validateName(String? value) {
-    final l = AppLocalizations.of(context);
     if (value == null || value.trim().isEmpty) {
-      return l.transactionEditNameRequired;
+      return 'Name is required';
     }
 
     if (value.trim().length > _maxNameLength) {
-      return l.transactionEditNameMaxLength(_maxNameLength);
+      return 'Name must be $_maxNameLength characters or fewer';
     }
 
     if (_containsControlCharacter(value)) {
-      return l.transactionEditNameInvalidChars;
+      return 'Name contains unsupported characters';
     }
 
     return null;
   }
 
   String? _validateNotes(String? value) {
-    final l = AppLocalizations.of(context);
     if (value == null || value.trim().isEmpty) {
       return null;
     }
 
     if (value.trim().length > _maxNotesLength) {
-      return l.transactionEditNotesMaxLength(_maxNotesLength);
+      return 'Notes must be $_maxNotesLength characters or fewer';
     }
 
     if (_containsControlCharacter(value, allowWhitespace: true)) {
-      return l.transactionEditNotesInvalidChars;
+      return 'Notes contain unsupported characters';
     }
 
     return null;
@@ -197,13 +193,12 @@ class _TransactionEditScreenState extends State<TransactionEditScreen> {
   List<DropdownMenuItem<String?>> _categoryItems(
     List<models.Category> categories,
   ) {
-    final l = AppLocalizations.of(context);
     final items = <DropdownMenuItem<String?>>[];
     if (_selectedCategoryId == null) {
       items.add(
-        DropdownMenuItem<String?>(
+        const DropdownMenuItem<String?>(
           value: null,
-          child: Text(l.transactionEditNoCategory),
+          child: Text('No category'),
         ),
       );
     }
@@ -214,7 +209,7 @@ class _TransactionEditScreenState extends State<TransactionEditScreen> {
       items.add(
         DropdownMenuItem<String?>(
           value: _selectedCategoryId,
-          child: Text(widget.transaction.categoryName ?? l.transactionEditCurrentCategory),
+          child: Text(widget.transaction.categoryName ?? 'Current category'),
         ),
       );
     }
@@ -232,13 +227,12 @@ class _TransactionEditScreenState extends State<TransactionEditScreen> {
   }
 
   List<DropdownMenuItem<String?>> _merchantItems(List<Merchant> merchants) {
-    final l = AppLocalizations.of(context);
     final items = <DropdownMenuItem<String?>>[];
     if (_selectedMerchantId == null) {
       items.add(
-        DropdownMenuItem<String?>(
+        const DropdownMenuItem<String?>(
           value: null,
-          child: Text(l.transactionEditNoMerchant),
+          child: Text('No merchant'),
         ),
       );
     }
@@ -249,7 +243,7 @@ class _TransactionEditScreenState extends State<TransactionEditScreen> {
       items.add(
         DropdownMenuItem<String?>(
           value: _selectedMerchantId,
-          child: Text(widget.transaction.merchantName ?? l.transactionEditCurrentMerchant),
+          child: Text(widget.transaction.merchantName ?? 'Current merchant'),
         ),
       );
     }
@@ -267,9 +261,8 @@ class _TransactionEditScreenState extends State<TransactionEditScreen> {
   }
 
   Widget _buildTags(List<TransactionTag> tags, {required bool enabled}) {
-    final l = AppLocalizations.of(context);
     if (tags.isEmpty && _selectedTagIds.isEmpty) {
-      return Text(l.transactionEditNoTags);
+      return const Text('No tags available');
     }
 
     final tagById = {for (final tag in tags) tag.id: tag};
@@ -284,7 +277,7 @@ class _TransactionEditScreenState extends State<TransactionEditScreen> {
         combinedTags.add(
           TransactionTag(
             id: selectedId,
-            name: fallbackName.isNotEmpty ? fallbackName : l.transactionEditUnknownTag,
+            name: fallbackName.isNotEmpty ? fallbackName : 'Unknown tag',
           ),
         );
       }
@@ -320,10 +313,8 @@ class _TransactionEditScreenState extends State<TransactionEditScreen> {
     final canEdit = widget.transaction.id != null &&
         widget.transaction.syncStatus == SyncStatus.synced;
 
-    final l = AppLocalizations.of(context);
-
     return Scaffold(
-      appBar: AppBar(title: Text(l.transactionEditTitle)),
+      appBar: AppBar(title: const Text('Edit Transaction')),
       body: Form(
         key: _formKey,
         child: ListView(
@@ -335,7 +326,7 @@ class _TransactionEditScreenState extends State<TransactionEditScreen> {
                 child: Padding(
                   padding: const EdgeInsets.all(16),
                   child: Text(
-                    l.transactionEditSyncedOnly,
+                    'Only synced transactions can be edited from mobile.',
                     style: TextStyle(color: colorScheme.onErrorContainer),
                   ),
                 ),
@@ -347,9 +338,9 @@ class _TransactionEditScreenState extends State<TransactionEditScreen> {
               enabled: canEdit && !_isSaving,
               validator: _validateName,
               maxLength: _maxNameLength,
-              decoration: InputDecoration(
-                labelText: l.transactionEditNameLabel,
-                prefixIcon: const Icon(Icons.label),
+              decoration: const InputDecoration(
+                labelText: 'Name',
+                prefixIcon: Icon(Icons.label),
               ),
             ),
             const SizedBox(height: 16),
@@ -360,9 +351,9 @@ class _TransactionEditScreenState extends State<TransactionEditScreen> {
               maxLength: _maxNotesLength,
               minLines: 2,
               maxLines: 4,
-              decoration: InputDecoration(
-                labelText: l.transactionEditNotesLabel,
-                prefixIcon: const Icon(Icons.notes),
+              decoration: const InputDecoration(
+                labelText: 'Notes',
+                prefixIcon: Icon(Icons.notes),
               ),
             ),
             const SizedBox(height: 16),
@@ -370,10 +361,10 @@ class _TransactionEditScreenState extends State<TransactionEditScreen> {
               builder: (context, categoriesProvider, _) {
                 return DropdownButtonFormField<String?>(
                   value: _selectedCategoryId,
-                  decoration: InputDecoration(
-                    labelText: l.transactionEditCategoryLabel,
-                    prefixIcon: const Icon(Icons.category),
-                    helperText: l.transactionEditCategoryHelper,
+                  decoration: const InputDecoration(
+                    labelText: 'Category',
+                    prefixIcon: Icon(Icons.category),
+                    helperText: 'Choose a replacement category',
                   ),
                   isExpanded: true,
                   items: _categoryItems(categoriesProvider.categories),
@@ -388,10 +379,10 @@ class _TransactionEditScreenState extends State<TransactionEditScreen> {
               builder: (context, merchantsProvider, _) {
                 return DropdownButtonFormField<String?>(
                   value: _selectedMerchantId,
-                  decoration: InputDecoration(
-                    labelText: l.transactionEditMerchantLabel,
-                    prefixIcon: const Icon(Icons.storefront),
-                    helperText: l.transactionEditMerchantHelper,
+                  decoration: const InputDecoration(
+                    labelText: 'Merchant',
+                    prefixIcon: Icon(Icons.storefront),
+                    helperText: 'Choose a replacement merchant',
                   ),
                   isExpanded: true,
                   items: _merchantItems(merchantsProvider.merchants),
@@ -402,7 +393,7 @@ class _TransactionEditScreenState extends State<TransactionEditScreen> {
               },
             ),
             const SizedBox(height: 24),
-            Text(l.transactionEditTagsLabel, style: Theme.of(context).textTheme.titleMedium),
+            Text('Tags', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 8),
             Consumer<TagsProvider>(
               builder: (context, tagsProvider, _) =>
@@ -418,7 +409,7 @@ class _TransactionEditScreenState extends State<TransactionEditScreen> {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(Icons.save),
-              label: Text(_isSaving ? l.transactionEditSaving : l.commonSave),
+              label: Text(_isSaving ? 'Saving...' : 'Save Changes'),
             ),
           ],
         ),
