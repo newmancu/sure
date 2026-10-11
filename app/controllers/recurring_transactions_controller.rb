@@ -129,8 +129,7 @@ class RecurringTransactionsController < ApplicationController
     @recurring_transaction = Current.family.recurring_transactions.new(
       # Paychecks default to the most common pay cadence; bills to monthly.
       frequency_preset: income ? "biweekly" : "monthly",
-      first_due_on: Date.current,
-      currency: Current.family.currency
+      first_due_on: Date.current
     )
     @recurring_transaction.is_income = income
 
@@ -183,6 +182,8 @@ class RecurringTransactionsController < ApplicationController
     apply_editable_identity
     apply_frequency_preset
 
+    # end_after_count submits only while the type reads installment (the form
+    # disables it otherwise), so any other type leaves the stored count alone.
     if @recurring_transaction.typed_installment? && @recurring_transaction.end_after_count.present?
       @recurring_transaction.end_mode = "after_count"
       @recurring_transaction.anchor_date ||= @recurring_transaction.last_occurrence_date
@@ -222,7 +223,7 @@ class RecurringTransactionsController < ApplicationController
     respond_to do |format|
       format.html do
         flash[:notice] = message
-        redirect_back_or_to recurring_transactions_path
+        redirect_to recurring_transactions_path
       end
     end
   end
@@ -244,12 +245,7 @@ class RecurringTransactionsController < ApplicationController
     end
 
     flash[:notice] = t(income ? "recurring_transactions.deleted_income" : "recurring_transactions.deleted")
-    # Back to a visited /bills/:id would reopen, or 404 on, what was just removed.
-    if came_from?(bill_path(@recurring_transaction))
-      redirect_to bills_path
-    else
-      redirect_back_or_to bills_path
-    end
+    redirect_back_or_to bills_path
   end
 
   protected
@@ -260,7 +256,6 @@ class RecurringTransactionsController < ApplicationController
     def prefill_recurring_from_entry(entry)
       @recurring_transaction.name = entry.entryable.try(:merchant)&.name.presence || entry.name
       @recurring_transaction.amount = entry.amount.abs
-      @recurring_transaction.currency = entry.currency
       @recurring_transaction.account_id = entry.account_id
       # A negative entry is an inflow: pre-fill as income, not as a bill.
       @recurring_transaction.is_income = true if entry.amount.negative?
@@ -375,7 +370,7 @@ class RecurringTransactionsController < ApplicationController
 
     def new_recurring_transaction_params
       params.require(:recurring_transaction).permit(
-        :name, :amount, :currency, :account_id, :first_due_on, :frequency_preset,
+        :name, :amount, :account_id, :first_due_on, :frequency_preset,
         :frequency_interval, :frequency_interval_unit,
         :payment_url, :autopay, :notes, :is_income
       )
@@ -431,13 +426,8 @@ class RecurringTransactionsController < ApplicationController
 
       if attrs[:amount].present?
         magnitude = attrs[:amount].to_d.abs
-        # Checked on the input: assigning it already rounded to the column.
-        if RecurringTransaction.storable_amount?(magnitude)
-          @recurring_transaction.amount =
-            @recurring_transaction.typed_income? ? -magnitude : magnitude
-        else
-          @recurring_transaction.errors.add(:base, t("recurring_transactions.create.amount_too_precise"))
-        end
+        @recurring_transaction.amount =
+          @recurring_transaction.typed_income? ? -magnitude : magnitude
       end
 
       if attrs.key?(:account_id)
@@ -455,6 +445,13 @@ class RecurringTransactionsController < ApplicationController
       end
     end
 
+    # The form disables the fields of every group the chosen preset hides, and
+    # disabled fields do not submit, so each preset arrives with only the
+    # fields shown for it; the rest are nil here. That holds because
+    # FrequencyPreset defaults every missing day detail except the weekday of
+    # weekly and biweekly, and the weekday select sits in the group those two
+    # presets show. Moving a field to another group in _form changes what
+    # reaches this method.
     def apply_frequency_preset
       changed = RecurringTransaction::FrequencyPreset.apply(
         @recurring_transaction,
