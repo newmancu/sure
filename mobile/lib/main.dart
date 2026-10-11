@@ -5,12 +5,9 @@ import 'package:provider/provider.dart';
 import 'providers/auth_provider.dart';
 import 'providers/accounts_provider.dart';
 import 'providers/categories_provider.dart';
-import 'providers/merchants_provider.dart';
-import 'providers/tags_provider.dart';
 import 'providers/transactions_provider.dart';
 import 'providers/chat_provider.dart';
 import 'providers/theme_provider.dart';
-import 'providers/privacy_provider.dart';
 import 'screens/backend_config_screen.dart';
 import 'screens/login_screen.dart';
 import 'screens/biometric_lock_screen.dart';
@@ -20,10 +17,6 @@ import 'services/api_config.dart';
 import 'services/connectivity_service.dart';
 import 'services/log_service.dart';
 import 'services/preferences_service.dart';
-import 'services/telemetry_service.dart';
-import 'theme/sure_theme.dart';
-import 'l10n/app_localizations.dart';
-import 'package:upgrader/upgrader.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -32,31 +25,11 @@ void main() async {
   // Add initial log entry
   LogService.instance.info('App', 'Sure app starting...');
 
-  // Read the privacy preference before the first frame so money values are
-  // never briefly rendered unmasked for a user who enabled "Hide amounts".
-  // Default to masked (fail-closed) if it can't be read.
-  bool moneyHidden = true;
-  try {
-    moneyHidden = await PreferencesService.instance.getMoneyHidden();
-  } catch (e) {
-    LogService.instance.warning(
-      'App',
-      'Failed to read privacy preference at startup with ${e.runtimeType}',
-    );
-  }
-
-  await TelemetryService.instance.initialize(
-    appRunner: () => runApp(SureApp(moneyHidden: moneyHidden)),
-  );
+  runApp(const SureApp());
 }
 
 class SureApp extends StatelessWidget {
-  // Fail-closed default (masked) for the no-argument path; main() always passes
-  // the persisted value explicitly.
-  const SureApp({super.key, this.moneyHidden = true});
-
-  /// The persisted "hide amounts" state, read before `runApp` (see `main`).
-  final bool moneyHidden;
+  const SureApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -67,11 +40,7 @@ class SureApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => AuthProvider()),
         ChangeNotifierProvider(create: (_) => ChatProvider()),
         ChangeNotifierProvider(create: (_) => CategoriesProvider()),
-        ChangeNotifierProvider(create: (_) => MerchantsProvider()),
-        ChangeNotifierProvider(create: (_) => TagsProvider()),
         ChangeNotifierProvider(create: (_) => ThemeProvider()),
-        ChangeNotifierProvider(
-            create: (_) => PrivacyProvider(initialHidden: moneyHidden)),
         ChangeNotifierProxyProvider<ConnectivityService, AccountsProvider>(
           create: (_) => AccountsProvider(),
           update: (_, connectivityService, accountsProvider) {
@@ -101,22 +70,90 @@ class SureApp extends StatelessWidget {
       ],
       child: Consumer<ThemeProvider>(
         builder: (context, themeProvider, _) => MaterialApp(
-          onGenerateTitle: (ctx) => AppLocalizations.of(ctx).appTitle,
-          localizationsDelegates: AppLocalizations.localizationsDelegates,
-          supportedLocales: AppLocalizations.supportedLocales,
-          debugShowCheckedModeBanner: false,
-          navigatorObservers: TelemetryService.instance.navigatorObservers,
-          theme: SureTheme.light,
-          darkTheme: SureTheme.dark,
-          themeMode: themeProvider.themeMode,
-          routes: {
-            '/config': (context) => const BackendConfigScreen(),
-            '/login': (context) => const LoginScreen(),
-            '/home': (context) => const MainNavigationScreen(),
-          },
-          home: const AppWrapper(),
+        title: 'Sure Finances',
+        debugShowCheckedModeBanner: false,
+        theme: ThemeData(
+          fontFamily: 'Geist',
+          fontFamilyFallback: const [
+            'Inter',
+            'Arial',
+            'sans-serif',
+          ],
+          colorScheme: ColorScheme.fromSeed(
+            seedColor: const Color(0xFF6366F1),
+            brightness: Brightness.light,
+          ),
+          useMaterial3: true,
+          appBarTheme: const AppBarTheme(
+            centerTitle: true,
+            elevation: 0,
+          ),
+          cardTheme: CardThemeData(
+            elevation: 2,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+          inputDecorationTheme: InputDecorationTheme(
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            filled: true,
+          ),
+          elevatedButtonTheme: ElevatedButtonThemeData(
+            style: ElevatedButton.styleFrom(
+              minimumSize: const Size(double.infinity, 50),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
         ),
-      ),
+        darkTheme: ThemeData(
+          fontFamily: 'Geist',
+          fontFamilyFallback: const [
+            'Inter',
+            'Arial',
+            'sans-serif',
+          ],
+          colorScheme: ColorScheme.fromSeed(
+            seedColor: const Color(0xFF6366F1),
+            brightness: Brightness.dark,
+          ),
+          useMaterial3: true,
+          appBarTheme: const AppBarTheme(
+            centerTitle: true,
+            elevation: 0,
+          ),
+          cardTheme: CardThemeData(
+            elevation: 2,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+          inputDecorationTheme: InputDecorationTheme(
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            filled: true,
+          ),
+          elevatedButtonTheme: ElevatedButtonThemeData(
+            style: ElevatedButton.styleFrom(
+              minimumSize: const Size(double.infinity, 50),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+        ),
+        themeMode: themeProvider.themeMode,
+        routes: {
+          '/config': (context) => const BackendConfigScreen(),
+          '/login': (context) => const LoginScreen(),
+          '/home': (context) => const MainNavigationScreen(),
+        },
+        home: const AppWrapper(),
+      )),
     );
   }
 }
@@ -134,12 +171,6 @@ class _AppWrapperState extends State<AppWrapper> with WidgetsBindingObserver {
   bool _isLocked = false;
   late final AppLinks _appLinks;
   StreamSubscription<Uri>? _linkSubscription;
-
-  final _upgrader = Upgrader(
-    durationUntilAlertAgain: const Duration(days: 7),
-    countryCode: 'us',
-    messages: _SureUpgraderMessages(),
-  );
 
   @override
   void initState() {
@@ -189,71 +220,29 @@ class _AppWrapperState extends State<AppWrapper> with WidgetsBindingObserver {
 
     // Handle deep link that launched the app (cold start)
     _appLinks.getInitialLink().then((uri) {
-      if (uri != null) {
-        TelemetryService.instance.addBreadcrumb(
-          'deep_links',
-          'initial_link_received',
-          data: {'recognized': _isSsoCallback(uri)},
-        );
-        _handleDeepLink(uri);
-      }
+      if (uri != null) _handleDeepLink(uri);
     }).catchError((e, stackTrace) {
-      LogService.instance.error(
-        'DeepLinks',
-        'Initial link failed with ${e.runtimeType}',
-      );
-      unawaited(TelemetryService.instance.captureHandledException(
-        e,
-        stackTrace,
-        operation: 'deep_links.initial_link',
-      ));
+      LogService.instance.error('DeepLinks', 'Initial link error: $e\n$stackTrace');
     });
 
     // Listen for deep links while app is running
     _linkSubscription = _appLinks.uriLinkStream.listen(
       (uri) => _handleDeepLink(uri),
       onError: (e, stackTrace) {
-        LogService.instance.error(
-          'DeepLinks',
-          'Link stream failed with ${e.runtimeType}',
-        );
-        unawaited(TelemetryService.instance.captureHandledException(
-          e,
-          stackTrace,
-          operation: 'deep_links.stream',
-        ));
+        LogService.instance.error('DeepLinks', 'Link stream error: $e\n$stackTrace');
       },
     );
   }
 
   void _handleDeepLink(Uri uri) {
-    final isSsoCallback = _isSsoCallback(uri);
-    TelemetryService.instance.addBreadcrumb(
-      'deep_links',
-      'link_received',
-      data: {'recognized': isSsoCallback},
-    );
-
-    if (isSsoCallback) {
+    if (uri.scheme == 'sureapp' && uri.host == 'oauth') {
       final authProvider = Provider.of<AuthProvider>(context, listen: false);
       authProvider.handleSsoCallback(uri);
     }
   }
 
-  bool _isSsoCallback(Uri uri) =>
-      uri.scheme == 'sureapp' && uri.host == 'oauth';
-
   Future<void> _checkBackendConfig() async {
-    final hasUrl = await TelemetryService.instance.traceAsync(
-      'app.backend_config_check',
-      'Backend configuration check',
-      ApiConfig.initialize,
-    );
-    TelemetryService.instance.addBreadcrumb(
-      'app',
-      'backend_config_checked',
-      data: {'configured': hasUrl},
-    );
+    final hasUrl = await ApiConfig.initialize();
     if (mounted) {
       setState(() {
         _hasBackendUrl = hasUrl;
@@ -265,6 +254,12 @@ class _AppWrapperState extends State<AppWrapper> with WidgetsBindingObserver {
   void _onBackendConfigSaved() {
     setState(() {
       _hasBackendUrl = true;
+    });
+  }
+
+  void _goToBackendConfig() {
+    setState(() {
+      _hasBackendUrl = false;
     });
   }
 
@@ -298,11 +293,7 @@ class _AppWrapperState extends State<AppWrapper> with WidgetsBindingObserver {
         if (authProvider.isAuthenticated) {
           return Stack(
             children: [
-              UpgradeAlert(
-                upgrader: _upgrader,
-                showIgnore: false,
-                child: const MainNavigationScreen(),
-              ),
+              const MainNavigationScreen(),
               if (_isLocked)
                 BiometricLockScreen(
                   onUnlocked: _onUnlocked,
@@ -323,28 +314,10 @@ class _AppWrapperState extends State<AppWrapper> with WidgetsBindingObserver {
           return const SsoOnboardingScreen();
         }
 
-        return const LoginScreen();
+        return LoginScreen(
+          onGoToSettings: _goToBackendConfig,
+        );
       },
     );
   }
-}
-
-class _SureUpgraderMessages extends UpgraderMessages {
-  @override
-  String get title => 'Update available';
-
-  @override
-  String get body =>
-      '{{appName}} {{currentAppStoreVersion}} is now available — '
-      'you have {{currentInstalledVersion}}.\n\n'
-      "What's new? Check the store for release notes.";
-
-  @override
-  String get buttonTitleUpdate => 'Update now';
-
-  @override
-  String get buttonTitleLater => 'Later';
-
-  @override
-  String get releaseNotes => '';
 }

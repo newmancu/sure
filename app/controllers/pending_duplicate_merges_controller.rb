@@ -21,7 +21,7 @@ class PendingDuplicateMergesController < ApplicationController
 
     # Manually merge the pending transaction with the selected posted transaction
     unless merge_params[:posted_entry_id].present?
-      redirect_back_or_to transactions_path, alert: t(".no_posted_selected")
+      redirect_back_or_to transactions_path, alert: "Please select a posted transaction to merge with"
       return
     end
 
@@ -29,7 +29,7 @@ class PendingDuplicateMergesController < ApplicationController
     posted_entry = find_eligible_posted_entry(merge_params[:posted_entry_id])
 
     unless posted_entry
-      redirect_back_or_to transactions_path, alert: t(".invalid_transaction")
+      redirect_back_or_to transactions_path, alert: "Invalid transaction selected for merge"
       return
     end
 
@@ -48,14 +48,10 @@ class PendingDuplicateMergesController < ApplicationController
 
     # Immediately merge
     if @transaction.merge_with_duplicate!
-      redirect_back_or_to transactions_path, notice: t(".merge_success")
+      redirect_back_or_to transactions_path, notice: "Pending transaction merged with posted transaction"
     else
-      redirect_back_or_to transactions_path, alert: t(".merge_failed")
+      redirect_back_or_to transactions_path, alert: "Could not merge transactions"
     end
-  rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotDestroyed,
-         ActiveRecord::Deadlocked, ActiveRecord::LockWaitTimeout => e
-    Rails.logger.error("Failed to manually merge pending transaction: #{e.message}")
-    redirect_back_or_to transactions_path, alert: t("transactions.merge_duplicate.failure")
   end
 
   private
@@ -64,19 +60,21 @@ class PendingDuplicateMergesController < ApplicationController
       @transaction = entry.entryable
 
       unless @transaction.is_a?(Transaction) && @transaction.pending?
-        redirect_to transactions_path, alert: t("pending_duplicate_merges.set_transaction.pending_only")
+        redirect_to transactions_path, alert: "This feature is only available for pending transactions"
       end
     end
 
     def find_eligible_posted_entry(entry_id)
       # Constrain to same account, currency, and ensure it's a posted transaction
       # Use the same logic as pending_duplicate_candidates to ensure consistency
+      conditions = Transaction::PENDING_PROVIDERS.map { |provider| "(transactions.extra -> '#{provider}' ->> 'pending')::boolean IS NOT TRUE" }
+
       @transaction.entry.account.entries
         .joins("INNER JOIN transactions ON transactions.id = entries.entryable_id AND entries.entryable_type = 'Transaction'")
         .where(id: entry_id)
         .where(currency: @transaction.entry.currency)
         .where.not(id: @transaction.entry.id)
-        .where(Transaction.not_pending_sql)
+        .where(conditions.join(" AND "))
         .first
     end
 

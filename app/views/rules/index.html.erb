@@ -1,4 +1,4 @@
-<%= content_for :page_title, t(".page_title") %>
+<%= content_for :page_title, "Rules" %>
 <%= content_for :page_actions do %>
   <% if @rules.any? %>
     <%= render DS::Menu.new do |menu| %>
@@ -15,7 +15,7 @@
         )) %>
       <% menu.with_item(
         variant: "button",
-        text: t(".delete_all_rules"),
+        text: "Delete all rules",
         href: destroy_all_rules_path,
         icon: "trash-2",
         method: :delete,
@@ -30,7 +30,7 @@
     ) %>
   <% end %>
   <%= render DS::Link.new(
-    text: t(".new_rule"),
+    text: "New rule",
     variant: "primary",
     href: new_rule_path(resource_type: "transaction"),
     icon: "plus",
@@ -42,7 +42,7 @@
   <div class="flex items-center gap-2 mb-2 py-4">
     <%= icon("circle-alert", size: "sm") %>
     <p class="text-sm text-secondary">
-      <%= t(".ai_cost_warning") %>
+      AI-enabled rule actions will cost money.  Be sure to filter as narrowly as possible to avoid unnecessary costs.
     </p>
   </div>
 <% end %>
@@ -51,15 +51,15 @@
     <div class="bg-container-inset rounded-xl">
       <div class="flex justify-between px-4 py-2 text-xs uppercase">
         <div class="flex items-center gap-1.5 font-medium text-secondary">
-          <p><%= t(".rules_heading") %></p>
+          <p>Rules</p>
           <span class="text-subdued">&middot;</span>
           <p><%= @rules.count %></p>
         </div>
         <div class="flex items-center gap-1">
-          <span class="text-secondary"><%= t(".sort_by") %></span>
+          <span class="text-secondary">Sort by:</span>
           <%= form_with url: rules_path, method: :get, local: true, class: "flex items-center", data: { controller: "auto-submit-form" } do |form| %>
             <%= form.select :sort_by,
-                      options_for_select([[t(".sort_name"), "name"], [t(".sort_updated_at"), "updated_at"]], @sort_by),
+                      options_for_select([["Name", "name"], ["Updated At", "updated_at"]], @sort_by),
                       {},
                       class: "min-w-[120px] bg-transparent rounded border-none cursor-pointer text-primary uppercase text-xs w-auto",
                       data: { auto_submit_form_target: "auto", autosubmit_trigger_event: "change" } %>
@@ -70,7 +70,7 @@
             variant: "icon",
             icon: "arrow-up-down",
             size: :sm,
-            title: t(".toggle_sort_direction")
+            title: "Toggle sort direction"
           ) %>
         </div>
       </div>
@@ -83,11 +83,11 @@
   <% else %>
     <div class="flex justify-center items-center py-20">
       <div class="text-center flex flex-col items-center max-w-[500px]">
-        <p class="text-sm text-primary font-medium mb-1"><%= t(".no_rules_title") %></p>
-        <p class="text-sm text-secondary mb-4"><%= t(".no_rules_description") %></p>
+        <p class="text-sm text-primary font-medium mb-1">No rules yet</p>
+        <p class="text-sm text-secondary mb-4">Set up rules to perform actions to your transactions and other data on every account sync.</p>
         <div class="flex items-center gap-2">
           <%= render DS::Link.new(
-            text: t(".new_rule"),
+            text: "New rule",
             variant: "primary",
             href: new_rule_path(resource_type: "transaction"),
             icon: "plus",
@@ -109,7 +109,7 @@
 
     <div class="overflow-x-auto">
       <table class="w-full">
-        <thead class="bg-surface border-b border-primary">
+        <thead class="bg-surface-default border-b border-primary">
           <tr>
             <th class="px-4 py-3 text-left text-xs font-medium text-secondary uppercase tracking-wider">
               <%= t("rules.recent_runs.columns.date_time") %>
@@ -128,14 +128,13 @@
                 <div><%= t("rules.recent_runs.columns.transactions_counts.queued") %></div>
                 <div><%= t("rules.recent_runs.columns.transactions_counts.processed") %></div>
                 <div><%= t("rules.recent_runs.columns.transactions_counts.modified") %></div>
-                <div><%= t("rules.recent_runs.columns.transactions_counts.blocked", default: "Blocked") %></div>
               </div>
             </th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-alpha-black-200 theme-dark:divide-alpha-white-200">
+        <tbody class="divide-y divide-gray-100">
           <% @recent_runs.each do |run| %>
-            <tr class="<%= "bg-red-tint-5 theme-dark:bg-red-tint-10" if run.failed? %>">
+            <tr class="<%= "bg-red-50 theme-dark:bg-red-950/30" if run.failed? %>">
               <td class="px-4 py-3 text-sm text-primary whitespace-nowrap">
                 <%= run.executed_at.strftime("%b %d, %Y %I:%M %p") %>
               </td>
@@ -147,15 +146,21 @@
               <td class="px-4 py-3 text-sm text-center">
                 <div class="flex items-center justify-center gap-2">
                   <% if run.pending? %>
-                    <%= render DS::Pill.new(label: t("rules.recent_runs.statuses.#{run.status}"), tone: :warning, marker: false) %>
+                    <span class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-yellow-50 text-yellow-700 theme-dark:bg-yellow-950/30 theme-dark:text-yellow-400">
+                      <%= t("rules.recent_runs.statuses.#{run.status}") %>
+                    </span>
                   <% elsif run.success? %>
-                    <%= render DS::Pill.new(label: t("rules.recent_runs.statuses.#{run.status}"), tone: :success, marker: false) %>
+                    <span class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-green-50 text-green-700 theme-dark:bg-green-950/30 theme-dark:text-green-400">
+                      <%= t("rules.recent_runs.statuses.#{run.status}") %>
+                    </span>
                   <% else %>
-                    <%= render DS::Pill.new(label: t("rules.recent_runs.statuses.#{run.status}"), tone: :error, marker: false) %>
+                    <span class="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-red-50 text-red-700 theme-dark:bg-red-950/30 theme-dark:text-red-400">
+                      <%= t("rules.recent_runs.statuses.#{run.status}") %>
+                    </span>
                   <% end %>
                   <% if run.failed? && run.error_message.present? %>
                     <div data-controller="tooltip" data-tooltip-content-value="<%= run.error_message %>">
-                      <%= icon("info", size: "sm", color: "destructive") %>
+                      <%= icon("info", size: "sm", class: "text-red-500") %>
                     </div>
                   <% end %>
                 </div>
@@ -164,7 +169,7 @@
                 <%= run.rule_name.presence || run.rule&.name.presence || t("rules.recent_runs.unnamed_rule") %>
               </td>
               <td class="px-4 py-3 text-sm text-primary text-center tabular-nums">
-                <%= "#{number_with_delimiter(run.transactions_queued)} / #{number_with_delimiter(run.transactions_processed)} / #{number_with_delimiter(run.transactions_modified)} / #{number_with_delimiter(run.transactions_blocked)}" %>
+                <%= "#{number_with_delimiter(run.transactions_queued)} / #{number_with_delimiter(run.transactions_processed)} / #{number_with_delimiter(run.transactions_modified)}" %>
               </td>
             </tr>
           <% end %>

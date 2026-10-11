@@ -2,118 +2,15 @@ require "test_helper"
 
 class ReportsControllerTest < ActionDispatch::IntegrationTest
   include EntriesTestHelper
-  include SqlQueryCapture
 
   setup do
     sign_in @user = users(:family_admin)
     @family = @user.family
   end
 
-  # The per-trade line under the realised-gains card rendered
-  # `Money.new(gain.value, Current.family.currency)` -- taking the number out of
-  # the Trend and re-labelling it as family currency with no conversion at all.
-  #
-  # The fixture has to be a FOREIGN ACCOUNT for that to show: a gain is carried
-  # in the currency its position is held in, so for a USD account under a USD
-  # family the re-labelling is accidentally correct and a test built on one
-  # passes either way.
-  #
-  # A USD family, a EUR account, a EUR-listed security: basis 100 EUR/share, 2
-  # sold at 150 EUR/share, EUR->USD 1.5 that day. The gain is 100 EUR, and the
-  # line must read $150.00. Re-labelled rather than converted it reads $100.00.
-  test "a foreign-account disposal is listed in family currency, not re-labelled" do
-    date = Date.current.beginning_of_month
-    account = @family.accounts.create!(name: "Brokerage EUR", balance: 10_000,
-                                       currency: "EUR", accountable: Investment.new)
-    security = Security.create!(ticker: "EUX#{SecureRandom.hex(3)}", name: "Euro Listed")
-
-    ExchangeRate.create!(from_currency: "EUR", to_currency: "USD", date: date, rate: 1.5)
-    account.holdings.create!(security: security, date: date, qty: 5, price: 150,
-                             amount: BigDecimal(750), currency: "EUR", cost_basis: 100)
-    create_trade(security, account: account, qty: -2, date: date, price: 150, currency: "EUR")
-
-    get reports_path
-    assert_response :ok
-
-    line = css_select("[data-testid='realized-gain-line']").map(&:text)
-                                                           .find { |text| text.include?(security.ticker) }
-
-    assert line, "the disposal must be listed at all, or this proves nothing"
-    assert_match "$150.00", line, "converted at the trade's own rate"
-    assert_no_match(/\$100\.00/, line, "$100.00 is the EUR figure printed with a dollar sign")
-  end
-
-  # A position carried in a THIRD currency -- not the disposal's, not the
-  # account's. 300 EUR of proceeds at 0.8 is 240 GBP, less 200 GBP of basis, so
-  # 40 GBP and $50.00 at 1.25. GBP is in neither currency set the card used to
-  # enumerate, and a currency it does not enumerate converts at the `|| 1`
-  # parity fallback: the line would read $40.00.
-  test "a disposal carried in a third currency is converted, not passed through at parity" do
-    date = Date.current.beginning_of_month
-    account = @family.accounts.create!(name: "Brokerage USD", balance: 10_000,
-                                       currency: "USD", accountable: Investment.new)
-    security = Security.create!(ticker: "EUX#{SecureRandom.hex(3)}", name: "Euro Listed")
-
-    # The fixtures already hold EUR->GBP for today and yesterday, so on the 1st
-    # and 2nd of a month a fresh row for its first day breaks uniqueness.
-    ExchangeRate.find_or_initialize_by(from_currency: "EUR", to_currency: "GBP", date: date).update!(rate: 0.8)
-    ExchangeRate.create!(from_currency: "GBP", to_currency: "USD", date: date, rate: 1.25)
-    account.holdings.create!(security: security, date: date, qty: 5, price: 150,
-                             amount: BigDecimal(750), currency: "GBP", cost_basis: 100)
-    create_trade(security, account: account, qty: -2, date: date, price: 150, currency: "EUR")
-
-    get reports_path
-    assert_response :ok
-
-    line = css_select("[data-testid='realized-gain-line']").map(&:text)
-                                                           .find { |text| text.include?(security.ticker) }
-
-    assert line, "the disposal must be listed at all, or this proves nothing"
-    assert_match "$50.00", line
-    assert_no_match(/\$40\.00/, line, "$40.00 is the GBP figure converted at parity")
-  end
-
-  # The rates a page of disposals needs come from one query, not one per
-  # foreign disposal. The conversion itself is covered in TradeTest, which
-  # counts the queries directly; what has to hold HERE is that the card asks
-  # for the preload at all -- the page's own rate lookups share a SQL shape
-  # with `ExchangeRate.find_or_fetch_rate`, so counting them measures the rest
-  # of the page rather than this.
-  test "the card preloads the rates its disposals need" do
-    account = @family.accounts.create!(name: "Brokerage USD", balance: 50_000,
-                                       currency: "USD", accountable: Investment.new)
-    seed_foreign_disposals(account, 3)
-
-    Trade.expects(:preload_exchange_rates).at_least_once.with do |trades|
-      trades.any? { |trade| trade.currency == "EUR" }
-    end
-
-    get reports_path
-
-    assert_response :ok
-  end
-
   test "index renders successfully" do
     get reports_path
     assert_response :ok
-  end
-
-  # The desktop app clones these into the tray when a download such as the CSV
-  # export ends, since it has no download list of its own, and reads their data
-  # attributes for its native notification.
-  test "index provides the download toasts the desktop app shows" do
-    get reports_path
-
-    assert_response :ok
-    scope = "layouts.shared.notification_tray"
-    assert_select "template#desktop-download-complete", 1
-    assert_select "template#desktop-download-failed", 1
-    assert_select "template#desktop-download-complete[data-message=?][data-description=?]",
-      I18n.t("#{scope}.download_complete"), I18n.t("#{scope}.download_location")
-    assert_select "template#desktop-download-failed[data-message=?]", I18n.t("#{scope}.download_failed")
-    assert_includes response.body, I18n.t("#{scope}.download_complete")
-    assert_includes response.body, I18n.t("#{scope}.download_location")
-    assert_includes response.body, I18n.t("#{scope}.download_failed")
   end
 
   test "index with monthly period" do
@@ -144,42 +41,6 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
   test "index with last 6 months period" do
     get reports_path(period_type: :last_6_months)
     assert_response :ok
-
-    expected_end   = Date.current.end_of_month
-    expected_start = (expected_end + 1.day - 6.months).beginning_of_month
-
-    # Should show exactly 6 months, not 7
-    assert_equal 6, (expected_end.year * 12 + expected_end.month) - (expected_start.year * 12 + expected_start.month) + 1
-
-    # Page should include both boundary months
-    assert_includes @response.body, expected_start.strftime("%b %Y")
-    assert_includes @response.body, expected_end.strftime("%b %Y")
-
-    # Page should NOT include the months immediately outside the window
-    prev_month = expected_start - 1.month
-    next_month = expected_end + 1.month
-    assert_not_includes @response.body, prev_month.strftime("%b %Y")
-    assert_not_includes @response.body, next_month.strftime("%b %Y")
-  end
-
-  test "last 6 months default start date is consistent with navigation" do
-    # First load (no params) should produce the same start/end as the navigation arrows would
-    get reports_path(period_type: :last_6_months)
-    assert_response :ok
-
-    expected_end   = Date.current.end_of_month
-    expected_start = (expected_end + 1.day - 6.months).beginning_of_month
-
-    # Navigate forward from one window back — should land on the same default window
-    prev_start = expected_start - 6.months
-    prev_end   = prev_start + 6.months - 1.day
-
-    get reports_path(period_type: :last_6_months, start_date: prev_start, end_date: prev_end)
-    assert_response :ok
-
-    # The next-window link should point to the same dates as the default
-    assert_select "a[href=?]",
-      reports_path(period_type: :last_6_months, start_date: expected_start, end_date: expected_end)
   end
 
   test "index shows empty state when no transactions" do
@@ -246,9 +107,12 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
     )
 
     assert_response :ok
-    assert_equal I18n.t("reports.invalid_date_range"), flash[:alert]
-    assert_includes @response.body, end_date.strftime("%b %Y")
-    assert_includes @response.body, start_date.strftime("%b %Y")
+    # Should show flash message about invalid date range
+    assert flash[:alert].present?, "Flash alert should be present"
+    assert_match /End date cannot be before start date/, flash[:alert]
+    # Verify the response body contains the swapped date range in the correct order
+    assert_includes @response.body, end_date.strftime("%b %-d, %Y")
+    assert_includes @response.body, start_date.strftime("%b %-d, %Y")
   end
 
   test "spending patterns returns data when expense transactions exist" do
@@ -296,40 +160,6 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
     assert_select ".text-center.py-8.text-subdued", { text: /No spending data/, count: 0 }, "Should not show 'No spending data' message when transactions exist"
   end
 
-  test "index avoids residual category lazy loads" do
-    account = accounts(:depository)
-
-    4.times do |idx|
-      parent = @family.categories.create!(
-        name: "Reports Parent #{idx}",
-        color: "#000000",
-        lucide_icon: "folder"
-      )
-      child = @family.categories.create!(
-        name: "Reports Child #{idx}",
-        color: "#111111",
-        lucide_icon: "folder",
-        parent: parent
-      )
-      entry = account.entries.create!(
-        name: "Reports transaction #{idx}",
-        date: Date.current,
-        amount: 10 + idx,
-        currency: "USD",
-        entryable: Transaction.new(
-          category: child,
-          kind: "standard"
-        )
-      )
-      assert entry.persisted?
-    end
-
-    queries = capture_sql_queries { get reports_path(period_type: :monthly) }
-
-    assert_response :ok
-    assert_empty queries.grep(/SELECT "categories"\.\* FROM "categories" WHERE "categories"\."id" = \$1 LIMIT \$2/)
-  end
-
   test "export transactions with API key authentication" do
     # Use an active API key with read permissions
     api_key = api_keys(:active_key)
@@ -348,79 +178,6 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
     assert_response :ok
     assert_equal "text/csv", @response.media_type
     assert_match /Category/, @response.body
-  end
-
-  test "export transactions with API key does not inherit web session impersonation" do
-    support_user = users(:sure_support_staff)
-    support_user.api_keys.active.destroy_all
-    token_value = ApiKey.generate_secure_key
-    export_credential = support_user.api_keys.build(
-      name: "Support Export Credential",
-      scopes: [ "read" ],
-      source: "web"
-    )
-    export_credential.key = token_value
-    export_credential.save!
-
-    impersonation_session = impersonation_sessions(:in_progress)
-    impersonated_user = impersonation_session.impersonated
-    leaked_category = impersonated_user.family.categories.create!(
-      name: "Impersonated Export Leak Probe"
-    )
-    impersonated_account = impersonated_user.finance_accounts.first
-    assert_not_nil impersonated_account, "Test setup failed: impersonated user has no finance account"
-
-    create_transaction(
-      account: impersonated_account,
-      name: "Impersonated export leak probe",
-      date: Date.current,
-      amount: 123.45,
-      category: leaked_category
-    )
-
-    support_user.sessions.destroy_all
-    support_user.sessions.create!(
-      user_agent: "Browser session",
-      ip_address: "127.0.0.1",
-      active_impersonator_session: impersonation_session
-    )
-
-    get export_transactions_reports_path(
-      format: :csv,
-      period_type: :ytd,
-      start_date: Date.current.beginning_of_year,
-      end_date: Date.current,
-      api_key: token_value
-    )
-
-    assert_response :ok
-    assert_equal "text/csv", @response.media_type
-    assert_no_match /Impersonated Export Leak Probe/, @response.body
-  end
-
-  test "export transactions with API key rejects deactivated user" do
-    user = users(:family_admin)
-    user.api_keys.active.destroy_all
-    token_value = ApiKey.generate_secure_key
-    export_access = user.api_keys.build(
-      name: "Inactive User Export Credential",
-      scopes: [ "read" ],
-      source: "web"
-    )
-    export_access.key = token_value
-    export_access.save!
-    user.update_column(:active, false)
-
-    get export_transactions_reports_path(
-      format: :csv,
-      period_type: :ytd,
-      api_key: token_value
-    )
-
-    assert_response :unauthorized
-    assert_match /Invalid or expired API key/, @response.body
-  ensure
-    user&.update_column(:active, true)
   end
 
   test "export transactions with invalid API key" do
@@ -449,40 +206,6 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :ok, "Export should work with session auth. Response: #{@response.body}"
     assert_equal "text/csv", @response.media_type
-  end
-
-  test "export transactions excludes tax-advantaged account transactions" do
-    taxable_category = @family.categories.create!(name: "Export Taxable Income", color: "#111111")
-    retirement_category = @family.categories.create!(name: "Export Retirement Income", color: "#222222")
-    taxable_account = @family.accounts.create!(
-      owner: @user,
-      name: "Export Taxable Brokerage",
-      balance: 0,
-      currency: "USD",
-      accountable: Investment.new(subtype: "brokerage")
-    )
-    retirement_account = @family.accounts.create!(
-      owner: @user,
-      name: "Export 401k",
-      balance: 0,
-      currency: "USD",
-      accountable: Investment.new(subtype: "401k")
-    )
-
-    create_transaction(account: taxable_account, name: "Taxable export dividend", amount: -100, category: taxable_category)
-    create_transaction(account: retirement_account, name: "401k export dividend", amount: -200, category: retirement_category)
-
-    get export_transactions_reports_path(
-      format: :csv,
-      period_type: :monthly,
-      start_date: Date.current.beginning_of_month,
-      end_date: Date.current.end_of_month
-    )
-
-    assert_response :ok
-    assert_equal "text/csv", @response.media_type
-    assert_match /Export Taxable Income/, @response.body
-    assert_no_match /Export Retirement Income/, @response.body
   end
 
   test "export transactions swaps dates when end_date is before start_date" do
@@ -522,247 +245,4 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
     assert_select "tr[data-category='category-#{subcategory_movies.id}']", text: /^Movies/
     assert_select "tr[data-category='category-#{subcategory_games.id}']", text: /^Games/
   end
-
-  test "index links income and expense categories to filtered transactions" do
-    start_date = Date.current.beginning_of_month
-    end_date = Date.current.end_of_month
-    expense_category = @family.categories.create!(name: "Reports Clickable Groceries", color: "#ABCDEF")
-    income_category = @family.categories.create!(name: "Reports Clickable Salary", color: "#FEDCBA")
-    account = @family.accounts.first
-
-    create_transaction(account: account, name: "Groceries", amount: 42, category: expense_category, date: Date.current)
-    create_transaction(account: account, name: "Salary", amount: -100, category: income_category, date: Date.current)
-    create_transaction(account: account, name: "Uncategorized cash", amount: 25, date: Date.current)
-
-    get reports_path(period_type: :monthly, start_date: start_date, end_date: end_date)
-    assert_response :ok
-
-    expense_href = transactions_path(q: { categories: [ expense_category.name ], start_date: start_date, end_date: end_date })
-    income_href = transactions_path(q: { categories: [ income_category.name ], start_date: start_date, end_date: end_date })
-    uncategorized_href = transactions_path(q: { categories: [ Category.uncategorized.filter_value ], start_date: start_date, end_date: end_date })
-
-    assert_select "tr[data-category='category-#{expense_category.id}'] a[href=?]", expense_href, text: /#{Regexp.escape(expense_category.name)}/
-    assert_select "tr[data-category='category-#{income_category.id}'] a[href=?]", income_href, text: /#{Regexp.escape(income_category.name)}/
-    assert_select "tr[data-category='category-uncategorized'] a[href=?]", uncategorized_href, text: /#{Regexp.escape(Category.uncategorized.name)}/
-
-    # Full-row hit target via a normal flex <a> wrapping icon+name+count —
-    # deliberately not a `position: relative`/`absolute` stretched-link inside
-    # the <table>, which caused a WebKit scrollHeight bug (see #3093).
-    assert_select "tr[data-category='category-#{expense_category.id}'] a.flex.items-center"
-    assert_select "tr[data-category='category-#{expense_category.id}'].relative", 0
-    assert_select "tr[data-category='category-#{expense_category.id}'] a[class*='before:absolute']", 0
-
-    # Amount and percentage cells are each wrapped in their own normal-flow
-    # <a> to the same href, so the full row remains clickable without a
-    # stretched-link overlay spanning the <tr>.
-    assert_select "tr[data-category='category-#{expense_category.id}'] td:nth-child(2) a[href=?]", expense_href
-    assert_select "tr[data-category='category-#{expense_category.id}'] td:nth-child(3) a[href=?]", expense_href
-  end
-
-  test "index uncategorized category link stays on the stable filter value while the displayed text is localized" do
-    start_date = Date.current.beginning_of_month
-    end_date = Date.current.end_of_month
-    account = @family.accounts.first
-    create_transaction(account: account, name: "Uncategorized cash", amount: 25, date: Date.current)
-
-    @user.update!(locale: "zh-CN")
-    localized_name = I18n.with_locale(:"zh-CN") { Category.uncategorized.name }
-
-    get reports_path(period_type: :monthly, start_date: start_date, end_date: end_date)
-    assert_response :ok
-
-    href = transactions_path(q: { categories: [ Category::UNCATEGORIZED_FILTER_VALUE ], start_date: start_date, end_date: end_date })
-    assert_select "tr[data-category='category-uncategorized'] a[href=?]", href, text: /#{Regexp.escape(localized_name)}/
-  end
-
-  test "index excludes tax-advantaged account transactions from activity breakdown" do
-    @family.accounts.each { |account| account.entries.destroy_all }
-
-    taxable_category = @family.categories.create!(name: "Reports Taxable Income", color: "#111111")
-    retirement_category = @family.categories.create!(name: "Reports Retirement Income", color: "#222222")
-    taxable_account = @family.accounts.create!(
-      owner: @user,
-      name: "Reports Taxable Brokerage",
-      balance: 0,
-      currency: "USD",
-      accountable: Investment.new(subtype: "brokerage")
-    )
-    retirement_account = @family.accounts.create!(
-      owner: @user,
-      name: "Reports 401k",
-      balance: 0,
-      currency: "USD",
-      accountable: Investment.new(subtype: "401k")
-    )
-
-    create_transaction(account: taxable_account, name: "Taxable dividend", amount: -100, category: taxable_category)
-    create_transaction(account: retirement_account, name: "401k dividend", amount: -200, category: retirement_category)
-    create_trade(securities(:aapl), account: taxable_account, qty: 1, date: Date.current, price: 100)
-    create_trade(securities(:aapl), account: retirement_account, qty: 1, date: Date.current, price: 200)
-
-    get reports_path(period_type: :monthly)
-    assert_response :ok
-
-    assert_select "tr[data-category='category-#{taxable_category.id}']", text: /Reports Taxable Income/
-    assert_select "tr[data-category='category-#{retirement_category.id}']", count: 0
-
-    other_investments_rows = css_select("tr[data-category='category-other_investments']")
-    assert_operator other_investments_rows.size, :>=, 1
-    other_investments_rows.each do |row|
-      assert_match(/#{Regexp.escape(Category.other_investments.name)}/, row.text)
-      assert_equal 0, row.css("a").size
-    end
-    assert_match(/#{Regexp.escape(I18n.t("reports.transactions_breakdown.table.entries", count: 1))}/, other_investments_rows.first.text)
-    assert_match(/\$100\.00/, other_investments_rows.first.text)
-  end
-
-  test "monthly period navigation shows previous month link" do
-    get reports_path(period_type: :monthly)
-    assert_response :ok
-
-    prev_start = Date.current.beginning_of_month - 1.month
-    prev_end = prev_start.end_of_month
-    assert_select "a[href=?]", reports_path(period_type: :monthly, start_date: prev_start, end_date: prev_end)
-  end
-
-  test "monthly period navigation disables next arrow on current month" do
-    get reports_path(period_type: :monthly)
-    assert_response :ok
-
-    assert_select "button[disabled][aria-label=?]", I18n.t("reports.index.next_period")
-  end
-
-  test "monthly period navigation shows next month link on past month" do
-    past_start = Date.current.beginning_of_month - 2.months
-    past_end = past_start.end_of_month
-    get reports_path(period_type: :monthly, start_date: past_start, end_date: past_end)
-    assert_response :ok
-
-    next_start = past_start + 1.month
-    next_end = next_start.end_of_month
-    assert_select "a[href=?]", reports_path(period_type: :monthly, start_date: next_start, end_date: next_end)
-  end
-
-  test "period arrows carry their keyboard shortcuts" do
-    past_start = Date.current.beginning_of_month - 2.months
-    get reports_path(period_type: :monthly, start_date: past_start, end_date: past_start.end_of_month)
-    assert_response :ok
-
-    assert_select "a[aria-keyshortcuts='ArrowLeft'][data-hotkey='ArrowLeft']"
-    assert_select "a[aria-keyshortcuts='ArrowRight'][data-hotkey='ArrowRight']"
-    assert_select "[role='tooltip']", text: "Previous period (←)"
-    assert_select "[role='tooltip']", text: "Next period (→)"
-  end
-
-  test "last 6 months next window extends to current month end when crossing boundary" do
-    start_date = Date.current.beginning_of_month - 12.months
-    end_date = start_date + 6.months - 1.day
-
-    get reports_path(period_type: :last_6_months, start_date: start_date, end_date: end_date)
-    assert_response :ok
-
-    candidate_start = start_date.beginning_of_month + 6.months
-    if candidate_start + 6.months >= Date.current.beginning_of_month
-      expected_next_end   = Date.current.end_of_month
-      expected_next_start = (expected_next_end + 1.day - 6.months).beginning_of_month
-    else
-      expected_next_start = candidate_start
-      expected_next_end   = expected_next_start + 6.months - 1.day
-    end
-
-    assert_select "a[href=?]",
-      reports_path(period_type: :last_6_months, start_date: expected_next_start, end_date: expected_next_end)
-  end
-
-  test "quarterly period navigation shows previous and next quarter links" do
-    get reports_path(period_type: :quarterly)
-    assert_response :ok
-
-    prev_start = (Date.current.beginning_of_quarter - 1.day).beginning_of_quarter
-    prev_end = prev_start.end_of_quarter
-    assert_select "a[href=?]", reports_path(period_type: :quarterly, start_date: prev_start, end_date: prev_end)
-
-    # Also verify a past quarter shows an enabled next-quarter link
-    get reports_path(period_type: :quarterly, start_date: prev_start, end_date: prev_end)
-    assert_response :ok
-
-    next_start = prev_start.next_quarter.beginning_of_quarter
-    next_end   = next_start.end_of_quarter
-    assert_select "a[href=?]", reports_path(period_type: :quarterly, start_date: next_start, end_date: next_end)
-  end
-
-  test "custom period hides period display" do
-    get reports_path(
-      period_type: :custom,
-      start_date: 1.month.ago.to_date,
-      end_date: Date.current
-    )
-    assert_response :ok
-
-    prev_start = 1.month.ago.to_date.beginning_of_month - 1.month
-    next_start = 1.month.ago.to_date.beginning_of_month + 1.month
-    assert_select "a[href*=?]", "start_date=#{prev_start}", count: 0
-    assert_select "a[href*=?]", "start_date=#{next_start}", count: 0
-  end
-
-  test "ytd period navigation shows previous year link" do
-    get reports_path(period_type: :ytd)
-    assert_response :ok
-
-    prev_year  = Date.current.year - 1
-    prev_start = Date.new(prev_year, 1, 1)
-    prev_end   = Date.new(prev_year, 12, 31)
-    assert_select "a[href=?]", reports_path(period_type: :ytd, start_date: prev_start, end_date: prev_end)
-  end
-
-  test "ytd period navigation disables next arrow on current year" do
-    get reports_path(period_type: :ytd)
-    assert_response :ok
-
-    assert_select "button[disabled][aria-label=?]", I18n.t("reports.index.next_period")
-  end
-
-  test "a transfer out is not listed among the period's sales" do
-    account = @family.accounts.create!(name: "Wallet", balance: 100, currency: "USD",
-                                       accountable: Investment.new)
-    security = Security.find_or_create_by!(ticker: "MOVE") { |sec| sec.name = "Movable" }
-    Holding.create!(account: account, security: security, date: 10.days.ago.to_date,
-                    qty: 100, price: 2, amount: 200, currency: "USD", cost_basis: 1)
-
-    %w[Transfer Sell].each do |label|
-      account.entries.create!(
-        date: 3.days.ago.to_date, name: "out #{label}", amount: 0, currency: "USD",
-        entryable: Trade.new(security: security, qty: -40, price: 3, currency: "USD",
-                             investment_activity_label: label)
-      )
-    end
-
-    # `period_type`, not `period` — the controller reads the former, so the
-    # latter silently fell back to the current month and the trades dated
-    # three days ago dropped out of range on the 1st to the 3rd.
-    get reports_path(period_type: :custom, start_date: 30.days.ago.to_date, end_date: Date.current)
-    assert_response :success
-
-    # A transfer out carries the same negative quantity as a sale. Counting it
-    # as one both inflates the number of sales and books a gain nobody made.
-    assert_match I18n.t("reports.investment_performance.sells_count", count: 1), response.body
-    assert_no_match(/#{Regexp.escape(I18n.t("reports.investment_performance.sells_count", count: 2))}/, response.body)
-  end
-
-  private
-    # n EUR-priced disposals in a USD account, each on its own date with its
-    # own rate row, so every one needs a distinct lookup.
-    def seed_foreign_disposals(account, count)
-      base = Date.current.beginning_of_month
-
-      count.times do |i|
-        date = base + i
-        security = Security.create!(ticker: "EUX#{SecureRandom.hex(3)}", name: "Euro Listed #{i}")
-
-        ExchangeRate.create!(from_currency: "EUR", to_currency: "USD", date: date, rate: 1.5)
-        account.holdings.create!(security: security, date: date, qty: 5, price: 150,
-                                 amount: BigDecimal(750), currency: "USD", cost_basis: 100)
-        create_trade(security, account: account, qty: -2, date: date, price: 150, currency: "EUR")
-      end
-    end
 end

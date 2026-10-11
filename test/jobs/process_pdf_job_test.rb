@@ -18,20 +18,10 @@ class ProcessPdfJobTest < ActiveJob::TestCase
 
   test "skips if PDF not uploaded" do
     assert_not @import.pdf_uploaded?
-    @import.update_columns(status: "importing", updated_at: 31.minutes.ago)
 
     ProcessPdfJob.perform_now(@import)
 
     assert_equal "pending", @import.reload.status
-  end
-
-  test "skips if PDF not uploaded without releasing fresh processing claim" do
-    assert_not @import.pdf_uploaded?
-    @import.update!(status: :importing)
-
-    ProcessPdfJob.perform_now(@import)
-
-    assert_equal "importing", @import.reload.status
   end
 
   test "skips if already processed" do
@@ -41,29 +31,6 @@ class ProcessPdfJobTest < ActiveJob::TestCase
 
     # Should not change status since already complete
     assert_equal "complete", processed_import.reload.status
-  end
-
-  test "skips already processed importing import and releases processing claim" do
-    processed_import = imports(:pdf_processed)
-    attach_pdf!(processed_import)
-    processed_import.update!(document_type: "financial_document")
-    processed_import.update_columns(status: "importing", updated_at: 31.minutes.ago)
-    processed_import.expects(:process_with_ai).never
-
-    ProcessPdfJob.perform_now(processed_import)
-
-    assert_equal "pending", processed_import.reload.status
-  end
-
-  test "skips already processed importing import without releasing fresh processing claim" do
-    processed_import = imports(:pdf_processed)
-    attach_pdf!(processed_import)
-    processed_import.update!(status: :importing, document_type: "financial_document")
-    processed_import.expects(:process_with_ai).never
-
-    ProcessPdfJob.perform_now(processed_import)
-
-    assert_equal "importing", processed_import.reload.status
   end
 
   test "uploads non-bank PDF to vector store with classified type metadata" do
@@ -117,28 +84,6 @@ class ProcessPdfJobTest < ActiveJob::TestCase
     ProcessPdfJob.perform_now(@import)
 
     assert_equal "complete", @import.reload.status
-  end
-
-  test "discards permanently and marks failed on Provider::Error" do
-    attach_pdf!(@import)
-    @import.expects(:process_with_ai).once.raises(Provider::Error, "Could not convert PDF to images")
-
-    assert_nothing_raised do
-      ProcessPdfJob.perform_now(@import)
-    end
-
-    assert_equal "failed", @import.reload.status
-    assert @import.error.present?
-  end
-
-  test "skips already failed import" do
-    attach_pdf!(@import)
-    @import.update!(status: :failed)
-    @import.expects(:process_with_ai).never
-
-    ProcessPdfJob.perform_now(@import)
-
-    assert_equal "failed", @import.reload.status
   end
 
   private

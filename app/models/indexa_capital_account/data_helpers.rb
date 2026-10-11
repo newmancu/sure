@@ -39,41 +39,17 @@ module IndexaCapitalAccount::DataHelpers
       nil
     end
 
-    # Extract the canonical security key from an Indexa fiscal-results row.
-    # Indexa's response shape varies between endpoints (and across time), so
-    # try the nested instrument hash first, then a few flat fallbacks. Both
-    # HoldingsProcessor and Processor#calculate_holdings_value go through
-    # this helper so they can't disagree on which rows refer to the same
-    # security.
-    def extract_instrument_key(data)
-      return nil unless data.respond_to?(:[])
-
-      hash = data.respond_to?(:with_indifferent_access) ? data.with_indifferent_access : data
-      instrument = hash[:instrument]
-      if instrument.is_a?(Hash)
-        nested = instrument.with_indifferent_access
-        return nested[:identifier] || nested[:isin_code] || nested[:isin]
-      end
-
-      hash[:identifier] || hash[:isin_code] || hash[:isin] || hash[:symbol] || hash[:ticker]
-    end
-
-    def parse_date(date_value, family: nil)
+    def parse_date(date_value)
       return nil if date_value.nil?
 
-      tz = family&.timezone
-
       case date_value
-      when String
-        if tz && (date_value.include?("T") || date_value.include?(":"))
-          Time.parse(date_value).in_time_zone(tz).to_date
-        else
-          Date.parse(date_value)
-        end
-      when Time, DateTime, ActiveSupport::TimeWithZone
-        date_value.in_time_zone(tz).to_date
       when Date
         date_value
+      when String
+        # Use Time.zone.parse for external timestamps (Rails timezone guidelines)
+        Time.zone.parse(date_value)&.to_date
+      when Time, DateTime, ActiveSupport::TimeWithZone
+        date_value.to_date
       else
         nil
       end

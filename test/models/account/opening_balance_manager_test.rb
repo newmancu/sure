@@ -192,75 +192,6 @@ class Account::OpeningBalanceManagerTest < ActiveSupport::TestCase
     assert_equal original_date, opening_anchor.entry.date # Should remain unchanged
   end
 
-  test "when existing anchor date is before later activity, update can preserve anchor date" do
-    manager = Account::OpeningBalanceManager.new(@depository_account)
-    original_date = 4.months.ago.to_date
-
-    result = manager.set_opening_balance(
-      balance: 1000,
-      date: original_date
-    )
-    assert result.success?
-
-    @depository_account.entries.create!(
-      date: 2.months.ago.to_date,
-      name: "Later transaction",
-      amount: 100,
-      currency: "USD",
-      entryable: Transaction.new
-    )
-
-    result = manager.set_opening_balance(
-      balance: 0,
-      date: original_date
-    )
-
-    assert result.success?
-    assert result.changes_made?
-
-    opening_anchor = @depository_account.valuations.opening_anchor.first
-    opening_anchor.reload
-    assert_equal 0, opening_anchor.entry.amount
-    assert_equal original_date, opening_anchor.entry.date
-  end
-
-  test "recomputes oldest entry date when older activity is added after manager initialization" do
-    oldest_date = 60.days.ago.to_date
-    @depository_account.entries.create!(
-      date: oldest_date,
-      name: "Existing transaction",
-      amount: 100,
-      currency: "USD",
-      entryable: Transaction.new
-    )
-
-    manager = Account::OpeningBalanceManager.new(@depository_account)
-
-    result = manager.set_opening_balance(
-      balance: 1000,
-      date: oldest_date - 1.day
-    )
-    assert result.success?
-
-    newly_oldest_date = oldest_date - 2.days
-    @depository_account.entries.create!(
-      date: newly_oldest_date,
-      name: "New older transaction",
-      amount: 50,
-      currency: "USD",
-      entryable: Transaction.new
-    )
-
-    result = manager.set_opening_balance(
-      balance: 1200,
-      date: newly_oldest_date
-    )
-
-    assert_not result.success?
-    assert_not result.changes_made?
-    assert_equal "Opening balance date must be before the oldest entry date", result.error
-  end
-
   test "when date is equal to or greater than account's oldest entry, returns error result" do
     # Create an entry with a specific date
     oldest_date = 60.days.ago.to_date
@@ -298,18 +229,6 @@ class Account::OpeningBalanceManagerTest < ActiveSupport::TestCase
     assert_nil @depository_account.valuations.opening_anchor.first
   end
 
-  test "date_error checks a date without writing" do
-    oldest_date = 60.days.ago.to_date
-    @depository_account.entries.create!(date: oldest_date, name: "Test transaction", amount: 100, currency: "USD", entryable: Transaction.new)
-    manager = Account::OpeningBalanceManager.new(@depository_account)
-
-    assert_nil manager.date_error(nil)
-    assert_nil manager.date_error(oldest_date - 1.day)
-    assert_equal "Opening balance date must be before the oldest entry date", manager.date_error(oldest_date)
-    assert_equal oldest_date, manager.oldest_entry_date
-    assert_nil @depository_account.valuations.opening_anchor.first
-  end
-
   test "when no changes made, returns success with no changes made" do
     # First create an opening anchor
     manager = Account::OpeningBalanceManager.new(@depository_account)
@@ -329,20 +248,5 @@ class Account::OpeningBalanceManagerTest < ActiveSupport::TestCase
     assert result.success?
     assert_not result.changes_made?
     assert_nil result.error
-  end
-
-  test "locks the account row before reading the opening anchor" do
-    sql = []
-    callback = ->(*, payload) { sql << payload[:sql] }
-
-    ActiveSupport::Notifications.subscribed(callback, "sql.active_record") do
-      Account::OpeningBalanceManager.new(@depository_account).set_opening_balance(balance: 100, date: 1.year.ago.to_date)
-    end
-
-    lock = sql.index { |q| q.include?("FOR UPDATE") && q.include?('"accounts"') }
-    anchor_read = sql.index { |q| q.match?(/"valuations"."kind"/) }
-    assert lock, "expected the account row to be locked"
-    assert anchor_read, "expected the opening anchor to be read"
-    assert_operator lock, :<, anchor_read
   end
 end

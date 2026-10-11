@@ -19,13 +19,6 @@ class TradesController < ApplicationController
 
     return unless require_account_permission!(@account)
 
-    # A deposit or withdrawal also books an entry on the other account, so that
-    # account needs the same write permission, as in TransfersController#create.
-    if create_params[:transfer_account_id].present?
-      transfer_account = accessible_accounts.find(create_params[:transfer_account_id])
-      return unless require_account_permission!(transfer_account)
-    end
-
     @model = Trade::CreateForm.new(create_params.merge(account: @account)).create
 
     if @model.persisted?
@@ -42,7 +35,7 @@ class TradesController < ApplicationController
         format.turbo_stream { stream_redirect_back_or_to account_path(@account) }
       end
     else
-      render :new, status: :unprocessable_entity, formats: [ :html ]
+      render :new, status: :unprocessable_entity
     end
   end
 
@@ -76,7 +69,7 @@ class TradesController < ApplicationController
         end
       end
     else
-      render :show, status: :unprocessable_entity, formats: [ :html ]
+      render :show, status: :unprocessable_entity
     end
   end
 

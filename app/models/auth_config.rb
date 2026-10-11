@@ -12,13 +12,6 @@ class AuthConfig
       !!Rails.configuration.x.auth.local_admin_override_enabled
     end
 
-    # Whether a registered passkey may be used to sign in on its own, skipping
-    # both the password and the TOTP step. Defaults to true when unconfigured.
-    def passkey_login_enabled?
-      value = Rails.configuration.x.auth.passkey_login_enabled
-      value.nil? ? true : !!value
-    end
-
     # When the local login form should be visible on the login page.
     # - true when local login is enabled for everyone
     # - true when admin override is enabled (super-admin only backend guard)
@@ -81,17 +74,7 @@ class AuthConfig
     end
 
     def sso_providers
-      if FeatureFlags.db_sso_providers?
-        # After boot, OmniAuth registers successfully configured providers into
-        # Rails.configuration.x.auth.sso_providers. Prefer that filtered list
-        # so we never render login buttons for providers that couldn't be
-        # registered (e.g., missing required fields in YAML fallback).
-        # Fall back to ProviderLoader for pre-boot contexts.
-        registered = Rails.configuration.x.auth.sso_providers
-        registered&.any? ? registered : ProviderLoader.load_providers
-      else
-        Rails.configuration.x.auth.sso_providers || []
-      end
+      Rails.configuration.x.auth.sso_providers || []
     end
   end
 end

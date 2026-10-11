@@ -1,18 +1,6 @@
 <%# locals: (accounts:) %>
 
-<% if accounts.any? %>
-  <% ActiveRecord::Associations::Preloader.new(
-       records: accounts,
-       associations: [
-         :account_shares,
-         :accountable,
-         :plaid_account,
-         :simplefin_account,
-         { account_providers: :provider },
-         { logo_attachment: :blob }
-       ]
-     ).call %>
-<% end %>
+<% ActiveRecord::Associations::Preloader.new(records: accounts, associations: :account_shares).call if accounts.any? %>
 <% accounts.group_by(&:accountable_type).sort_by { |group, _| group }.each do |group, accounts| %>
   <div class="bg-container-inset p-1 rounded-xl">
     <div class="flex items-center px-4 py-2 text-xs font-medium text-secondary">

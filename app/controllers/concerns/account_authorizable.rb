@@ -12,7 +12,7 @@ module AccountAuthorizable
 
       allowed = case level
       when :write    then permission.in?([ :owner, :full_control ])
-      when :annotate then permission == :owner || permission.to_s.in?(AccountShare::ANNOTATE_PERMISSIONS)
+      when :annotate then permission.in?([ :owner, :full_control, :read_write ])
       when :owner    then permission == :owner
       else false
       end
@@ -23,7 +23,6 @@ module AccountAuthorizable
       respond_to do |format|
         format.html { redirect_back_or_to path, alert: t("accounts.not_authorized") }
         format.turbo_stream { stream_redirect_back_or_to(path, alert: t("accounts.not_authorized")) }
-        format.json { render json: { error: t("accounts.not_authorized") }, status: :forbidden }
       end
       false
     end

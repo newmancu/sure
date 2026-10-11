@@ -1,24 +1,30 @@
 <div id="coinbase-providers-panel" class="space-y-4">
   <% items = local_assigns[:coinbase_items] || @coinbase_items || Current.family.coinbase_items.active.ordered %>
 
-  <%= render "settings/providers/setup_steps",
-             steps: [
-               t("settings.providers.coinbase_panel.step1_html").html_safe,
-               t("settings.providers.coinbase_panel.step2"),
-               t("settings.providers.coinbase_panel.step3")
-             ] %>
+  <div class="prose prose-sm text-secondary">
+    <p class="text-primary font-medium"><%= t("settings.providers.coinbase_panel.setup_instructions") %></p>
+    <ol>
+      <li><%= t("settings.providers.coinbase_panel.step1_html").html_safe %></li>
+      <li><%= t("settings.providers.coinbase_panel.step2") %></li>
+      <li><%= t("settings.providers.coinbase_panel.step3") %></li>
+    </ol>
+  </div>
 
   <% error_msg = local_assigns[:error_message] || @error_message %>
   <% if error_msg.present? %>
-    <%= render DS::Alert.new(message: error_msg, variant: :error) %>
+    <div class="p-2 rounded-md bg-destructive/10 text-destructive text-sm overflow-hidden">
+      <p class="line-clamp-3" title="<%= error_msg %>"><%= error_msg %></p>
+    </div>
   <% end %>
 
   <% if items.any? %>
     <div class="space-y-3">
       <% items.each do |item| %>
-        <div class="flex flex-wrap items-center justify-between gap-3 p-3 bg-container-inset rounded-lg border border-primary">
+        <div class="flex items-center justify-between p-3 bg-container-inset rounded-lg border border-primary">
           <div class="flex items-center gap-3">
-            <%= render ProviderLogo.new(provider_key: :coinbase, class_name: "w-10 h-10 rounded-full") %>
+            <div class="w-10 h-10 rounded-full bg-[#0052FF] flex items-center justify-center">
+              <%= icon "bitcoin", size: "md", class: "text-white" %>
+            </div>
             <div>
               <p class="font-medium text-primary"><%= item.name %></p>
               <p class="text-xs text-secondary">
@@ -30,25 +36,20 @@
               </p>
             </div>
           </div>
-          <div class="flex flex-wrap items-center gap-2">
-            <%= render DS::Button.new(
-              text: t("settings.providers.coinbase_panel.sync"),
-              icon: "refresh-cw",
-              variant: :outline,
-              size: :sm,
-              href: sync_coinbase_item_path(item, source: "panel"),
-              method: :post,
-              disabled: item.syncing?
-            ) %>
-            <%= render DS::Button.new(
-              text: t("settings.providers.coinbase_panel.disconnect"),
-              icon: "trash-2",
-              variant: :outline_destructive,
-              size: :sm,
-              href: coinbase_item_path(item),
-              method: :delete,
-              data: { turbo_confirm: t("settings.providers.coinbase_panel.disconnect_confirm") }
-            ) %>
+          <div class="flex items-center gap-2">
+            <%= button_to sync_coinbase_item_path(item),
+                          method: :post,
+                          class: "inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-secondary hover:text-primary border border-secondary rounded-lg hover:border-primary",
+                          disabled: item.syncing? do %>
+              <%= icon "refresh-cw", size: "sm" %>
+              <%= t("settings.providers.coinbase_panel.sync") %>
+            <% end %>
+            <%= button_to coinbase_item_path(item),
+                          method: :delete,
+                          class: "inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-destructive hover:bg-destructive/10 rounded-lg",
+                          data: { turbo_confirm: t("settings.providers.coinbase_panel.disconnect_confirm") } do %>
+              <%= icon "trash-2", size: "sm" %>
+            <% end %>
           </div>
         </div>
       <% end %>
@@ -75,9 +76,19 @@
                           type: :password %>
 
       <div class="flex justify-end">
-        <%= form.submit t("settings.providers.coinbase_panel.connect_button") %>
+        <%= form.submit t("settings.providers.coinbase_panel.connect_button"),
+                        class: "inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium text-inverse bg-inverse hover:bg-inverse-hover focus:outline-none focus:ring-2 focus:ring-gray-900 focus:ring-offset-2 transition-colors" %>
       </div>
     <% end %>
   <% end %>
 
+  <div class="flex items-center gap-2">
+    <% if items.any? %>
+      <div class="w-2 h-2 bg-success rounded-full"></div>
+      <p class="text-sm text-secondary"><%= t("settings.providers.coinbase_panel.status_connected") %></p>
+    <% else %>
+      <div class="w-2 h-2 bg-tertiary rounded-full"></div>
+      <p class="text-sm text-secondary"><%= t("settings.providers.coinbase_panel.status_not_connected") %></p>
+    <% end %>
+  </div>
 </div>

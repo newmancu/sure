@@ -17,7 +17,7 @@
             <% end %>
             <% if account.draft? %>
               <%= render DS::Link.new(
-                  text: t(".complete_setup"),
+                  text: "Complete setup",
                   href: edit_account_path(account),
                   variant: :outline,
                   size: :sm,

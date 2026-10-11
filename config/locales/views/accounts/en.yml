@@ -1,13 +1,8 @@
 ---
 en:
-  account:
-    entries:
-      destroy:
-        success: "Entry deleted successfully."
   accounts:
     not_authorized: "You don't have permission to manage this account"
     account:
-      complete_setup: Complete setup
       edit: Edit
       link_lunchflow: Link with Lunch Flow
       link_provider: Link with provider
@@ -16,9 +11,6 @@ en:
       troubleshoot: Troubleshoot
       enable: Enable account
       disable: Disable account
-      exclude_from_reports: Exclude from all reports
-      include_in_reports: Include in reports
-      excluded_from_reports_indicator: Excluded from reports
       set_default: Set as default
       remove_default: Unset default
       default_label: Default
@@ -50,15 +42,8 @@ en:
       institution_domain_placeholder: e.g., chase.com
       notes_label: Notes
       notes_placeholder: Store additional information like account numbers, sort codes, IBAN, routing numbers, etc.
-      exclude_from_reports: Exclude from all reports
-      enable_category_matcher_label: Enable category matcher
-      enable_category_matcher_hint: When enabled, the provider's suggested category is applied to imported transactions. Disable to leave new transactions uncategorized.
     index:
       accounts: Accounts
-      financekit_accounts:
-        title: Apple Wallet
-        description: Manage Apple Wallet connections and sync in the Sure iOS app.
-      cancel_sync: Cancel sync
       manual_accounts:
         other_accounts: Other accounts
       new_account: New account
@@ -67,12 +52,6 @@ en:
       syncing: "Syncing accounts..."
     new:
       import_accounts: Import accounts
-      container:
-        select: Select
-        navigate: Navigate
-        close: Close
-        next: Next
-        previous: Previous
       method_selector:
         connected_entry: Link account
         connected_entry_eu: Link EU account
@@ -83,16 +62,9 @@ en:
       title: What would you like to add?
     show:
       limited_fx_history_warning: "Exchange rate history is only available from %{date} onwards. Transactions before this date use approximate currency conversions — this can happen when the FX provider only offers a limited historical window."
-      tabs:
-        activity: Activity
-        holdings: Holdings
-        overview: Overview
-        schedule: Schedule
-        statements: Statements
       activity:
         amount: Amount
         balance: Balance
-        category: Category
         confirmed: Confirmed
         date: Date
         entries: entries
@@ -108,15 +80,11 @@ en:
         pending: Pending
         search:
           placeholder: Search entries by name
-        search_placeholder: Search entries by name
         status: Status
         title: Activity
-        uncategorized_only: Uncategorized only
       chart:
         balance: Balance
         owed: Amount owed
-      header:
-        complete_setup: Complete setup
       menu:
         confirm_accept: Delete "%{name}"
         confirm_body_html: "<p>By deleting this account, you will erase its value
@@ -125,16 +93,11 @@ en:
           graphs.</p><br /> <p>After deletion, there is no way you'll be able to restore
           the account information because you'll need to add it as a new account.</p>"
         confirm_title: Delete account?
-        delete_account: Delete account
         edit: Edit
         import: Import transactions
         import_trades: Import trades
         import_transactions: Import transactions
         manage: Manage accounts
-        sharing: Sharing
-        statements: Statements
-        exclude_from_reports: Exclude from all reports
-        include_in_reports: Include in reports
     update:
       success: "%{type} account updated"
     sidebar:
@@ -149,8 +112,6 @@ en:
       new_debt: New debt
       new_account: New account
       new_account_group: "New %{account_group}"
-      expand_all: Expand all
-      collapse_all: Collapse all
     types:
       depository: Cash
       investment: Investment
@@ -161,16 +122,6 @@ en:
       credit_card: Credit Card
       loan: Loan
       other_liability: Other Liability
-    types_plural:
-      depository: Cash
-      investment: Investments
-      crypto: Crypto
-      property: Properties
-      vehicle: Vehicles
-      other_asset: Other Assets
-      credit_card: Credit Cards
-      loan: Loans
-      other_liability: Other Liabilities
     tax_treatments:
       taxable: Taxable
       tax_deferred: Tax-Deferred
@@ -187,13 +138,11 @@ en:
       ca: Canada
       au: Australia
       eu: Europe
-      in: India
       generic: General
     confirm_unlink:
       title: Unlink account from provider?
       description_html: "You are about to unlink <strong>%{account_name}</strong> from <strong>%{provider_name}</strong>. This will convert it to a manual account."
       warning_title: What this means
-      warning_wallet_connection: All accounts in this Apple Wallet connection will be unlinked. Their transactions and balances will be preserved. You can reconnect through the Sure iOS app with a new Wallet setup.
       warning_no_sync: The account will no longer sync automatically with your provider
       warning_manual_updates: You will need to add transactions and update balances manually
       warning_transactions_kept: All existing transactions and balances will be preserved

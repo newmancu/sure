@@ -10,11 +10,8 @@ class Api::V1::TransactionsController < Api::V1::BaseController
 
   def index
     family = current_resource_owner.family
-    accessible_account_ids = family.accounts
-      .accessible_by(current_resource_owner)
-      .where.not(status: "pending_deletion")
-      .select(:id)
-    transactions_query = family.transactions
+    accessible_account_ids = family.accounts.accessible_by(current_resource_owner).select(:id)
+    transactions_query = family.transactions.visible
       .joins(:entry).where(entries: { account_id: accessible_account_ids })
 
     # Apply filters
@@ -72,7 +69,7 @@ class Api::V1::TransactionsController < Api::V1::BaseController
     family = current_resource_owner.family
 
     # Validate account_id is present
-    unless account_id_param.present?
+    unless transaction_params[:account_id].present?
       render json: {
         error: "validation_failed",
         message: "Account ID is required",
@@ -81,28 +78,13 @@ class Api::V1::TransactionsController < Api::V1::BaseController
       return
     end
 
-    if idempotency_source_param.present? && idempotency_external_id.blank?
-      render json: {
-        error: "validation_failed",
-        message: "Source requires external_id",
-        errors: [ "Source requires external_id" ]
-      }, status: :unprocessable_entity
-      return
-    end
-
-    account = family.accounts.writable_by(current_resource_owner).find(account_id_param)
-
-    if idempotency_key_requested? && (existing_entry = existing_idempotent_entry(account))
-      return render_existing_idempotent_entry(existing_entry)
-    end
-
+    account = family.accounts.writable_by(current_resource_owner).find(transaction_params[:account_id])
     @entry = account.entries.new(entry_params_for_create)
 
     if @entry.save
+      @entry.sync_account_later
       @entry.lock_saved_attributes!
       @entry.transaction.lock_attr!(:tag_ids) if @entry.transaction.tags.any?
-      @entry.mark_user_modified! if user_modified_requested?
-      @entry.sync_account_later
 
       @transaction = @entry.transaction
       render :show, status: :created
@@ -114,12 +96,6 @@ class Api::V1::TransactionsController < Api::V1::BaseController
       }, status: :unprocessable_entity
     end
 
-  rescue ActiveRecord::RecordNotUnique
-    if idempotency_key_requested? && account && (existing_entry = existing_idempotent_entry(account))
-      render_existing_idempotent_entry(existing_entry)
-    else
-      raise
-    end
   rescue => e
     Rails.logger.error "TransactionsController#create error: #{e.message}"
     Rails.logger.error e.backtrace.join("\n")
@@ -128,7 +104,7 @@ class Api::V1::TransactionsController < Api::V1::BaseController
       error: "internal_server_error",
       message: "An unexpected error occurred"
     }, status: :internal_server_error
-  end
+end
 
   def update
     if @entry.split_child?
@@ -153,7 +129,6 @@ class Api::V1::TransactionsController < Api::V1::BaseController
 
         @entry.sync_account_later
         @entry.lock_saved_attributes!
-        @entry.mark_user_modified! if user_modified_requested?
 
         @transaction = @entry.transaction
         render :show
@@ -203,8 +178,6 @@ class Api::V1::TransactionsController < Api::V1::BaseController
   private
 
     def set_transaction
-      raise ActiveRecord::RecordNotFound unless valid_uuid?(params[:id])
-
       family = current_resource_owner.family
       @transaction = family.transactions
         .joins(entry: :account)
@@ -229,12 +202,12 @@ class Api::V1::TransactionsController < Api::V1::BaseController
     def apply_filters(query)
       # Account filtering
       if params[:account_id].present?
-        query = query.where(entries: { account_id: params[:account_id] })
+        query = query.joins(:entry).where(entries: { account_id: params[:account_id] })
       end
 
       if params[:account_ids].present?
         account_ids = Array(params[:account_ids])
-        query = query.where(entries: { account_id: account_ids })
+        query = query.joins(:entry).where(entries: { account_id: account_ids })
       end
 
       # Category filtering
@@ -259,39 +232,37 @@ class Api::V1::TransactionsController < Api::V1::BaseController
 
       # Date range filtering
       if params[:start_date].present?
-        query = query.where("entries.date >= ?", Date.parse(params[:start_date]))
+        query = query.joins(:entry).where("entries.date >= ?", Date.parse(params[:start_date]))
       end
 
       if params[:end_date].present?
-        query = query.where("entries.date <= ?", Date.parse(params[:end_date]))
+        query = query.joins(:entry).where("entries.date <= ?", Date.parse(params[:end_date]))
       end
 
       # Amount filtering
       if params[:min_amount].present?
         min_amount = params[:min_amount].to_f
-        query = query.where("entries.amount >= ?", min_amount)
+        query = query.joins(:entry).where("entries.amount >= ?", min_amount)
       end
 
       if params[:max_amount].present?
         max_amount = params[:max_amount].to_f
-        query = query.where("entries.amount <= ?", max_amount)
+        query = query.joins(:entry).where("entries.amount <= ?", max_amount)
       end
 
       # Tag filtering
       if params[:tag_ids].present?
         tag_ids = Array(params[:tag_ids])
-        query = query.where(
-          id: query.joins(:tags).where(tags: { id: tag_ids }).distinct.select(:id)
-        )
+        query = query.joins(:tags).where(tags: { id: tag_ids })
       end
 
       # Transaction type filtering (income/expense)
       if params[:type].present?
         case params[:type].downcase
         when "income"
-          query = query.where("entries.amount < 0")
+          query = query.joins(:entry).where("entries.amount < 0")
         when "expense"
-          query = query.where("entries.amount > 0")
+          query = query.joins(:entry).where("entries.amount > 0")
         end
       end
 
@@ -301,33 +272,19 @@ class Api::V1::TransactionsController < Api::V1::BaseController
     def apply_search(query)
       search_term = "%#{params[:search]}%"
 
-      query
-        .left_joins(:merchant)
-        .where(
-          "entries.name ILIKE ? OR entries.notes ILIKE ? OR merchants.name ILIKE ?",
-          search_term, search_term, search_term
-        )
-    end
+      query.joins(:entry)
+           .left_joins(:merchant)
+           .where(
+             "entries.name ILIKE ? OR entries.notes ILIKE ? OR merchants.name ILIKE ?",
+             search_term, search_term, search_term
+           )
+end
 
     def transaction_params
       params.require(:transaction).permit(
-        :date, :amount, :name, :description, :notes, :currency,
-        :category_id, :merchant_id, :nature, :user_modified, tag_ids: []
+        :account_id, :date, :amount, :name, :description, :notes, :currency,
+        :category_id, :merchant_id, :nature, tag_ids: []
       )
-    end
-
-    # An API client can opt a transaction it creates or updates into the
-    # same sync-protection a manual edit gets (Entry#protected_from_sync?) -
-    # useful for a client that owns its own writes into an account also
-    # linked to a bank-sync provider (Plaid/SimpleFin/etc.), so the next
-    # sync only links its external_id to the entry instead of overwriting
-    # the category/name the client already set.
-    def user_modified_requested?
-      ActiveModel::Type::Boolean.new.cast(transaction_params[:user_modified])
-    end
-
-    def account_id_param
-      params.dig(:transaction, :account_id).presence
     end
 
     def entry_params_for_create
@@ -344,10 +301,6 @@ class Api::V1::TransactionsController < Api::V1::BaseController
           tag_ids: transaction_params[:tag_ids] || []
         }
       }
-      if idempotency_key_requested?
-        entry_params[:external_id] = idempotency_external_id
-        entry_params[:source] = idempotency_source
-      end
 
       entry_params.compact
     end
@@ -384,49 +337,6 @@ class Api::V1::TransactionsController < Api::V1::BaseController
       params.dig(:transaction, :amount).present? ||
         params.dig(:transaction, :date).present? ||
         params.dig(:transaction, :nature).present?
-    end
-
-    def idempotency_key_requested?
-      idempotency_external_id.present?
-    end
-
-    def idempotency_external_id
-      idempotency_param_value(:external_id)
-    end
-
-    def idempotency_source
-      idempotency_source_param.presence || "api"
-    end
-
-    def idempotency_source_param
-      idempotency_param_value(:source)
-    end
-
-    def idempotency_param_value(key)
-      value = params.dig(:transaction, key)
-      value.to_s.presence if value.is_a?(String) || value.is_a?(Numeric)
-    end
-
-    def existing_idempotent_entry(account)
-      account.entries.find_by(
-        external_id: idempotency_external_id,
-        source: idempotency_source
-      )
-    end
-
-    def render_existing_idempotent_entry(entry)
-      unless entry.entryable.is_a?(Transaction)
-        render json: {
-          error: "validation_failed",
-          message: "External ID already exists for a non-transaction entry",
-          errors: [ "External ID already exists for a non-transaction entry" ]
-        }, status: :unprocessable_entity
-        return
-      end
-
-      @entry = entry
-      @transaction = entry.transaction
-      render :show, status: :ok
     end
 
     def calculate_signed_amount

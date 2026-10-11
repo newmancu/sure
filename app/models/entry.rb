@@ -1,9 +1,6 @@
 class Entry < ApplicationRecord
   include Monetizable, Enrichable
 
-  TRUTHY_VALUES = [ true, "true", "1", 1 ].freeze
-  private_constant :TRUTHY_VALUES
-
   attr_accessor :unsplitting
 
   monetize :amount
@@ -12,16 +9,8 @@ class Entry < ApplicationRecord
   belongs_to :transfer, optional: true
   belongs_to :import, optional: true
   belongs_to :parent_entry, class_name: "Entry", optional: true
-  belongs_to :reconciled_by_statement, class_name: "AccountStatement", optional: true
-
-  # Mirrors chk_entries_reconciled_at_present_when_statement_set so a direct
-  # assignment surfaces a validation error rather than a StatementInvalid.
-  validates :reconciled_at, presence: true, if: -> { reconciled_by_statement_id.present? }
 
   has_many :child_entries, class_name: "Entry", foreign_key: :parent_entry_id, dependent: :destroy
-  # Read side only, so a transaction can say which bills it paid. The foreign key
-  # already nullifies on delete, so this adds no lifecycle behaviour.
-  has_many :recurring_allocations, dependent: nil, inverse_of: :entry
 
   delegated_type :entryable, types: Entryable::TYPES, dependent: :destroy
   accepts_nested_attributes_for :entryable
@@ -35,7 +24,6 @@ class Entry < ApplicationRecord
   validate :split_child_date_matches_parent
 
   before_destroy :prevent_individual_child_deletion, if: :split_child?
-  after_save :track_earliest_saved_date, if: :saved_change_to_date?
 
   scope :visible, -> {
     joins(:account).where(accounts: { status: [ "draft", "active" ] })
@@ -45,8 +33,7 @@ class Entry < ApplicationRecord
     order(
       date: :asc,
       Arel.sql("CASE WHEN entries.entryable_type = 'Valuation' THEN 1 ELSE 0 END") => :asc,
-      created_at: :asc,
-      id: :asc
+      created_at: :asc
     )
   }
 
@@ -54,32 +41,34 @@ class Entry < ApplicationRecord
     order(
       date: :desc,
       Arel.sql("CASE WHEN entries.entryable_type = 'Valuation' THEN 1 ELSE 0 END") => :desc,
-      created_at: :desc,
-      id: :desc
+      created_at: :desc
     )
   }
-
-  # Reconciliation scopes - see AddReconciliationToEntries
-  scope :reconciled, -> { where.not(reconciled_at: nil) }
-  scope :unreconciled, -> { where(reconciled_at: nil) }
-  scope :reconciled_by, ->(statement) { where(reconciled_by_statement_id: statement) }
 
   # Pending transaction scopes - check Transaction.extra for provider pending flags
   # Works with any provider that stores pending status in extra["provider_name"]["pending"]
   scope :pending, -> {
     joins("INNER JOIN transactions ON transactions.id = entries.entryable_id AND entries.entryable_type = 'Transaction'")
-      .where(Transaction.pending_sql)
+      .where(<<~SQL.squish)
+        (transactions.extra -> 'simplefin' ->> 'pending')::boolean = true
+        OR (transactions.extra -> 'plaid' ->> 'pending')::boolean = true
+        OR (transactions.extra -> 'lunchflow' ->> 'pending')::boolean = true
+      SQL
   }
 
   scope :excluding_pending, -> {
     # For non-Transaction entries (Trade, Valuation), always include
-    # For Transaction entries, exclude if any provider marks it pending
+    # For Transaction entries, exclude if pending flag is true
     where(<<~SQL.squish)
       entries.entryable_type != 'Transaction'
       OR NOT EXISTS (
         SELECT 1 FROM transactions t
         WHERE t.id = entries.entryable_id
-        AND (#{Transaction::PENDING_CHECK_SQL})
+        AND (
+          (t.extra -> 'simplefin' ->> 'pending')::boolean = true
+          OR (t.extra -> 'plaid' ->> 'pending')::boolean = true
+          OR (t.extra -> 'lunchflow' ->> 'pending')::boolean = true
+        )
       )
     SQL
   }
@@ -102,24 +91,18 @@ class Entry < ApplicationRecord
     joins(:account).where(accounts: { family_id: family.id })
   end
 
-  # Uncategorized transaction entries on draft or active accounts.
+  # Uncategorized, non-transfer transaction entries on draft or active accounts.
   # Caller is responsible for scoping to accessible entries before applying this scope.
-  #
-  # Uses Transaction::UNCATEGORIZED_EXCLUDED_KINDS rather than TRANSFER_KINDS so
-  # the badge count and Quick Categorize wizard cover exactly what the
-  # Transactions "Uncategorized" filter lists — notably the budget-tracked
-  # loan_payment / investment_contribution transfers the dashboard already
-  # counts, which were previously uncategorizable from any surface (#2592).
   scope :uncategorized_transactions, -> {
     joins(:account)
       .joins("INNER JOIN transactions ON transactions.id = entries.entryable_id AND entries.entryable_type = 'Transaction'")
       .where(accounts: { status: %w[draft active] })
       .where(transactions: { category_id: nil })
-      .where.not(transactions: { kind: Transaction::UNCATEGORIZED_EXCLUDED_KINDS })
+      .where.not(transactions: { kind: Transaction::TRANSFER_KINDS })
       .where(entries: { excluded: false })
   }
 
-  # Returns uncategorized entries whose name matches the given filter string.
+  # Returns uncategorized, non-transfer entries whose name matches the given filter string.
   # Used by the Quick Categorize Wizard to preview which transactions a rule would affect.
   # @param entries [ActiveRecord::Relation] pre-scoped entries (caller controls authorization)
   def self.uncategorized_matching(entries, filter, transaction_type = nil)
@@ -165,8 +148,6 @@ class Entry < ApplicationRecord
   def self.reconcile_pending_duplicates(account: nil, dry_run: false, date_window: 8, amount_tolerance: 0.25)
     stats = { checked: 0, reconciled: 0, details: [] }
 
-    not_pending_sql = Transaction.not_pending_sql
-
     # Get pending entries to check
     scope = Entry.pending.where(excluded: false)
     scope = scope.where(account: account) if account
@@ -183,7 +164,11 @@ class Entry < ApplicationRecord
         .where(currency: pending_entry.currency)
         .where(amount: pending_entry.amount)
         .where(date: pending_entry.date..(pending_entry.date + date_window.days)) # Posted must be ON or AFTER pending date
-        .where(not_pending_sql)
+        .where(<<~SQL.squish)
+          (transactions.extra -> 'simplefin' ->> 'pending')::boolean IS NOT TRUE
+          AND (transactions.extra -> 'plaid' ->> 'pending')::boolean IS NOT TRUE
+          AND (transactions.extra -> 'lunchflow' ->> 'pending')::boolean IS NOT TRUE
+        SQL
         .limit(2) # Only need to know if 0, 1, or 2+ candidates
         .to_a # Load limited records to avoid COUNT(*) on .size
 
@@ -226,7 +211,11 @@ class Entry < ApplicationRecord
         .where(currency: pending_entry.currency)
         .where(date: pending_entry.date..(pending_entry.date + fuzzy_date_window.days)) # Posted ON or AFTER pending
         .where("ABS(entries.amount) BETWEEN ? AND ?", min_amount, max_amount)
-        .where(not_pending_sql)
+        .where(<<~SQL.squish)
+          (transactions.extra -> 'simplefin' ->> 'pending')::boolean IS NOT TRUE
+          AND (transactions.extra -> 'plaid' ->> 'pending')::boolean IS NOT TRUE
+          AND (transactions.extra -> 'lunchflow' ->> 'pending')::boolean IS NOT TRUE
+        SQL
 
       # Match by name similarity (first 3 words)
       name_words = pending_entry.name.downcase.gsub(/[^a-z0-9\s]/, "").split.first(3).join(" ")
@@ -264,12 +253,10 @@ class Entry < ApplicationRecord
                 pending_transaction.update!(
                   extra: existing_extra.merge(
                     "potential_posted_match" => {
-                      "entry_id"      => fuzzy_match.id,
-                      "reason"        => "fuzzy_amount_match",
+                      "entry_id" => fuzzy_match.id,
+                      "reason" => "fuzzy_amount_match",
                       "posted_amount" => fuzzy_match.amount.to_s,
-                      "confidence"    => "medium",
-                      "dismissed"     => false,
-                      "detected_at"   => Date.current.to_s
+                      "detected_at" => Date.current.to_s
                     }
                   )
                 )
@@ -295,19 +282,8 @@ class Entry < ApplicationRecord
     entryable.lock_saved_attributes!
   end
 
-  # Enqueues an account sync whose window starts at the earliest date this
-  # entry has occupied since it was loaded, so balances are recomputed from
-  # wherever the entry used to sit.
-  #
-  # Later saves (lock_saved_attributes!, mark_user_modified!) reset
-  # date_previously_was, so the earliest date tracked across saves is used too.
-  # Starting the window after the old date would seed the incremental balance
-  # calculation from a balance that still includes this entry.
-  #
-  # @return [void]
   def sync_account_later
-    sync_start_date = [ @earliest_saved_date, date_previously_was, date ].compact.min unless destroyed?
-    @earliest_saved_date = nil
+    sync_start_date = [ date_previously_was, date ].compact.min unless destroyed?
     account.sync_later(window_start_date: sync_start_date)
   end
 
@@ -323,72 +299,12 @@ class Entry < ApplicationRecord
     external_id.present?
   end
 
-  # Reconciliation state, following the Quicken uncleared / cleared / reconciled
-  # model. Only the last state is stored -- see AddReconciliationToEntries.
-  #
-  # @return [Symbol] :uncleared, :cleared or :reconciled
-  def reconciliation_state
-    return :reconciled if reconciled?
-    return :cleared if cleared?
-
-    :uncleared
-  end
-
-  # The institution has acknowledged this transaction: it either arrived from a
-  # provider, or was entered by hand and later claimed by one (which stamps
-  # external_id and source -- see Account::ProviderImportAdapter). Derived rather
-  # than stored so it cannot drift, and deliberately not user-settable: this is a
-  # fact about where the entry came from, not an opinion about it.
-  def cleared?
-    external_id.present? || source.present?
-  end
-
-  # A statement has been matched against this transaction. Unlike cleared?, this
-  # is a judgement -- made by a statement import, or by the user directly -- so
-  # it is stored and can be undone.
-  def reconciled?
-    reconciled_at.present?
-  end
-
-  # @param statement [AccountStatement, nil] the statement providing the evidence
-  def mark_reconciled!(statement: nil, at: Time.current)
-    update!(reconciled_at: at, reconciled_by_statement: statement)
-  end
-
-  def unmark_reconciled!
-    update!(reconciled_at: nil, reconciled_by_statement: nil)
-  end
-
   # Checks if entry should be protected from provider sync overwrites.
   # This does NOT prevent user from editing - only protects from automated sync.
   #
   # @return [Boolean] true if entry should be skipped during provider sync
   def protected_from_sync?
     excluded? || user_modified? || import_locked?
-  end
-
-  # Bulk-marks the entries of the given transactions as user-modified so a
-  # later provider sync won't overwrite them (issue #1977). Used by merchant
-  # merge/convert/unlink flows, which reassign merchant_id directly on
-  # transactions and must protect that manual change from being reverted.
-  #
-  # Accepts a Transaction relation (preferred — the selection runs as a
-  # subquery so large merges/unlinks don't materialize ids or hit SQL
-  # parameter limits) or an explicit array of ids.
-  #
-  # @param transactions [ActiveRecord::Relation, Array<String>] Transactions or their ids
-  # @return [void]
-  def self.mark_user_modified_for_transactions!(transactions)
-    entryable_ids =
-      if transactions.is_a?(ActiveRecord::Relation)
-        transactions.select(:id)
-      else
-        ids = Array(transactions).compact.uniq
-        return if ids.empty?
-        ids
-      end
-
-    where(entryable_type: "Transaction", entryable_id: entryable_ids).update_all(user_modified: true)
   end
 
   # Marks entry as user-modified after manual edit.
@@ -454,7 +370,7 @@ class Entry < ApplicationRecord
 
   # Splits this entry into child entries. Marks parent as excluded.
   #
-  # @param splits [Array<Hash>] array of { name:, amount:, category_id:, excluded: } hashes
+  # @param splits [Array<Hash>] array of { name:, amount:, category_id: } hashes
   # @return [Array<Entry>] the created child entries
   def split!(splits)
     total = splits.sum { |s| s[:amount].to_d }
@@ -476,10 +392,6 @@ class Entry < ApplicationRecord
           name: split_attrs[:name],
           amount: split_attrs[:amount],
           currency: currency,
-          notes: split_attrs[:notes],
-          import: import,
-          import_locked: import_locked,
-          excluded: TRUTHY_VALUES.include?(split_attrs[:excluded]),
           entryable: child_transaction
         )
       end
@@ -528,7 +440,6 @@ class Entry < ApplicationRecord
       bulk_attributes = {
         date: bulk_update_params[:date],
         notes: bulk_update_params[:notes],
-        name: bulk_update_params[:name],
         entryable_attributes: {
           category_id: bulk_update_params[:category_id],
           merchant_id: bulk_update_params[:merchant_id]
@@ -548,13 +459,11 @@ class Entry < ApplicationRecord
           if bulk_attributes.present?
             attrs = bulk_attributes.dup
             attrs.delete(:date) if entry.split_child?
-            attrs.delete(:entryable_attributes) unless entry.transaction?
 
             if attrs.present?
               attrs[:entryable_attributes] = attrs[:entryable_attributes].dup if attrs[:entryable_attributes].present?
               attrs[:entryable_attributes][:id] = entry.entryable_id if attrs[:entryable_attributes].present?
               entry.update! attrs
-              entry.transaction.record_category_usage! if entry.transaction?
               changed = true
             end
           end
@@ -579,14 +488,6 @@ class Entry < ApplicationRecord
   end
 
   private
-
-    # Remembers the earliest date this entry had before any save that changed
-    # it, for sync_account_later to use as the sync window start.
-    #
-    # @return [Date]
-    def track_earliest_saved_date
-      @earliest_saved_date = [ @earliest_saved_date, date_before_last_save ].compact.min
-    end
 
     def cannot_unexclude_split_parent
       return unless excluded_changed?(from: true, to: false) && split_parent?

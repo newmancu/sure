@@ -18,7 +18,7 @@ class Holding::PortfolioCache
     if date.blank?
       trades
     else
-      trades_by_date[date]&.dup || []
+      trades.select { |t| t.date == date }
     end
   end
 
@@ -26,21 +26,18 @@ class Holding::PortfolioCache
     security = @security_cache[security_id]
     raise SecurityNotFound.new(security_id, account.id) unless security
 
-    price_with_priority = if source.present?
-      security[:prices_by_date_and_source][[ date, source ]]
+    if source.present?
+      price = security[:prices].select { |p| p.price.date == date && p.source == source }.min_by(&:priority)&.price
     else
-      security[:prices_by_date][date]
+      price = security[:prices].select { |p| p.price.date == date }.min_by(&:priority)&.price
     end
 
-    return nil unless price_with_priority
-
-    price = price_with_priority.price
     return nil unless price
 
     price_money = Money.new(price.price, price.currency)
 
     begin
-      converted_amount = price_money.exchange_to(account.currency, date: date).amount
+      converted_amount = price_money.exchange_to(account.currency).amount
     rescue Money::ConversionError
       converted_amount = price.price
     end
@@ -57,87 +54,27 @@ class Holding::PortfolioCache
     @security_cache.map { |_, v| v[:security] }
   end
 
-  # The ratio of the split a security goes ex on this date, or nil when it
-  # has none. Nil, not 1, so a caller can leave an unsplit position untouched.
-  def get_split_ratio(security_id, date)
-    split_ratios[[ security_id, date ]]
-  end
-
-  # Every split within the account's history, oldest first.
-  def get_splits
-    splits
-  end
-
-  # How many shares one share held at the close of `from` has become by the
-  # close of `to`: the product of the ratios of the splits in between. 1 when
-  # there are none, so a caller can multiply unconditionally.
-  #
-  # Reads every split up to today, not only those within the account's
-  # history: a provider snapshot can be older than the account's first entry
-  # (an account with no entries starts yesterday), and a split between the
-  # snapshot and that start still changed the count it reported.
-  def split_factor_between(security_id, from, to)
-    return Rational(1) if from.nil? || to.nil? || from >= to
-
-    splits_through_today.reduce(Rational(1)) do |factor, split|
-      next factor unless split.security_id == security_id
-      next factor unless split.ex_date > from && split.ex_date <= to
-
-      factor * split.ratio
-    end
-  end
-
   private
     PriceWithPriority = Data.define(:price, :priority, :source)
 
-    # Only splits the holdings can see: from the account's start date, when
-    # its holdings begin, to today. A split announced for a future ex-date is
-    # not applied early; it takes effect when that date arrives.
-    def splits
-      @splits ||= Security::Split
-        .where(security_id: @security_cache.keys, ex_date: account.start_date..Date.current)
-        .order(:ex_date)
-        .to_a
-    end
-
-    # Every split up to today, however early, for carrying a snapshot forward.
-    def splits_through_today
-      @splits_through_today ||= Security::Split
-        .where(security_id: @security_cache.keys, ex_date: ..Date.current)
-        .order(:ex_date)
-        .to_a
-    end
-
-    def split_ratios
-      @split_ratios ||= splits.to_h { |split| [ [ split.security_id, split.ex_date ], split.ratio ] }
-    end
-
     def trades
       @trades ||= account.entries.includes(entryable: :security).trades.chronological.to_a
-    end
-
-    def trades_by_date
-      @trades_by_date ||= trades.group_by(&:date)
-    end
-
-    def trades_by_security_id
-      @trades_by_security_id ||= trades.group_by { |t| t.entryable.security_id }
     end
 
     def holdings
       @holdings ||= account.holdings.chronological.to_a
     end
 
-    def holdings_by_security_id
-      @holdings_by_security_id ||= holdings.group_by(&:security_id)
-    end
-
     def collect_unique_securities
-      ids = trades_by_security_id.keys
-      ids |= holdings_by_security_id.keys if use_holdings
-      ids &= @security_ids if @security_ids
+      unique_securities_from_trades = trades.map(&:entryable).map(&:security).uniq
+      unique_securities_from_trades = unique_securities_from_trades.select { |s| @security_ids.include?(s.id) } if @security_ids
 
-      Security.where(id: ids).to_a
+      return unique_securities_from_trades unless use_holdings
+
+      unique_securities_from_holdings = holdings.map(&:security).uniq
+      unique_securities_from_holdings = unique_securities_from_holdings.select { |s| @security_ids.include?(s.id) } if @security_ids
+
+      (unique_securities_from_trades + unique_securities_from_holdings).uniq
     end
 
     # Loads all known prices for all securities in the account with priority based on source:
@@ -150,18 +87,11 @@ class Holding::PortfolioCache
 
       Rails.logger.info "Preloading #{securities.size} securities for account #{account.id}"
 
-      security_ids = securities.map(&:id)
-
-      # Bulk-load all DB prices for all securities in one query, grouped by security_id
-      db_prices_by_security_id = Security::Price
-        .where(security_id: security_ids, date: account.start_date..Date.current)
-        .group_by(&:security_id)
-
       securities.each do |security|
         Rails.logger.info "Loading security: ID=#{security.id} Ticker=#{security.ticker}"
 
         # High priority prices from DB (synced from provider)
-        db_prices = (db_prices_by_security_id[security.id] || []).map do |price|
+        db_prices = security.prices.where(date: account.start_date..Date.current).map do |price|
           PriceWithPriority.new(
             price: price,
             priority: 1,
@@ -170,14 +100,8 @@ class Holding::PortfolioCache
         end
 
         # Medium priority prices from trades
-        # Exclude income entries (interest/dividend) — they are non-trading
-        # events with qty=0 and their zero price would clobber the security's
-        # market price on that date in the ForwardCalculator, producing a
-        # zero-amount holding.  Use qty (the same heuristic as
-        # Balance::BaseCalculator) rather than price to avoid blocking
-        # non-income zero-price trades such as Questrade journal transfers.
-        trade_prices = (trades_by_security_id[security.id] || [])
-          .reject { |t| t.entryable.qty == 0 }
+        trade_prices = trades
+          .select { |t| t.entryable.security_id == security.id }
           .map do |trade|
             PriceWithPriority.new(
               price: Security::Price.new(
@@ -193,7 +117,7 @@ class Holding::PortfolioCache
 
         # Low priority prices from holdings (if applicable)
         holding_prices = if use_holdings
-          (holdings_by_security_id[security.id] || []).map do |holding|
+          holdings.select { |h| h.security_id == security.id }.map do |holding|
             PriceWithPriority.new(
               price: Security::Price.new(
                 security: security,
@@ -209,18 +133,9 @@ class Holding::PortfolioCache
           []
         end
 
-        all_prices = db_prices + trade_prices + holding_prices
-
-        # Index by date for O(1) lookup in get_price instead of O(N) linear scan
-        prices_by_date = all_prices.group_by { |p| p.price.date }
-          .transform_values { |ps| ps.min_by(&:priority) }
-        prices_by_date_and_source = all_prices.group_by { |p| [ p.price.date, p.source ] }
-          .transform_values { |ps| ps.min_by(&:priority) }
-
         @security_cache[security.id] = {
           security: security,
-          prices_by_date: prices_by_date,
-          prices_by_date_and_source: prices_by_date_and_source
+          prices: db_prices + trade_prices + holding_prices
         }
       end
     end

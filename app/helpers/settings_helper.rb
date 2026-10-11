@@ -1,31 +1,31 @@
 module SettingsHelper
   SETTINGS_ORDER = [
     # General section
-    { name: -> { t("settings.settings_nav.accounts_label") }, path: :accounts_path },
-    { name: -> { t("settings.settings_nav.bank_sync_label") }, path: :settings_providers_path, condition: :admin_user? },
-    { name: -> { t("settings.settings_nav.preferences_label") }, path: :settings_preferences_path },
-    { name: -> { t("settings.settings_nav.appearance_label") }, path: :settings_appearance_path },
-    { name: -> { t("settings.settings_nav.profile_label") }, path: :settings_profile_path },
-    { name: -> { t("settings.settings_nav.security_label") }, path: :settings_security_path },
-    { name: -> { t("settings.settings_nav.payment_label") }, path: :settings_payment_path, condition: :not_self_hosted? },
+    { name: "Accounts", path: :accounts_path },
+    { name: "Bank Sync", path: :settings_bank_sync_path },
+    { name: "Preferences", path: :settings_preferences_path },
+    { name: "Appearance", path: :settings_appearance_path },
+    { name: "Profile Info", path: :settings_profile_path },
+    { name: "Security", path: :settings_security_path },
+    { name: "Payment", path: :settings_payment_path, condition: :not_self_hosted? },
     # Transactions section
-    { name: -> { t("settings.settings_nav.categories_label") }, path: :categories_path },
-    { name: -> { t("settings.settings_nav.tags_label") }, path: :tags_path },
-    { name: -> { t("settings.settings_nav.rules_label") }, path: :rules_path },
-    { name: -> { t("settings.settings_nav.merchants_label") }, path: :family_merchants_path },
-    { name: -> { t("settings.settings_nav.recurring_transactions_label") }, path: :recurring_transactions_path },
-    { name: -> { t("settings.settings_nav.statement_vault_label") }, path: :account_statements_path, condition: :admin_user? },
+    { name: "Categories", path: :categories_path },
+    { name: "Tags", path: :tags_path },
+    { name: "Rules", path: :rules_path },
+    { name: "Merchants", path: :family_merchants_path },
+    { name: "Recurring", path: :recurring_transactions_path },
     # Advanced section
-    { name: -> { t("settings.settings_nav.ai_prompts_label") }, path: :settings_ai_prompts_path, condition: :admin_user? },
-    { name: -> { t("settings.settings_nav.llm_usage_label") }, path: :settings_llm_usage_path, condition: :admin_user? },
-    { name: -> { t("settings.settings_nav.api_key_label") }, path: :settings_api_keys_path, condition: :admin_user? },
-    { name: -> { t("settings.settings_nav.self_hosting_label") }, path: :settings_hosting_path, condition: :self_hosted_and_admin? },
-    { name: -> { t("settings.settings_nav.imports_label") }, path: :imports_path, condition: :admin_user? },
-    { name: -> { t("settings.settings_nav.exports_label") }, path: :family_exports_path, condition: :admin_user? },
+    { name: "AI Prompts", path: :settings_ai_prompts_path, condition: :admin_user? },
+    { name: "LLM Usage", path: :settings_llm_usage_path, condition: :admin_user? },
+    { name: "API Key", path: :settings_api_key_path, condition: :admin_user? },
+    { name: "Self-Hosting", path: :settings_hosting_path, condition: :self_hosted_and_admin? },
+    { name: "Providers", path: :settings_providers_path, condition: :admin_user? },
+    { name: "Imports", path: :imports_path, condition: :admin_user? },
+    { name: "Exports", path: :family_exports_path, condition: :admin_user? },
     # More section
-    { name: -> { t("settings.settings_nav.guides_label") }, path: :settings_guides_path },
-    { name: -> { t("settings.settings_nav.whats_new_label") }, path: :changelog_path },
-    { name: -> { t("settings.settings_nav.feedback_label") }, path: :feedback_path }
+    { name: "Guides", path: :settings_guides_path },
+    { name: "What's new", path: :changelog_path },
+    { name: "Feedback", path: :feedback_path }
   ]
 
   def adjacent_setting(current_path, offset)
@@ -41,110 +41,13 @@ module SettingsHelper
     render partial: "settings/settings_nav_link_large", locals: {
       path: send(adjacent[:path]),
       direction: offset > 0 ? "next" : "previous",
-      title: setting_name(adjacent)
+      title: adjacent[:name]
     }
   end
 
-  def settings_section(title: nil, subtitle: nil, collapsible: false, open: true, auto_open_param: nil, status: nil, meta: nil, actions: nil, badge: nil, &block)
+  def settings_section(title:, subtitle: nil, collapsible: false, open: true, auto_open_param: nil, &block)
     content = capture(&block)
-    render partial: "settings/section", locals: { title: title, subtitle: subtitle, content: content, collapsible: collapsible, open: open, auto_open_param: auto_open_param, status: status, meta: meta, actions: actions, badge: badge }
-  end
-
-  def provider_summary(provider_key)
-    key = provider_key.to_s.downcase
-
-    case key
-    when "plaid", "plaid_eu"
-      configured = @provider_configurations&.find { |c| c.provider_key.to_s.casecmp(key).zero? }&.configured?
-      configured ? { status: :ok } : { status: :off }
-    when "akahu"
-      return { status: :off } unless @akahu_items&.any?
-      sync_based_summary(key)
-    when "up"
-      return { status: :off } unless @up_items&.any?
-      sync_based_summary(key)
-    when "monobank"
-      return { status: :off } unless @monobank_items&.any?
-      sync_based_summary(key)
-    when "fio"
-      return { status: :off } unless @fio_items&.any?
-      sync_based_summary(key)
-    when "simplefin"
-      return { status: :off } unless @simplefin_items&.any?
-      sync_based_summary(key)
-    when "lunchflow"
-      return { status: :off } unless @lunchflow_items&.any?
-      sync_based_summary(key)
-    when "enable_banking"
-      return { status: :off } unless @enable_banking_items&.any?
-      enable_banking_summary
-    when "coinstats"
-      return { status: :off } unless @coinstats_items&.any?
-      sync_based_summary(key)
-    when "wise"
-      return { status: :off } unless @wise_items&.any?
-      sync_based_summary(key)
-    when "mercury"
-      return { status: :off } unless @mercury_items&.any?
-      sync_based_summary(key)
-    when "redbark"
-      return { status: :off } unless @redbark_items&.any?
-      sync_based_summary(key)
-    when "brex"
-      return { status: :off } unless @brex_items&.any?
-      sync_based_summary(key)
-    when "coinbase"
-      return { status: :off } unless @coinbase_items&.any?
-      sync_based_summary(key)
-    when "binance"
-      return { status: :off } unless @binance_items&.any?
-      sync_based_summary(key)
-    when "kraken"
-      return { status: :off } unless @kraken_items&.any?
-      sync_based_summary(key)
-    when "coinspot"
-      return { status: :off } unless @coinspot_items&.any?
-      sync_based_summary(key)
-    when "onchain_wallet"
-      return { status: :off } unless @onchain_wallet_items&.any?
-      sync_based_summary(key)
-    when "trading212"
-      return { status: :off } unless @trading212_items&.any?
-      sync_based_summary(key)
-    when "snaptrade"
-      configured_item = @snaptrade_items&.find(&:oauth_configured?)
-      return { status: :off } unless configured_item
-      sync_based_summary(key)
-    when "ibkr"
-      return { status: :off } unless @ibkr_items&.any?
-      sync_based_summary(key)
-    when "trade_republic"
-      return { status: :off } unless @trade_republic_items&.any?
-      sync_based_summary(key)
-    when "indexa_capital"
-      return { status: :off } unless @indexa_capital_items&.any?
-      sync_based_summary(key)
-    when "sophtron"
-      return { status: :off } unless @sophtron_items&.any?
-      sync_based_summary(key)
-    when "questrade"
-      return { status: :off } unless @questrade_items&.any?
-      sync_based_summary(key)
-    else
-      { status: :off }
-    end
-  end
-
-  def financekit_provider_summary(connections)
-    return { status: :off } if connections.empty?
-
-    items = connections.map { |connection| connection[:item] }
-    count = connections.flat_map { |connection| connection[:accounts].map(&:id) }.uniq.size
-    {
-      status: items.any? { |item| item.status == "repair_required" } ? :warn : :ok,
-      meta: t("settings.providers.financekit.linked_accounts", count: count),
-      last_synced_at: items.filter_map(&:last_imported_at).max
-    }
+    render partial: "settings/section", locals: { title: title, subtitle: subtitle, content: content, collapsible: collapsible, open: open, auto_open_param: auto_open_param }
   end
 
   def settings_nav_footer
@@ -167,124 +70,9 @@ module SettingsHelper
     end
   end
 
-  def yahoo_finance_health_presentation(status)
-    status = status.to_sym if status.respond_to?(:to_sym)
-    status = :unknown unless %i[healthy rate_limited unavailable unknown].include?(status)
-
-    presentation = {
-      status_class: {
-        healthy: "bg-success",
-        rate_limited: "bg-warning",
-        unavailable: "bg-destructive",
-        unknown: "bg-surface-inset"
-      }.fetch(status),
-      status_text: t("settings.hostings.yahoo_finance_settings.status_#{status}")
-    }
-
-    presentation[:alert] = case status
-    when :rate_limited
-      {
-        title: t("settings.hostings.yahoo_finance_settings.rate_limited_title"),
-        message: t("settings.hostings.yahoo_finance_settings.rate_limited_message"),
-        variant: :warning
-      }
-    when :unavailable
-      {
-        title: t("settings.hostings.yahoo_finance_settings.unavailable_title"),
-        message: t("settings.hostings.yahoo_finance_settings.unavailable_message"),
-        variant: :warning
-      }
-    end
-
-    presentation
-  end
-
-  # Below this many synced accounts, the per-row pills already give the user
-  # enough at-a-glance signal and the strip is redundant chrome.
-  HEALTH_STRIP_MIN_ACCOUNTS = 10
-
-  # Slim health-strip data for the providers index. Pulls counts from the
-  # already-resolved entry summaries plus the family's distinct synced-account
-  # count for the trailing stat. Returns a hash consumed by the
-  # `settings/providers/_health_strip` partial, or nil when the family has
-  # fewer than HEALTH_STRIP_MIN_ACCOUNTS connected accounts.
-  def provider_health_strip(connected:, needs_attention:)
-    accounts_count = Current.family.accounts.joins(:account_providers).distinct.count
-    return nil if accounts_count < HEALTH_STRIP_MIN_ACCOUNTS
-
-    active_entries = connected + needs_attention
-    last_synced_at = active_entries.map { |e| e[:summary][:last_synced_at] }.compact.max
-
-    {
-      connected:        active_entries.size,
-      needs_attention:  needs_attention.size,
-      accounts_syncing: accounts_count,
-      last_synced_at:   last_synced_at
-    }
-  end
-
-  # Strips the leading "about " from `time_ago_in_words` so copy reads as
-  # "Synced 6 hours ago" instead of "Synced about 6 hours ago".
-  def concise_time_ago(time)
-    time_ago_in_words(time).sub(/\Aabout /, "")
-  end
-
   private
-    def sync_based_summary(provider_key)
-      health = @provider_sync_health&.dig(provider_key) || {}
-      last_synced_at = health[:last_synced_at]
-
-      base = if health[:error]
-        { status: :err, meta: t("settings.providers.meta.sync_error") }
-      elsif health[:stale]
-        { status: :warn, meta: t("settings.providers.meta.no_recent_sync") }
-      elsif last_synced_at.present?
-        { status: :ok, meta: t("settings.providers.meta.last_synced", time: concise_time_ago(last_synced_at)) }
-      else
-        { status: :ok }
-      end
-
-      base.merge(last_synced_at: last_synced_at)
-    end
-
-    def enable_banking_summary
-      health = @provider_sync_health&.dig("enable_banking") || {}
-      last_synced_at = health[:last_synced_at]
-
-      return { status: :err, meta: t("settings.providers.meta.sync_error"), last_synced_at: nil } if health[:error]
-
-      valid_items = @enable_banking_items&.reject(&:needs_authorization?) || []
-
-      # All items have expired, missing or rejected sessions — need re-authorization
-      if valid_items.empty?
-        return { status: :warn, meta: t("settings.providers.meta.reconsent_required"), last_synced_at: last_synced_at }
-      end
-
-      expiring = valid_items.find do |item|
-        item.session_expires_at.present? && item.session_expires_at < 7.days.from_now
-      end
-
-      if expiring
-        days = [ ((expiring.session_expires_at - Time.current) / 1.day).ceil, 1 ].max
-        return { status: :warn, meta: t("settings.providers.meta.reconsent_needed", count: days), last_synced_at: last_synced_at }
-      end
-
-      return { status: :warn, meta: t("settings.providers.meta.no_recent_sync"), last_synced_at: last_synced_at } if health[:stale]
-
-      if last_synced_at.present?
-        { status: :ok, meta: t("settings.providers.meta.last_synced", time: concise_time_ago(last_synced_at)), last_synced_at: last_synced_at }
-      else
-        { status: :ok, last_synced_at: nil }
-      end
-    end
-
     def not_self_hosted?
       !self_hosted?
-    end
-
-    def setting_name(setting)
-      name = setting[:name]
-      name.respond_to?(:call) ? instance_exec(&name) : name
     end
 
     # Helper used by SETTINGS_ORDER conditions

@@ -53,7 +53,8 @@
               <% end %>
 
               <div class="flex justify-end">
-                <%= form.submit t(".link_wallet_submit") %>
+                <%= form.submit t(".link_wallet_submit"),
+                                class: "inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium text-inverse bg-inverse hover:bg-inverse-hover focus:outline-none focus:ring-2 focus:ring-gray-900 focus:ring-offset-2 transition-colors" %>
               </div>
             <% end %>
           </section>
@@ -89,7 +90,8 @@
               <div data-coinstats-exchange-fields-target="fields" class="space-y-3"></div>
 
               <div class="flex justify-end">
-                <%= form.submit t(".link_exchange_submit") %>
+                <%= form.submit t(".link_exchange_submit"),
+                                class: "inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium text-inverse bg-inverse hover:bg-inverse-hover focus:outline-none focus:ring-2 focus:ring-gray-900 focus:ring-offset-2 transition-colors" %>
               </div>
             <% end %>
           </section>
@@ -113,13 +115,11 @@
           </div>
 
           <div class="mt-4">
-            <%= render DS::Link.new(
-              text: t(".go_to_settings"),
-              href: settings_providers_path,
-              variant: :primary,
-              full_width: true,
-              data: { turbo: false }
-            ) %>
+            <%= link_to settings_providers_path,
+                        class: "w-full inline-flex items-center justify-center rounded-lg font-medium whitespace-nowrap rounded-lg hidden md:inline-flex px-3 py-2 text-sm text-inverse bg-inverse hover:bg-inverse-hover disabled:bg-gray-500 theme-dark:disabled:bg-gray-400",
+                        data: { turbo: false } do %>
+              <%= t(".go_to_settings") %>
+            <% end %>
           </div>
         </div>
       <% end %>

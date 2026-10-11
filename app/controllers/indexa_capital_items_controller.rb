@@ -25,17 +25,63 @@ class IndexaCapitalItemsController < ApplicationController
     @indexa_capital_item.name ||= "IndexaCapital Connection"
 
     if @indexa_capital_item.save
-      redirect_to settings_providers_path, notice: t(".success"), status: :see_other
+      if turbo_frame_request?
+        flash.now[:notice] = t(".success", default: "Successfully configured IndexaCapital.")
+        @indexa_capital_items = Current.family.indexa_capital_items.ordered
+        render turbo_stream: [
+          turbo_stream.replace(
+            "indexa_capital-providers-panel",
+            partial: "settings/providers/indexa_capital_panel",
+            locals: { indexa_capital_items: @indexa_capital_items }
+          ),
+          *flash_notification_stream_items
+        ]
+      else
+        redirect_to settings_providers_path, notice: t(".success"), status: :see_other
+      end
     else
-      render_provider_panel("indexa_capital", alert: @indexa_capital_item.errors.full_messages.join(", "))
+      @error_message = @indexa_capital_item.errors.full_messages.join(", ")
+
+      if turbo_frame_request?
+        render turbo_stream: turbo_stream.replace(
+          "indexa_capital-providers-panel",
+          partial: "settings/providers/indexa_capital_panel",
+          locals: { error_message: @error_message }
+        ), status: :unprocessable_entity
+      else
+        redirect_to settings_providers_path, alert: @error_message, status: :unprocessable_entity
+      end
     end
   end
 
   def update
     if @indexa_capital_item.update(indexa_capital_item_params)
-      render_provider_panel("indexa_capital", notice: t(".success"))
+      if turbo_frame_request?
+        flash.now[:notice] = t(".success", default: "Successfully updated IndexaCapital configuration.")
+        @indexa_capital_items = Current.family.indexa_capital_items.ordered
+        render turbo_stream: [
+          turbo_stream.replace(
+            "indexa_capital-providers-panel",
+            partial: "settings/providers/indexa_capital_panel",
+            locals: { indexa_capital_items: @indexa_capital_items }
+          ),
+          *flash_notification_stream_items
+        ]
+      else
+        redirect_to settings_providers_path, notice: t(".success"), status: :see_other
+      end
     else
-      render_provider_panel("indexa_capital", alert: @indexa_capital_item.errors.full_messages.join(", "))
+      @error_message = @indexa_capital_item.errors.full_messages.join(", ")
+
+      if turbo_frame_request?
+        render turbo_stream: turbo_stream.replace(
+          "indexa_capital-providers-panel",
+          partial: "settings/providers/indexa_capital_panel",
+          locals: { error_message: @error_message }
+        ), status: :unprocessable_entity
+      else
+        redirect_to settings_providers_path, alert: @error_message, status: :unprocessable_entity
+      end
     end
   end
 
@@ -176,10 +222,9 @@ class IndexaCapitalItemsController < ApplicationController
   end
 
   def complete_account_setup
-    account_ids = Array(params[:account_ids]).reject(&:blank?)
-    sync_start_dates = params[:sync_start_dates] || {}
+    account_configs = params[:accounts] || {}
 
-    if account_ids.empty?
+    if account_configs.empty?
       redirect_to setup_accounts_indexa_capital_item_path(@indexa_capital_item), alert: t(".no_accounts")
       return
     end
@@ -187,31 +232,25 @@ class IndexaCapitalItemsController < ApplicationController
     created_count = 0
     skipped_count = 0
 
-    account_ids.each do |indexa_capital_account_id|
+    account_configs.each do |indexa_capital_account_id, config|
+      next if config[:account_type] == "skip"
+
       indexa_capital_account = @indexa_capital_item.indexa_capital_accounts.find_by(id: indexa_capital_account_id)
       next unless indexa_capital_account
       next if indexa_capital_account.account_provider.present?
 
-      # Parse the form-supplied date up front so a malformed value is silently
-      # dropped rather than aborting the loop body after the account is
-      # already persisted (which would mark a successfully-created account
-      # as "skipped").
-      raw_sync_start_date = sync_start_dates[indexa_capital_account_id]
-      sync_start_date = (Date.parse(raw_sync_start_date.to_s) rescue nil) if raw_sync_start_date.present?
+      accountable_type = infer_accountable_type(config[:account_type], config[:subtype])
+      account = create_account_from_indexa_capital(indexa_capital_account, accountable_type, config)
 
-      # Wrap creation, provider link, and sync_start_date persistence in a
-      # single transaction so a failure in ensure_account_provider! (or the
-      # sync_start_date update) rolls back the Account row instead of leaving
-      # an orphan that is also wrongly counted as "created".
-      ActiveRecord::Base.transaction do
-        account = create_account_from_indexa_capital(indexa_capital_account, "Investment", {})
+      if account&.persisted?
         indexa_capital_account.ensure_account_provider!(account)
-        indexa_capital_account.update!(sync_start_date: sync_start_date) if sync_start_date
+        indexa_capital_account.update!(sync_start_date: config[:sync_start_date]) if config[:sync_start_date].present?
+        created_count += 1
+      else
+        skipped_count += 1
       end
-
-      created_count += 1
     rescue => e
-      Rails.logger.error "IndexaCapitalItemsController#complete_account_setup - Error linking #{indexa_capital_account_id}: #{e.message}"
+      Rails.logger.error "IndexaCapitalItemsController#complete_account_setup - Error: #{e.message}"
       skipped_count += 1
     end
 

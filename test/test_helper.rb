@@ -23,11 +23,7 @@ require "minitest/autorun"
 require "mocha/minitest"
 require "aasm/minitest"
 require "webmock/minitest"
-require "rack/test"
-require "tempfile"
 require "uri"
-require Rails.root.join("test/support/sql_query_capture").to_s
-require Rails.root.join("test/support/rake_task_test_helper").to_s
 
 VCR.configure do |config|
   config.cassette_library_dir = "test/vcr_cassettes"
@@ -80,19 +76,9 @@ module ActiveSupport
     # Setup all fixtures in test/fixtures/*.yml for all tests in alphabetical order.
     fixtures :all
 
-    # rails-settings-cached keeps an in-memory cache that survives the per-test
-    # transaction rollback, so a Setting.* value written in one test leaks into
-    # later tests and causes order-dependent failures (e.g. Settings::Hostings
-    # reading a stale "" where nil is expected). Reset the cache before every
-    # test so each starts from the rolled-back DB state.
-    setup { Setting.clear_cache }
-
-    include SqlQueryCapture
-
     # Add more helper methods to be used by all tests here...
     def sign_in(user)
       post sessions_path, params: { email: user.email, password: user_password_test }
-      Current.session = user.sessions.order(:created_at).last
     end
 
     def ensure_tailwind_build
@@ -110,33 +96,8 @@ module ActiveSupport
       yield
     end
 
-    def api_headers(api_key)
-      { "X-Api-Key" => api_key.plain_key }
-    end
-
     def user_password_test
       "maybetestpassword817983172"
-    end
-
-    def uploaded_file(filename:, content_type:, content: "date,amount\n2024-01-01,1\n")
-      tempfile = Tempfile.new([ File.basename(filename, ".*"), File.extname(filename) ])
-      tempfile.binmode
-      tempfile.write(content)
-      tempfile.rewind
-
-      Rack::Test::UploadedFile.new(tempfile.path, content_type, true, original_filename: filename)
-    end
-
-    def family_guest
-      @family_guest ||= users(:family_admin).family.users.create!(
-        first_name: "Readonly",
-        last_name: "Guest",
-        email: "readonly-guest@example.com",
-        password: user_password_test,
-        role: "guest",
-        onboarded_at: Time.current,
-        ui_layout: "dashboard"
-      )
     end
 
     # Ensures the Investment Contributions category exists for a family

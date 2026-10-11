@@ -1,15 +1,8 @@
 <% if variant == :divider %>
-  <div role="separator">
-    <%= render "shared/ruler", classes: "my-1" %>
-  </div>
+  <%= render "shared/ruler", classes: "my-1" %>
 <% else %>
-  <div class="px-1" role="none">
+  <div class="px-1">
     <%= wrapper do %>
-      <% if selectable? %>
-        <span class="flex items-center justify-center w-5 h-5 shrink-0" aria-hidden="true">
-          <% if selected %><%= helpers.icon("check", color: destructive? ? :destructive : :default) %><% end %>
-        </span>
-      <% end %>
       <% if icon %>
         <%= helpers.icon(icon, color: destructive? ? :destructive : :default) %>
       <% end %>

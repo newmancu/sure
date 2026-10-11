@@ -39,7 +39,6 @@ hu:
       default: "%Y.%m.%d."
       long: "%Y. %B %e."
       short: "%b %e."
-      short_with_year: '%Y. %b %d.'
     month_names:
     -
     - január
@@ -139,10 +138,13 @@ hu:
   number:
     currency:
       format:
-        delimiter: " "
+        delimiter: ''
         format: "%n %u"
-        precision: 2
+        precision: 0
         separator: ","
+        significant: true
+        strip_insignificant_zeros: true
+        unit: Ft
     format:
       delimiter: " "
       precision: 2

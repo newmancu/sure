@@ -3,7 +3,7 @@ class SplitsController < ApplicationController
   before_action :require_split_write_permission!, only: %i[create update destroy]
 
   def new
-    @categories = grouped_categories
+    @categories = Current.family.categories.alphabetically
   end
 
   def create
@@ -16,7 +16,7 @@ class SplitsController < ApplicationController
     raw_splits = raw_splits.values if raw_splits.respond_to?(:values)
 
     splits = raw_splits.map do |s|
-      { name: s[:name], amount: s[:amount].to_d * -1, category_id: s[:category_id].presence, excluded: s[:excluded] }
+      { name: s[:name], amount: s[:amount].to_d * -1, category_id: s[:category_id].presence }
     end
 
     @entry.split!(splits)
@@ -35,7 +35,7 @@ class SplitsController < ApplicationController
       return
     end
 
-    @categories = grouped_categories
+    @categories = Current.family.categories.alphabetically
     @children = @entry.child_entries.includes(:entryable)
   end
 
@@ -51,7 +51,7 @@ class SplitsController < ApplicationController
     raw_splits = raw_splits.values if raw_splits.respond_to?(:values)
 
     splits = raw_splits.map do |s|
-      { name: s[:name], amount: s[:amount].to_d * -1, category_id: s[:category_id].presence, excluded: s[:excluded] }
+      { name: s[:name], amount: s[:amount].to_d * -1, category_id: s[:category_id].presence }
     end
 
     Entry.transaction do
@@ -95,10 +95,6 @@ class SplitsController < ApplicationController
     end
 
     def split_params
-      params.require(:split).permit(splits: [ :name, :amount, :category_id, :excluded ])
-    end
-
-    def grouped_categories
-      Current.family.categories.alphabetically_by_hierarchy
+      params.require(:split).permit(splits: [ :name, :amount, :category_id ])
     end
 end

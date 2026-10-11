@@ -1,10 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/chat_provider.dart';
 import 'chat_conversation_screen.dart';
-import '../l10n/app_localizations.dart';
 
 class ChatListScreen extends StatefulWidget {
   const ChatListScreen({super.key});
@@ -14,9 +12,6 @@ class ChatListScreen extends StatefulWidget {
 }
 
 class _ChatListScreenState extends State<ChatListScreen> {
-  bool _isSelectionMode = false;
-  final Set<String> _selectedChatIds = {};
-
   @override
   void initState() {
     super.initState();
@@ -40,93 +35,6 @@ class _ChatListScreenState extends State<ChatListScreen> {
     await _loadChats();
   }
 
-  void _toggleSelectionMode() {
-    setState(() {
-      _isSelectionMode = !_isSelectionMode;
-      _selectedChatIds.clear();
-    });
-  }
-
-  void _toggleSelectAll(List<String> allIds) {
-    setState(() {
-      if (_selectedChatIds.length == allIds.length) {
-        _selectedChatIds.clear();
-      } else {
-        _selectedChatIds
-          ..clear()
-          ..addAll(allIds);
-      }
-    });
-  }
-
-  void _toggleChatSelection(String id) {
-    setState(() {
-      if (_selectedChatIds.contains(id)) {
-        _selectedChatIds.remove(id);
-      } else {
-        _selectedChatIds.add(id);
-      }
-    });
-  }
-
-  Future<void> _deleteSelectedChats() async {
-    final l = AppLocalizations.of(context);
-    final authProvider = Provider.of<AuthProvider>(context, listen: false);
-    final chatProvider = Provider.of<ChatProvider>(context, listen: false);
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) {
-        final dl = AppLocalizations.of(context);
-        return AlertDialog(
-          title: Text(dl.chatListDeleteTitle),
-          content: Text(
-            dl.chatListDeleteMultiContent(_selectedChatIds.length),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: Text(dl.commonCancel),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: Text(dl.commonDelete, style: const TextStyle(color: Colors.red)),
-            ),
-          ],
-        );
-      },
-    );
-
-    if (confirmed != true || !mounted) return;
-
-    final accessToken = await authProvider.getValidAccessToken();
-    if (accessToken == null) {
-      await authProvider.logout();
-      return;
-    }
-
-    final success = await chatProvider.deleteMultipleChats(
-      accessToken: accessToken,
-      chatIds: _selectedChatIds.toList(),
-    );
-
-    if (!mounted) return;
-
-    setState(() {
-      _isSelectionMode = false;
-      _selectedChatIds.clear();
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          success ? l.chatListDeletedSuccess : l.chatListDeleteFailed,
-        ),
-        backgroundColor: success ? Colors.green : Colors.red,
-      ),
-    );
-  }
-
   Future<void> _openNewChat() async {
     if (!mounted) return;
 
@@ -144,63 +52,39 @@ class _ChatListScreenState extends State<ChatListScreen> {
     final now = DateTime.now();
     final difference = now.difference(dateTime);
 
-    final l = AppLocalizations.of(context);
     if (difference.inMinutes < 1) {
-      return l.chatListJustNow;
+      return 'Just now';
     } else if (difference.inHours < 1) {
-      return l.chatListMinutesAgo(difference.inMinutes);
+      return '${difference.inMinutes}m ago';
     } else if (difference.inDays < 1) {
-      return l.chatListHoursAgo(difference.inHours);
+      return '${difference.inHours}h ago';
     } else if (difference.inDays < 7) {
-      return l.chatListDaysAgo(difference.inDays);
+      return '${difference.inDays}d ago';
     } else {
-      return DateFormat.yMd(Localizations.localeOf(context).toString())
-          .format(dateTime.toLocal());
+      return '${dateTime.day}/${dateTime.month}/${dateTime.year}';
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final l = AppLocalizations.of(context);
     final colorScheme = Theme.of(context).colorScheme;
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(l.chatListTitle),
+        title: const Text('Chats'),
         centerTitle: false,
         actions: [
-          if (_isSelectionMode) ...[
-            IconButton(
-              icon: const Icon(Icons.delete),
-              onPressed: _selectedChatIds.isNotEmpty ? _deleteSelectedChats : null,
-            ),
-            IconButton(
-              icon: const Icon(Icons.select_all),
-              onPressed: () {
-                final allIds = Provider.of<ChatProvider>(context, listen: false)
-                    .chats
-                    .map((c) => c.id)
-                    .toList();
-                _toggleSelectAll(allIds);
-              },
-            ),
-            IconButton(
-              icon: const Icon(Icons.close),
-              onPressed: _toggleSelectionMode,
-            ),
-          ] else ...[
-            Padding(
-              padding: const EdgeInsets.only(top: 12, right: 12),
-              child: InkWell(
-                onTap: _handleRefresh,
-                child: const SizedBox(
-                  width: 36,
-                  height: 36,
-                  child: Icon(Icons.refresh),
-                ),
+          Padding(
+            padding: const EdgeInsets.only(top: 12, right: 12),
+            child: InkWell(
+              onTap: _handleRefresh,
+              child: const SizedBox(
+                width: 36,
+                height: 36,
+                child: Icon(Icons.refresh),
               ),
             ),
-          ],
+          ),
         ],
       ),
       body: Consumer<ChatProvider>(
@@ -225,7 +109,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                     ),
                     const SizedBox(height: 16),
                     Text(
-                      l.chatListError,
+                      'Failed to load chats',
                       style: Theme.of(context).textTheme.titleLarge,
                     ),
                     const SizedBox(height: 8),
@@ -238,7 +122,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                     ElevatedButton.icon(
                       onPressed: _handleRefresh,
                       icon: const Icon(Icons.refresh),
-                      label: Text(l.commonTryAgain),
+                      label: const Text('Try Again'),
                     ),
                   ],
                 ),
@@ -260,12 +144,12 @@ class _ChatListScreenState extends State<ChatListScreen> {
                     ),
                     const SizedBox(height: 16),
                     Text(
-                      l.chatListEmpty,
+                      'No chats yet',
                       style: Theme.of(context).textTheme.titleLarge,
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      l.chatListEmptySubtitle,
+                      'Start a new conversation with the AI assistant.',
                       style: TextStyle(color: colorScheme.onSurfaceVariant),
                       textAlign: TextAlign.center,
                     ),
@@ -282,12 +166,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
               itemCount: chatProvider.chats.length,
               itemBuilder: (context, index) {
                 final chat = chatProvider.chats[index];
-                final isSelected = _selectedChatIds.contains(chat.id);
                 return Dismissible(
                   key: Key(chat.id),
-                  direction: _isSelectionMode
-                      ? DismissDirection.none
-                      : DismissDirection.endToStart,
+                  direction: DismissDirection.endToStart,
                   background: Container(
                     color: Colors.red,
                     alignment: Alignment.centerRight,
@@ -300,23 +181,20 @@ class _ChatListScreenState extends State<ChatListScreen> {
                   confirmDismiss: (direction) async {
                     return await showDialog<bool>(
                       context: context,
-                      builder: (context) {
-                        final l = AppLocalizations.of(context);
-                        return AlertDialog(
-                          title: Text(l.chatListDeleteTitle),
-                          content: Text(l.chatListDeleteSingleContent(chat.title)),
-                          actions: [
-                            TextButton(
-                              onPressed: () => Navigator.pop(context, false),
-                              child: Text(l.commonCancel),
-                            ),
-                            TextButton(
-                              onPressed: () => Navigator.pop(context, true),
-                              child: Text(l.commonDelete, style: const TextStyle(color: Colors.red)),
-                            ),
-                          ],
-                        );
-                      },
+                      builder: (context) => AlertDialog(
+                        title: const Text('Delete Chat'),
+                        content: Text('Are you sure you want to delete "${chat.title}"?'),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context, false),
+                            child: const Text('Cancel'),
+                          ),
+                          TextButton(
+                            onPressed: () => Navigator.pop(context, true),
+                            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+                          ),
+                        ],
+                      ),
                     );
                   },
                   onDismissed: (direction) async {
@@ -330,18 +208,13 @@ class _ChatListScreenState extends State<ChatListScreen> {
                     }
                   },
                   child: ListTile(
-                    leading: _isSelectionMode
-                        ? Checkbox(
-                            value: isSelected,
-                            onChanged: (_) => _toggleChatSelection(chat.id),
-                          )
-                        : CircleAvatar(
-                            backgroundColor: colorScheme.primaryContainer,
-                            child: Icon(
-                              Icons.chat,
-                              color: colorScheme.onPrimaryContainer,
-                            ),
-                          ),
+                    leading: CircleAvatar(
+                      backgroundColor: colorScheme.primaryContainer,
+                      child: Icon(
+                        Icons.chat,
+                        color: colorScheme.onPrimaryContainer,
+                      ),
+                    ),
                     title: Text(
                       chat.title,
                       maxLines: 1,
@@ -350,7 +223,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                     subtitle: chat.lastMessageAt != null
                         ? Text(_formatDateTime(chat.lastMessageAt!))
                         : null,
-                    trailing: chat.messageCount != null && !_isSelectionMode
+                    trailing: chat.messageCount != null
                         ? Container(
                             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                             decoration: BoxDecoration(
@@ -368,10 +241,6 @@ class _ChatListScreenState extends State<ChatListScreen> {
                           )
                         : null,
                     onTap: () async {
-                      if (_isSelectionMode) {
-                        _toggleChatSelection(chat.id);
-                        return;
-                      }
                       await Navigator.push(
                         context,
                         MaterialPageRoute(
@@ -380,14 +249,6 @@ class _ChatListScreenState extends State<ChatListScreen> {
                       );
                       _loadChats();
                     },
-                    onLongPress: _isSelectionMode
-                        ? null
-                        : () {
-                            setState(() {
-                              _isSelectionMode = true;
-                              _selectedChatIds.add(chat.id);
-                            });
-                          },
                   ),
                 );
               },
@@ -397,7 +258,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: _openNewChat,
-        tooltip: l.chatListNewChat,
+        tooltip: 'New Chat',
         child: const Icon(Icons.add),
       ),
     );

@@ -1,12 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
-import '../models/custom_proxy_header.dart';
 import '../services/api_config.dart';
-import '../services/custom_proxy_headers_service.dart';
-import '../services/log_service.dart';
-import '../widgets/custom_proxy_headers_editor.dart';
-import '../l10n/app_localizations.dart';
 
 class BackendConfigScreen extends StatefulWidget {
   final VoidCallback? onConfigSaved;
@@ -22,10 +17,8 @@ class _BackendConfigScreenState extends State<BackendConfigScreen> {
   final _urlController = TextEditingController();
   bool _isLoading = false;
   bool _isTesting = false;
-  bool _hasLoadedConfig = false;
   String? _errorMessage;
   String? _successMessage;
-  List<CustomProxyHeader> _customHeaders = [];
 
   @override
   void initState() {
@@ -40,37 +33,21 @@ class _BackendConfigScreenState extends State<BackendConfigScreen> {
   }
 
   Future<void> _loadSavedUrl() async {
-    String urlToShow = ApiConfig.baseUrl;
-    List<CustomProxyHeader> headers = const [];
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final savedUrl = prefs.getString('backend_url');
-      headers = await CustomProxyHeadersService.instance.loadHeaders();
-      if (savedUrl != null && savedUrl.isNotEmpty) {
-        urlToShow = savedUrl;
-      }
-    } catch (e) {
-      // Swallow storage failures so the screen still becomes interactive with
-      // sensible defaults; the user can re-enter and re-save.
-      LogService.instance.warning(
-        'BackendConfigScreen',
-        'Failed to load saved backend config with ${e.runtimeType}',
-      );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _urlController.text = urlToShow;
-          _customHeaders = headers;
-          _hasLoadedConfig = true;
-        });
-      }
+    final prefs = await SharedPreferences.getInstance();
+    final savedUrl = prefs.getString('backend_url');
+    final urlToShow = (savedUrl != null && savedUrl.isNotEmpty)
+        ? savedUrl
+        : ApiConfig.baseUrl;
+
+    if (mounted) {
+      setState(() {
+        _urlController.text = urlToShow;
+      });
     }
   }
 
   Future<void> _testConnection() async {
     if (!_formKey.currentState!.validate()) return;
-
-    final l = AppLocalizations.of(context);
 
     setState(() {
       _isTesting = true;
@@ -78,51 +55,49 @@ class _BackendConfigScreenState extends State<BackendConfigScreen> {
       _successMessage = null;
     });
 
-    final previousHeaders = ApiConfig.customProxyHeaders;
     try {
       // Normalize base URL by removing trailing slashes
       final normalizedUrl = _urlController.text.trim().replaceAll(
-            RegExp(r'/+$'),
-            '',
-          );
-
-      // Apply the unsaved edits only for the duration of this probe so the
-      // test reflects what the user is about to save. Restored in `finally`.
-      ApiConfig.setCustomProxyHeaders(_customHeaders);
+        RegExp(r'/+$'),
+        '',
+      );
 
       // Check /sessions/new page to verify it's a Sure backend
       final sessionsUrl = Uri.parse('$normalizedUrl/sessions/new');
-      final sessionsResponse =
-          await http.get(sessionsUrl, headers: ApiConfig.htmlHeaders()).timeout(
-        const Duration(seconds: 10),
-        onTimeout: () {
-          throw Exception(l.backendConfigTimeout);
-        },
-      );
+      final sessionsResponse = await http
+          .get(sessionsUrl, headers: {'Accept': 'text/html'})
+          .timeout(
+            const Duration(seconds: 10),
+            onTimeout: () {
+              throw Exception(
+                'Connection timeout. Please check the URL and try again.',
+              );
+            },
+          );
 
       if (sessionsResponse.statusCode >= 200 &&
           sessionsResponse.statusCode < 400) {
         if (mounted) {
           setState(() {
-            _successMessage = l.backendConfigSuccess;
+            _successMessage =
+                'Connection successful!';
           });
         }
       } else {
         if (mounted) {
           setState(() {
             _errorMessage =
-                l.backendConfigServerError(sessionsResponse.statusCode);
+                'Server responded with status ${sessionsResponse.statusCode}. Please check if this is a Sure backend server.';
           });
         }
       }
     } catch (e) {
       if (mounted) {
         setState(() {
-          _errorMessage = l.backendConfigConnectionFailed(e.toString());
+          _errorMessage = 'Connection failed: ${e.toString()}';
         });
       }
     } finally {
-      ApiConfig.setCustomProxyHeaders(previousHeaders);
       if (mounted) {
         setState(() {
           _isTesting = false;
@@ -134,8 +109,6 @@ class _BackendConfigScreenState extends State<BackendConfigScreen> {
   Future<void> _saveAndContinue() async {
     if (!_formKey.currentState!.validate()) return;
 
-    final l = AppLocalizations.of(context);
-
     setState(() {
       _isLoading = true;
       _errorMessage = null;
@@ -144,17 +117,13 @@ class _BackendConfigScreenState extends State<BackendConfigScreen> {
     try {
       // Normalize base URL by removing trailing slashes
       final normalizedUrl = _urlController.text.trim().replaceAll(
-            RegExp(r'/+$'),
-            '',
-          );
+        RegExp(r'/+$'),
+        '',
+      );
 
       // Save URL to SharedPreferences
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('backend_url', normalizedUrl);
-
-      // Save custom proxy headers
-      await CustomProxyHeadersService.instance.saveHeaders(_customHeaders);
-      ApiConfig.setCustomProxyHeaders(_customHeaders);
 
       // Update ApiConfig
       ApiConfig.setBaseUrl(normalizedUrl);
@@ -166,7 +135,7 @@ class _BackendConfigScreenState extends State<BackendConfigScreen> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _errorMessage = l.backendConfigSaveFailed(e.toString());
+          _errorMessage = 'Failed to save URL: ${e.toString()}';
         });
       }
     } finally {
@@ -178,9 +147,9 @@ class _BackendConfigScreenState extends State<BackendConfigScreen> {
     }
   }
 
-  String? _validateUrl(String? value, AppLocalizations l) {
+  String? _validateUrl(String? value) {
     if (value == null || value.isEmpty) {
-      return l.backendConfigUrlRequired;
+      return 'Please enter a backend URL';
     }
 
     final trimmedValue = value.trim();
@@ -188,17 +157,17 @@ class _BackendConfigScreenState extends State<BackendConfigScreen> {
     // Check if it starts with http:// or https://
     if (!trimmedValue.startsWith('http://') &&
         !trimmedValue.startsWith('https://')) {
-      return l.backendConfigUrlScheme;
+      return 'URL must start with http:// or https://';
     }
 
     // Basic URL validation
     try {
       final uri = Uri.parse(trimmedValue);
       if (!uri.hasScheme || uri.host.isEmpty) {
-        return l.backendConfigUrlInvalid;
+        return 'Please enter a valid URL';
       }
     } catch (e) {
-      return l.backendConfigUrlInvalid;
+      return 'Please enter a valid URL';
     }
 
     return null;
@@ -206,7 +175,6 @@ class _BackendConfigScreenState extends State<BackendConfigScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final l = AppLocalizations.of(context);
     final colorScheme = Theme.of(context).colorScheme;
 
     return Scaffold(
@@ -227,19 +195,19 @@ class _BackendConfigScreenState extends State<BackendConfigScreen> {
                 ),
                 const SizedBox(height: 16),
                 Text(
-                  l.backendConfigTitle,
+                  'Configuration',
                   style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        color: colorScheme.primary,
-                      ),
+                    fontWeight: FontWeight.bold,
+                    color: colorScheme.primary,
+                  ),
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  l.backendConfigSubtitle,
+                  'Update your Sure server URL',
                   style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                      ),
+                    color: colorScheme.onSurfaceVariant,
+                  ),
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 48),
@@ -259,7 +227,7 @@ class _BackendConfigScreenState extends State<BackendConfigScreen> {
                           Icon(Icons.info_outline, color: colorScheme.primary),
                           const SizedBox(width: 12),
                           Text(
-                            l.backendConfigExampleUrlsLabel,
+                            'Example URLs',
                             style: TextStyle(
                               color: colorScheme.primary,
                               fontWeight: FontWeight.bold,
@@ -358,48 +326,13 @@ class _BackendConfigScreenState extends State<BackendConfigScreen> {
                   keyboardType: TextInputType.url,
                   autocorrect: false,
                   textInputAction: TextInputAction.done,
-                  decoration: InputDecoration(
-                    labelText: l.backendConfigUrlLabel,
-                    prefixIcon: const Icon(Icons.cloud_outlined),
-                    hintText: l.backendConfigUrlHint,
+                  decoration: const InputDecoration(
+                    labelText: 'Sure server URL',
+                    prefixIcon: Icon(Icons.cloud_outlined),
+                    hintText: 'https://app.sure.am',
                   ),
-                  validator: (value) => _validateUrl(value, l),
+                  validator: _validateUrl,
                   onFieldSubmitted: (_) => _saveAndContinue(),
-                ),
-                const SizedBox(height: 24),
-                ExpansionTile(
-                  tilePadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.http_outlined),
-                  title: Text(l.backendConfigProxyHeadersLabel),
-                  subtitle: Text(
-                    _customHeaders.isEmpty
-                        ? l.backendConfigProxyHeadersSubtitle
-                        : l.backendConfigProxyHeadersCount(_customHeaders.length),
-                  ),
-                  children: [
-                    const SizedBox(height: 8),
-                    if (_hasLoadedConfig)
-                      CustomProxyHeadersEditor(
-                        initialHeaders: _customHeaders,
-                        onChanged: (headers) {
-                          setState(() => _customHeaders = headers);
-                        },
-                      )
-                    else
-                      const Center(
-                        child: Padding(
-                          padding: EdgeInsets.all(16),
-                          child: CircularProgressIndicator(),
-                        ),
-                      ),
-                    const SizedBox(height: 8),
-                    Text(
-                      l.backendConfigHeadersHelp,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: colorScheme.onSurfaceVariant,
-                          ),
-                    ),
-                  ],
                 ),
                 const SizedBox(height: 16),
 
@@ -413,7 +346,7 @@ class _BackendConfigScreenState extends State<BackendConfigScreen> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.cable),
-                  label: Text(_isTesting ? l.backendConfigTesting : l.backendConfigTestButton),
+                  label: Text(_isTesting ? 'Testing...' : 'Test Connection'),
                 ),
 
                 const SizedBox(height: 12),
@@ -427,17 +360,17 @@ class _BackendConfigScreenState extends State<BackendConfigScreen> {
                           width: 20,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
-                      : Text(l.backendConfigContinueButton),
+                      : const Text('Continue'),
                 ),
 
                 const SizedBox(height: 24),
 
                 // Info text
                 Text(
-                  l.backendConfigChangeHint,
+                  'You can change this later in the settings.',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                      ),
+                    color: colorScheme.onSurfaceVariant,
+                  ),
                   textAlign: TextAlign.center,
                 ),
               ],

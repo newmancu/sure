@@ -41,10 +41,7 @@ ru:
     formats:
       default: "%d.%m.%Y"
       long: "%-d %B %Y"
-      month_year: "%B %Y"
       short: "%-d %b"
-      short_month_year: "%b %Y"
-      short_with_year: '%-d %b %Y'
     month_names:
     -
     - января
@@ -133,11 +130,6 @@ ru:
       month: Месяц
       second: Секунда
       year: Год
-  defaults:
-    brand_name: "%{brand_name}"
-    common:
-      close: Закрыть
-    product_name: "%{product_name}"
   errors:
     format: "%{attribute} %{message}"
     messages:
@@ -185,13 +177,9 @@ ru:
         many: "%{model}: сохранение не удалось из-за %{count} ошибок"
         one: "%{model}: сохранение не удалось из-за %{count} ошибки"
         other: "%{model}: сохранение не удалось из-за %{count} ошибки"
-  global:
-    expand: Развернуть
   helpers:
     select:
-      default_label: Выберите...
       prompt: 'Выберите: '
-      search_placeholder: Поиск
     submit:
       create: Создать %{model}
       submit: Сохранить %{model}
@@ -199,8 +187,13 @@ ru:
   number:
     currency:
       format:
+        delimiter: " "
+        format: "%n %u"
+        precision: 2
+        separator: ","
         significant: false
         strip_insignificant_zeros: false
+        unit: руб.
     format:
       delimiter: " "
       precision: 3
@@ -213,30 +206,30 @@ ru:
         format: "%n %u"
         units:
           billion:
-            few: миллиарда
+            few: миллиардов
             many: миллиардов
             one: миллиард
-            other: миллиарда
+            other: миллиардов
           million:
-            few: миллиона
+            few: миллионов
             many: миллионов
             one: миллион
-            other: миллиона
+            other: миллионов
           quadrillion:
-            few: квадриллиона
+            few: квадриллионов
             many: квадриллионов
             one: квадриллион
-            other: квадриллиона
+            other: квадриллионов
           thousand:
-            few: тысячи
+            few: тысяч
             many: тысяч
             one: тысяча
-            other: тысячи
+            other: тысяч
           trillion:
-            few: триллиона
+            few: триллионов
             many: триллионов
             one: триллион
-            other: триллиона
+            other: триллионов
           unit: ''
       format:
         delimiter: ''
@@ -276,10 +269,3 @@ ru:
       long: "%d %B %Y, %H:%M"
       short: "%d %b, %H:%M"
     pm: вечера
-  mcp:
-    errors:
-      invalid_session_id: Недействительный идентификатор сеанса MCP
-      unsupported_protocol_version: 'Неподдерживаемая версия протокола MCP: %{version}'
-  oauth:
-    registration:
-      invalid_redirect_uris: redirect_uris должны использовать HTTPS, HTTP для loopback-адреса или URI-схему нативного приложения

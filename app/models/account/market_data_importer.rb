@@ -5,11 +5,9 @@ class Account::MarketDataImporter
     @account = account
   end
 
-  # Prices are imported first so their currencies are known when deciding
-  # which exchange rate pairs the account needs.
   def import_all
-    import_security_prices
     import_exchange_rates
+    import_security_prices
   end
 
   def import_exchange_rates
@@ -17,36 +15,21 @@ class Account::MarketDataImporter
     return unless ExchangeRate.provider
 
     pair_dates = {}
-    family_currency = account.family.primary_currency_code
 
-    # 1. ENTRY-BASED PAIRS – currencies that differ from the account currency.
-    # Each is also fetched against the family currency: transfer matching derives
-    # cross rates through it and does not chain entry -> account -> family rates.
+    # 1. ENTRY-BASED PAIRS – currencies that differ from the account currency
     account.entries
            .where.not(currency: account.currency)
            .group(:currency)
            .minimum(:date)
            .each do |source_currency, date|
-      [ account.currency, family_currency ].uniq.each do |target_currency|
-        next if target_currency == source_currency
-
-        key = [ source_currency, target_currency ]
-        pair_dates[key] = [ pair_dates[key], date ].compact.min
-      end
+      key = [ source_currency, account.currency ]
+      pair_dates[key] = [ pair_dates[key], date ].compact.min
     end
 
     # 2. ACCOUNT-BASED PAIR – convert the account currency to the family currency (if different)
     if foreign_account?
-      key = [ account.currency, family_currency ]
+      key = [ account.currency, account.family.currency ]
       pair_dates[key] = [ pair_dates[key], account.start_date ].compact.min
-    end
-
-    # 3. SECURITY PRICE PAIRS – holdings convert each security price into the
-    # account currency, so every foreign price currency needs rates from the
-    # first date a price for that security is required.
-    security_price_currency_start_dates.each do |source_currency, date|
-      key = [ source_currency, account.currency ]
-      pair_dates[key] = [ pair_dates[key], date ].compact.min
     end
 
     pair_dates.each do |(source, target), start_date|
@@ -62,53 +45,38 @@ class Account::MarketDataImporter
   def import_security_prices
     return unless Security.provider
 
-    return if price_windows.empty?
+    account_securities = (account.trades.map(&:security) + account.current_holdings.map(&:security)).uniq
 
-    securities = Security.online.where(id: price_windows.keys).index_by(&:id)
+    return if account_securities.empty?
 
-    price_windows.each do |security_id, window|
-      security = securities[security_id]
-      next unless security
+    account_securities.each do |security|
+      security.import_provider_prices(
+        start_date: first_required_price_date(security),
+        end_date: Date.current
+      )
 
-      security.import_provider_prices(start_date: window.start_date, end_date: window.end_date)
       security.import_provider_details
     end
   end
 
   private
-    def price_windows
-      @price_windows ||= Security::Price::ImportWindows.new(account).to_h
-    end
+    # Calculates the first date we require a price for the given security scoped to this account
+    def first_required_price_date(security)
+      trade_start_date = account.trades.with_entry
+                              .where(security: security)
+                              .where(entries: { account_id: account.id })
+                              .minimum("entries.date")
 
-    def security_ids
-      price_windows.keys
-    end
-
-    def first_required_price_dates
-      price_windows.transform_values(&:start_date)
-    end
-
-    # Earliest required date per price currency that differs from the account currency.
-    # Securities are shared across families, so a price's own date is not a bound.
-    # Currencies whose prices all predate the account's first required date are skipped.
-    def security_price_currency_start_dates
-      @security_price_currency_start_dates ||= begin
-        latest_foreign_price_dates = Security::Price.where(security_id: security_ids)
-                                                    .where.not(currency: account.currency)
-                                                    .group(:security_id, :currency)
-                                                    .maximum(:date)
-
-        latest_foreign_price_dates.each_with_object({}) do |((security_id, currency), latest_date), dates|
-          start_date = first_required_price_dates[security_id]
-          next if latest_date < start_date
-
-          dates[currency] = [ dates[currency], start_date ].compact.min
+      holding_start_date =
+        if account.holdings.where(security: security).where.not(account_provider_id: nil).exists?
+          account.start_date
         end
-      end
+
+      [ trade_start_date, holding_start_date ].compact.min
     end
 
     def needs_exchange_rates?
-      has_multi_currency_entries? || foreign_account? || security_price_currency_start_dates.any?
+      has_multi_currency_entries? || foreign_account?
     end
 
     def has_multi_currency_entries?
@@ -117,6 +85,6 @@ class Account::MarketDataImporter
 
     def foreign_account?
       return false if account.family.nil?
-      account.currency != account.family.primary_currency_code
+      account.currency != account.family.currency
     end
 end

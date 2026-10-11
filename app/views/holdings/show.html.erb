@@ -58,7 +58,7 @@
             </div>
             <div data-holding-security-remap-target="form" class="hidden mt-3 space-y-3">
               <% if Security.providers.any? %>
-                <%= styled_form_with url: remap_security_holding_path(@holding), method: :patch, class: "space-y-3" do |f| %>
+                <%= form_with url: remap_security_holding_path(@holding), method: :patch, class: "space-y-3" do |f| %>
                   <div class="form-field combobox">
                     <%= f.combobox :security_id,
                                   securities_path(country_code: Current.family.country),
@@ -68,11 +68,11 @@
                   </div>
                   <div class="flex justify-end gap-2">
                     <button type="button"
-                            class="inline-flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium text-primary button-bg-secondary-strong hover:button-bg-secondary-strong-hover"
+                            class="inline-flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium text-primary bg-gray-200 hover:bg-gray-300 theme-dark:bg-gray-700 theme-dark:hover:bg-gray-600"
                             data-action="click->holding-security-remap#toggle">
                       <%= t(".cancel") %>
                     </button>
-                    <%= f.submit t(".remap_security") %>
+                    <%= f.submit t(".remap_security"), class: "inline-flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium text-inverse bg-inverse hover:bg-inverse-hover" %>
                   </div>
                 <% end %>
               <% else %>
@@ -96,7 +96,7 @@
           </div>
           <div class="flex items-center justify-between text-sm">
             <dt class="text-secondary"><%= t(".shares_label") %></dt>
-            <dd id="<%= dom_id(@holding, :shares) %>" class="text-primary"><%= format_quantity(@holding.qty, exact: true) %></dd>
+            <dd class="text-primary"><%= format_quantity(@holding.qty) %></dd>
           </div>
           <div class="flex items-center justify-between text-sm">
             <dt class="text-secondary"><%= t(".portfolio_weight_label") %></dt>
@@ -141,7 +141,7 @@
                     class: "space-y-3",
                     data: drawer_form_data do |f| %>
                 <p class="text-xs text-secondary mb-2">
-                  <%= t("holdings.cost_basis_cell.set_cost_basis_header", ticker: @holding.ticker, qty: format_quantity(@holding.qty, exact: true)) %>
+                  <%= t("holdings.cost_basis_cell.set_cost_basis_header", ticker: @holding.ticker, qty: format_quantity(@holding.qty)) %>
                 </p>
                 <!-- Total cost basis input -->
                 <div class="form-field">
@@ -181,11 +181,11 @@
                 </div>
                 <div class="flex justify-end gap-2 pt-2">
                   <button type="button"
-                          class="inline-flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium text-primary button-bg-secondary-strong hover:button-bg-secondary-strong-hover"
+                          class="inline-flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium text-primary bg-gray-200 hover:bg-gray-300 theme-dark:bg-gray-700 theme-dark:hover:bg-gray-600"
                           data-action="click->drawer-cost-basis#toggle">
                     <%= t("holdings.cost_basis_cell.cancel") %>
                   </button>
-                  <%= f.submit t("holdings.cost_basis_cell.save") %>
+                  <%= f.submit t("holdings.cost_basis_cell.save"), class: "inline-flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium text-inverse bg-inverse hover:bg-inverse-hover" %>
                 </div>
               <% end %>
             </div>
@@ -278,7 +278,7 @@
               <%= button_to t(".reset_to_provider"),
                   reset_security_holding_path(@holding),
                   method: :post,
-                  class: "inline-flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium text-primary button-bg-secondary-strong hover:button-bg-secondary-strong-hover",
+                  class: "inline-flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium text-primary bg-gray-200 hover:bg-gray-300 theme-dark:bg-gray-700 theme-dark:hover:bg-gray-600",
                   form: { data: { turbo: false } },
                   data: { turbo_confirm: {
                     title: t(".reset_confirm_title"),
@@ -297,7 +297,7 @@
               <%= button_to t(".market_data_sync_button"),
                   sync_prices_holding_path(@holding),
                   method: :post,
-                  class: "inline-flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium text-primary button-bg-secondary-strong hover:button-bg-secondary-strong-hover",
+                  class: "inline-flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium text-primary bg-gray-200 hover:bg-gray-300 theme-dark:bg-gray-700 theme-dark:hover:bg-gray-600",
                   data: { loading_button_target: "button" },
                   form: { data: {
                     controller: "loading-button",
@@ -315,7 +315,7 @@
               <%= button_to t(".unlock_cost_basis"),
                   unlock_cost_basis_holding_path(@holding),
                   method: :post,
-                  class: "inline-flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium text-primary button-bg-secondary-strong hover:button-bg-secondary-strong-hover",
+                  class: "inline-flex items-center gap-1 px-3 py-2 rounded-lg text-sm font-medium text-primary bg-gray-200 hover:bg-gray-300 theme-dark:bg-gray-700 theme-dark:hover:bg-gray-600",
                   form: { data: { turbo: false } },
                   data: { turbo_confirm: { title: t(".unlock_confirm_title"), body: t(".unlock_confirm_body") } } %>
             </div>
