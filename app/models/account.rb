@@ -73,26 +73,6 @@ class Account < ApplicationRecord
       .distinct
   }
 
-  # Accounts every active member of the account's family can access (owned or
-  # shared with them), the same test as accessible_by applied to all of them.
-  # Family-wide surfaces such as the insights feed name accounts and amounts
-  # to everyone, so they draw only from this set.
-  scope :accessible_by_all_active_members, -> {
-    where(<<~SQL.squish)
-      NOT EXISTS (
-        SELECT 1 FROM users
-        WHERE users.family_id = accounts.family_id
-          AND users.active = TRUE
-          AND users.id IS DISTINCT FROM accounts.owner_id
-          AND NOT EXISTS (
-            SELECT 1 FROM account_shares
-            WHERE account_shares.account_id = accounts.id
-              AND account_shares.user_id = users.id
-          )
-      )
-    SQL
-  }
-
   # Accounts a user can write to (owned or shared with full_control)
   scope :writable_by, ->(user) {
     left_joins(:account_shares)
@@ -378,7 +358,9 @@ class Account < ApplicationRecord
     end
 
     def create_from_binance_account(binance_account)
-      create_from_crypto_exchange_account(binance_account, family: binance_account.binance_item.family)
+      account = create_from_crypto_exchange_account(binance_account, family: binance_account.binance_item.family)
+      account.set_opening_anchor_balance(balance: 0)
+      account
     end
 
     def create_from_ibkr_account(ibkr_account)
@@ -425,6 +407,7 @@ class Account < ApplicationRecord
 
     TRADE_REPUBLIC_ACCOUNT_TYPES = {
       "portfolio" => [ "Investment", "brokerage", "Trade Republic Portfolio" ],
+      "pea" => [ "Investment", "pea", "Trade Republic PEA" ],
       "cash" => [ "Depository", "checking", "Trade Republic Cash" ],
       # The exchange subtype is the Crypto subtype that supports trades.
       "crypto" => [ "Crypto", "exchange", "Trade Republic Crypto" ]
@@ -485,26 +468,12 @@ class Account < ApplicationRecord
     private
 
       def create_from_crypto_exchange_account(provider_account, family:)
-        # The provider record carries the exchange's *reporting* currency -- Kraken
-        # quotes everything in USD -- which says nothing about what the user
-        # values the account in. The account's own currency is the one its
-        # balance and holdings are shown in, so it is the family's; entries keep
-        # whatever currency they were made in and convert at display, as on
-        # every other account.
-        provider_currency = provider_account.currency.presence || family.currency
-        balance = (provider_account.current_balance || 0).to_d
-        # With no rate the figure cannot be stated in the family currency, and
-        # relabelling it would be wrong by the whole rate. Zero is honest: the
-        # first sync writes the converted balance minutes later, and the
-        # opening anchor is zeroed below regardless.
-        balance = convert_provider_balance(balance, from: provider_currency, to: family.currency) || 0
-
         attributes = {
           family: family,
           name: provider_account.name,
-          balance: balance,
+          balance: (provider_account.current_balance || 0).to_d,
           cash_balance: 0,
-          currency: family.currency,
+          currency: provider_account.currency.presence || family.currency,
           accountable_type: "Crypto",
           accountable_attributes: {
             subtype: "exchange",
@@ -512,38 +481,7 @@ class Account < ApplicationRecord
           }
         }
 
-        # An exchange account's ledger is imported from inception, so it opens at
-        # zero. Without this it inherits create_and_sync's default: an opening
-        # balance equal to what the account is worth *today*, dated two years ago
-        # -- so an exchange older than that imports its whole history on top of
-        # its present value, and every entry before the anchor sits ahead of its
-        # own opening balance.
-        #
-        # Through the manager, not set_opening_anchor_balance: that queues a
-        # sync, which is what skip_initial_sync below just declined. Running
-        # before the provider link exists, it would see one zero anchor and no
-        # entries and write that zero over the balance set here.
-        #
-        # Both in one transaction: creation commits on its own, so a failure
-        # while zeroing the anchor would otherwise leave an account behind
-        # carrying today's balance as its opening one, and the retry would
-        # create a second.
-        account = nil
-        transaction do
-          account = create_and_sync(attributes, skip_initial_sync: true)
-          result = Account::OpeningBalanceManager.new(account).set_opening_balance(balance: 0)
-          raise result.error if result.error
-        end
-
-        account
-      end
-
-      def convert_provider_balance(amount, from:, to:)
-        return amount if from == to || amount.zero?
-
-        Money.new(amount, from).exchange_to(to).amount
-      rescue Money::ConversionError
-        nil
+        create_and_sync(attributes, skip_initial_sync: true)
       end
 
       def build_simplefin_accountable_attributes(simplefin_account, account_type, subtype)
