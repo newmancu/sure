@@ -59,7 +59,6 @@ gem "image_processing", ">= 1.2"
 gem "ostruct"
 gem "bcrypt", "~> 3.1"
 gem "jwt"
-gem "apnotic", "~> 1.8"
 gem "jbuilder"
 gem "countries"
 
@@ -86,9 +85,8 @@ gem "httparty"
 gem "rotp", "~> 6.3"
 gem "rqrcode", "~> 3.0"
 gem "webauthn", "~> 3.4"
-gem "websocket-driver", "~> 0.8"
 gem "activerecord-import"
-gem "rubyzip", "~> 3.4"
+gem "rubyzip", "~> 2.3"
 gem "pdf-reader", "~> 2.12"
 
 # OpenID Connect, OAuth & SAML authentication

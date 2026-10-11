@@ -30,9 +30,6 @@ nl:
       unknown: "--"
       no_cost_basis: Geen kostprijs
     index:
-      positions:
-        one: "%{count} positie"
-        other: "%{count} posities"
       average_cost: Gemiddelde kostprijs
       holdings: Bezittingen
       name: Naam
