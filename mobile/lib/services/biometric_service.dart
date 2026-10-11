@@ -39,11 +39,8 @@ class BiometricService {
           biometricOnly: false,
         ),
       );
-    } catch (e) {
-      LogService.instance.error(
-        'BiometricService',
-        'authenticate() failed with ${e.runtimeType}',
-      );
+    } catch (e, stack) {
+      LogService.instance.error('BiometricService', 'authenticate() failed: $e\n$stack');
       return false;
     }
   }

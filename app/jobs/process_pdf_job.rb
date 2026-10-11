@@ -1,15 +1,11 @@
 class ProcessPdfJob < ApplicationJob
   queue_as :medium_priority
 
-  discard_on(Provider::Error) do |job, err|
-    Rails.logger.error("[ProcessPdfJob] Discarded permanently (job_id=#{job.job_id}, error_class=#{err.class.name})")
-  end
-
   def perform(pdf_import)
     return unless pdf_import.is_a?(PdfImport)
-    return reset_processing_claim(pdf_import) unless pdf_import.pdf_uploaded?
-    return if pdf_import.status.in?(%w[complete failed])
-    return reset_processing_claim(pdf_import) if pdf_import.ai_processed? && (!pdf_import.statement_with_transactions? || pdf_import.rows_count > 0)
+    return unless pdf_import.pdf_uploaded?
+    return if pdf_import.status == "complete"
+    return if pdf_import.ai_processed? && (!pdf_import.statement_with_transactions? || pdf_import.rows_count > 0)
 
     pdf_import.update!(status: :importing)
 
@@ -56,7 +52,7 @@ class ProcessPdfJob < ApplicationJob
 
     def sanitize_error_message(error)
       case error
-      when Provider::Error, RuntimeError, ArgumentError
+      when RuntimeError, ArgumentError
         I18n.t("imports.pdf_import.processing_failed_with_message",
                message: error.message.truncate(500))
       else
@@ -66,11 +62,12 @@ class ProcessPdfJob < ApplicationJob
     end
 
     def upload_to_vector_store(pdf_import, document_type:)
+      filename = pdf_import.pdf_file.filename.to_s
       file_content = pdf_import.pdf_file_content
 
       family_document = pdf_import.family.upload_document(
         file_content: file_content,
-        filename: pdf_import.pdf_filename,
+        filename: filename,
         metadata: { "type" => document_type }
       )
 
@@ -87,9 +84,5 @@ class ProcessPdfJob < ApplicationJob
 
     def statement_with_transactions?(document_type)
       document_type.in?(%w[bank_statement credit_card_statement])
-    end
-
-    def reset_processing_claim(pdf_import)
-      pdf_import.with_lock { pdf_import.update!(status: :pending) if pdf_import.importing? && pdf_import.updated_at <= 30.minutes.ago }
     end
 end

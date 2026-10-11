@@ -61,12 +61,9 @@ class Family::AutoMerchantDetector
   private
     attr_reader :family, :transaction_ids
 
-    # Honors Setting.llm_provider (issue #2113) — Provider::Anthropic implements
-    # auto_detect_merchants (PR #1984), so batch merchant detection routes to the
-    # configured provider, with fallback handled by
-    # Provider::Registry.preferred_llm_provider.
+    # For now, OpenAI only, but this should work with any LLM concept provider
     def llm_provider
-      Provider::Registry.preferred_llm_provider
+      Provider::Registry.get_provider(:openai)
     end
 
     def default_logo_provider_url
@@ -105,48 +102,32 @@ class Family::AutoMerchantDetector
     end
 
     def find_or_create_ai_merchant(auto_detection)
-      # Strategy 1: Find an existing merchant by website_url (most reliable for
-      # deduplication). Provider-sourced merchants (Plaid etc.) are vetted
-      # shared data and stay reusable across families. AI-sourced ones were
-      # created from some family's own transaction text (before #3842), so
-      # they're only reused when already assigned to this family — otherwise
-      # another family's crafted name/logo would surface here.
+      # Strategy 1: Find existing merchant by website_url (most reliable for deduplication)
       if auto_detection.business_url.present?
-        existing = reusable_provider_merchants.find_by(website_url: auto_detection.business_url)
+        existing = ProviderMerchant.find_by(website_url: auto_detection.business_url)
         return existing if existing
       end
 
-      # Strategy 2: Find an AI-sourced merchant by exact name match, limited
-      # to the ones this family already uses (see Strategy 1).
-      existing = family_ai_provider_merchants.find_by(name: auto_detection.business_name)
+      # Strategy 2: Find by exact name match
+      existing = ProviderMerchant.find_by(source: "ai", name: auto_detection.business_name)
       return existing if existing
 
-      # Strategy 3: no shared merchant to reuse. Create a merchant scoped to
-      # this family rather than a globally-shared ProviderMerchant, so a
-      # family can't use LLM-extracted data derived from its own transaction
-      # description/notes to create a record visible to every other family
-      # (issue #3842).
-      merchant, _created = FamilyMerchant.find_or_create_with_name(
-        family,
-        auto_detection.business_name,
-        website_url: auto_detection.business_url
+      # Strategy 3: Create new merchant
+      ProviderMerchant.create!(
+        source: "ai",
+        name: auto_detection.business_name,
+        website_url: auto_detection.business_url,
+        logo_url: build_logo_url(auto_detection.business_url)
       )
-      merchant
-    rescue ActiveRecord::RecordInvalid => e
-      # A name the model rejects (e.g. the reserved Merchant::NO_MERCHANT_FILTER_VALUE)
-      # leaves this transaction without a merchant, as before, instead of
-      # failing the whole detection batch. The name itself isn't logged since
-      # it's derived from the family's transaction text.
-      Rails.logger.warn("Skipping invalid AI-detected merchant for family #{family.id}: #{e.record.errors.attribute_names.join(', ')}")
-      nil
+    rescue ActiveRecord::RecordInvalid, ActiveRecord::RecordNotUnique
+      # Race condition: another process created the merchant between our find and create
+      ProviderMerchant.find_by(source: "ai", name: auto_detection.business_name)
     end
 
-    def family_ai_provider_merchants
-      ProviderMerchant.where(source: "ai", id: family.transactions.select(:merchant_id))
-    end
-
-    def reusable_provider_merchants
-      ProviderMerchant.where.not(source: "ai").or(family_ai_provider_merchants)
+    def build_logo_url(business_url)
+      return nil unless Setting.brand_fetch_client_id.present? && business_url.present?
+      size = Setting.brand_fetch_logo_size
+      "#{default_logo_provider_url}/#{business_url}/icon/fallback/lettermark/w/#{size}/h/#{size}?c=#{Setting.brand_fetch_client_id}"
     end
 
     def enhance_provider_merchant(merchant, auto_detection)

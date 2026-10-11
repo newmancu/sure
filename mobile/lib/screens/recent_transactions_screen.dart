@@ -6,12 +6,6 @@ import '../models/account.dart';
 import '../providers/transactions_provider.dart';
 import '../providers/accounts_provider.dart';
 import '../providers/auth_provider.dart';
-import '../theme/sure_tokens.dart';
-import '../providers/privacy_provider.dart';
-import '../utils/amount_parser.dart';
-import '../utils/money_masker.dart';
-import '../widgets/money_text.dart';
-import '../l10n/app_localizations.dart';
 
 class RecentTransactionsScreen extends StatefulWidget {
   const RecentTransactionsScreen({super.key});
@@ -88,10 +82,8 @@ class _RecentTransactionsScreenState extends State<RecentTransactionsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final l = AppLocalizations.of(context);
     final colorScheme = Theme.of(context).colorScheme;
     final transactionsProvider = context.watch<TransactionsProvider>();
-    final hideAmounts = context.watch<PrivacyProvider>().hidden;
 
     final recentTransactions = _getSortedTransactions(
       transactionsProvider.transactions,
@@ -99,12 +91,12 @@ class _RecentTransactionsScreenState extends State<RecentTransactionsScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(l.recentTransactionsTitle),
+        title: const Text('Recent Transactions'),
         actions: [
           PopupMenuButton<int>(
             initialValue: _transactionLimit,
             icon: const Icon(Icons.filter_list),
-            tooltip: l.recentTransactionsDisplayLimit,
+            tooltip: 'Display Limit',
             onSelected: (int value) {
               setState(() {
                 _transactionLimit = value;
@@ -120,7 +112,7 @@ class _RecentTransactionsScreenState extends State<RecentTransactionsScreen> {
                     else
                       const SizedBox(width: 20),
                     const SizedBox(width: 8),
-                    Text(l.recentTransactionsShowN(limit)),
+                    Text('Show $limit'),
                   ],
                 ),
               );
@@ -143,10 +135,8 @@ class _RecentTransactionsScreenState extends State<RecentTransactionsScreen> {
                     itemBuilder: (context, index) {
                       final transaction = recentTransactions[index];
                       return _buildTransactionItem(
-                        context,
                         transaction,
                         colorScheme,
-                        hideAmounts,
                       );
                     },
                   ),
@@ -155,7 +145,6 @@ class _RecentTransactionsScreenState extends State<RecentTransactionsScreen> {
   }
 
   Widget _buildEmptyState(ColorScheme colorScheme) {
-    final l = AppLocalizations.of(context);
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(24),
@@ -169,12 +158,12 @@ class _RecentTransactionsScreenState extends State<RecentTransactionsScreen> {
             ),
             const SizedBox(height: 16),
             Text(
-              l.recentTransactionsEmpty,
+              'No Transactions',
               style: Theme.of(context).textTheme.titleLarge,
             ),
             const SizedBox(height: 8),
             Text(
-              l.recentTransactionsPullToRefresh,
+              'Pull to refresh',
               style: TextStyle(color: colorScheme.onSurfaceVariant),
             ),
           ],
@@ -183,43 +172,50 @@ class _RecentTransactionsScreenState extends State<RecentTransactionsScreen> {
     );
   }
 
-  Widget _buildTransactionItem(BuildContext context, Transaction transaction,
-      ColorScheme colorScheme, bool hideAmounts) {
+  Widget _buildTransactionItem(Transaction transaction, ColorScheme colorScheme) {
     final account = _getAccount(transaction.accountId);
-    final accountName = account?.name ??
-        AppLocalizations.of(context).recentTransactionsUnknownAccount;
+    final accountName = account?.name ?? 'Unknown Account';
 
-    double? amount;
-    try {
-      amount = AmountParser.parse(transaction.amount).value;
-    } on FormatException {
-      // Keep the list renderable if the server returns a malformed amount.
-    }
+    // Parse amount with proper sign handling (same logic as transactions_list_screen.dart)
+    String trimmedAmount = transaction.amount.trim();
+    trimmedAmount = trimmedAmount.replaceAll('\u2212', '-'); // Normalize minus sign
 
-    // For asset accounts and liability accounts, flip the sign to match accounting conventions
-    if (amount != null &&
-        (account?.isAsset == true || account?.isLiability == true)) {
+    // Detect if the amount has a negative sign
+    bool hasNegativeSign = trimmedAmount.startsWith('-') || trimmedAmount.endsWith('-');
+
+    // Remove all non-numeric characters except decimal point and minus sign
+    String numericString = trimmedAmount.replaceAll(RegExp(r'[^\d.\-]'), '');
+
+    // Parse the numeric value
+    double amount = double.tryParse(numericString.replaceAll('-', '')) ?? 0.0;
+
+    // Apply the sign from the string
+    if (hasNegativeSign) {
       amount = -amount;
     }
 
-    // Determine display properties based on final amount. The semantic color
-    // comes from the Sure design-system tokens (success/destructive/subdued)
-    // via MoneyTrend, instead of raw Colors.green/red.
-    final isPositive = amount == null || amount >= 0;
-    final moneyTrend = SureMoney.trendForAmount(amount);
-    final amountColor = SureMoney.color(context, moneyTrend);
-    final sign = amount == null
-        ? ''
-        : isPositive
-            ? '+'
-            : '-';
+    // For asset accounts and liability accounts, flip the sign to match accounting conventions
+    if (account?.isAsset == true || account?.isLiability == true) {
+      amount = -amount;
+    }
+
+    // Determine display properties based on final amount
+    final isPositive = amount >= 0;
+    Color amountColor;
+    String sign;
+
+    if (isPositive) {
+      amountColor = Colors.green.shade700;
+      sign = '+';
+    } else {
+      amountColor = Colors.red.shade700;
+      sign = '-';
+    }
 
     String formattedDate;
     try {
       final date = DateTime.parse(transaction.date);
-      formattedDate = DateFormat('yyyy-MM-dd HH:mm',
-              Localizations.localeOf(context).toString())
-          .format(date);
+      formattedDate = DateFormat('yyyy-MM-dd HH:mm').format(date);
     } catch (e) {
       formattedDate = transaction.date;
     }
@@ -229,21 +225,19 @@ class _RecentTransactionsScreenState extends State<RecentTransactionsScreen> {
       leading: Container(
         padding: const EdgeInsets.all(8),
         decoration: BoxDecoration(
-          color: amountColor.withValues(alpha: 0.1),
+          color: isPositive
+              ? Colors.green.withValues(alpha: 0.1)
+              : Colors.red.withValues(alpha: 0.1),
           borderRadius: BorderRadius.circular(8),
         ),
         child: Icon(
-          amount == null
-              ? Icons.help_outline
-              : isPositive
-                  ? Icons.arrow_upward
-                  : Icons.arrow_downward,
+          isPositive ? Icons.arrow_upward : Icons.arrow_downward,
           color: amountColor,
         ),
       ),
       title: Text(
         transaction.name,
-        style: const TextStyle(fontWeight: SureTokens.weightMedium),
+        style: const TextStyle(fontWeight: FontWeight.w500),
       ),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -279,17 +273,12 @@ class _RecentTransactionsScreenState extends State<RecentTransactionsScreen> {
           ],
         ],
       ),
-      trailing: MoneyText(
-        MoneyMasker.mask(
-          amount == null
-              ? transaction.amount
-              : '$sign${transaction.currency} ${_formatAmount(amount.abs())}',
-          hidden: hideAmounts,
-        ),
-        trend: moneyTrend,
-        style: const TextStyle(
-          fontWeight: SureTokens.weightMedium,
+      trailing: Text(
+        '$sign${transaction.currency} ${_formatAmount(amount.abs())}',
+        style: TextStyle(
+          fontWeight: FontWeight.bold,
           fontSize: 16,
+          color: amountColor,
         ),
       ),
     );
