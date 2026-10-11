@@ -86,12 +86,6 @@ class ImportsController < ApplicationController
       return
     end
 
-    # These types require a file; without one (e.g. a dropped multipart part) don't fall through to a bogus TransactionImport.
-    if file.blank? && (document_upload_request? || sure_import_request?)
-      redirect_to new_import_path, alert: t("imports.create.missing_upload")
-      return
-    end
-
     # Handle PDF file uploads - process with AI
     if file.present? && Import::ALLOWED_PDF_MIME_TYPES.include?(file.content_type)
       unless valid_pdf_file?(file)
@@ -109,7 +103,7 @@ class ImportsController < ApplicationController
     import = Current.family.imports.create!(
       type: type,
       account: account,
-      date_format: Current.family.date_format,
+      date_format: type == "TransactionImport" ? "auto" : Current.family.date_format,
     )
 
     if file.present?
@@ -133,8 +127,6 @@ class ImportsController < ApplicationController
     else
       redirect_to import_upload_path(import)
     end
-  rescue ActionController::ParameterMissing
-    redirect_to new_import_path, alert: t("imports.create.missing_upload")
   end
 
   def show

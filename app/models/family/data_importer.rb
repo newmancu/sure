@@ -503,15 +503,9 @@ class Family::DataImporter
 
     # ProviderMerchant rows share the :merchants id-mapping namespace with
     # Merchant, so Transaction/RecurringTransaction merchant_id resolution below
-    # needs no changes to accept either source.
-    #
-    # A ProviderMerchant is shared by every family on the instance, and bank syncs
-    # find it by provider_merchant_id, which most providers derive from the payee
-    # name (e.g. "simplefin_" + MD5 of it). So an import only reuses one that
-    # already exists, as-is, and never creates one: otherwise any user could
-    # choose the name, logo and website that other families' synced transactions
-    # attach to. A merchant the instance does not know yet becomes this family's
-    # own FamilyMerchant.
+    # needs no changes to accept either source. A ProviderMerchant is shared
+    # across every family on the instance, so an existing match is reused as-is:
+    # an import never writes to a record it did not create.
     def import_provider_merchants(records)
       records.each do |record|
         data = record["data"]
@@ -525,20 +519,32 @@ class Family::DataImporter
           next
         end
 
-        if (merchant = ProviderMerchant.find_by_import_data(data, source))
-          increment_summary("ProviderMerchant", :updated)
-        else
-          merchant, created = FamilyMerchant.find_or_create_with_name(
-            @family,
-            data["name"],
-            logo_url: data["logo_url"],
-            website_url: data["website_url"]
-          )
-          increment_summary("ProviderMerchant", created ? :created : :updated)
-        end
+        merchant = ProviderMerchant.find_by_import_data(data, source)
+        merchant ||= create_provider_merchant(data, source)
+        created = merchant.previously_new_record?
 
         map_source!(:merchants, old_id, merchant)
+        increment_summary("ProviderMerchant", created ? :created : :updated)
       end
+    end
+
+    # ProviderMerchant does not support color, so a color in the file is not read.
+    # The savepoint keeps a lost race from aborting the surrounding import transaction.
+    # A race usually surfaces as the name-uniqueness validation (RecordInvalid) rather
+    # than the index (RecordNotUnique); either way, reuse the winner if it exists and
+    # let anything else propagate.
+    def create_provider_merchant(data, source)
+      ProviderMerchant.transaction(requires_new: true) do
+        ProviderMerchant.create!(
+          name: data["name"],
+          source: source,
+          provider_merchant_id: data["provider_merchant_id"].presence,
+          logo_url: data["logo_url"],
+          website_url: data["website_url"]
+        )
+      end
+    rescue ActiveRecord::RecordNotUnique, ActiveRecord::RecordInvalid
+      ProviderMerchant.find_by_import_data(data, source) || raise
     end
 
     def import_recurring_transactions(records)
@@ -901,6 +907,12 @@ class Family::DataImporter
 
         require_source_id!("Transaction", old_id)
 
+        # Validate children before saving the parent so legacy restores can skip
+        # the whole transaction rather than leave a partially restored split.
+        split_rows = data["split_lines"].presence || data["splitLines"].presence || data["splits"].presence
+        metadata_rows = [ data ] + Array(split_rows).select { |row| row.is_a?(Hash) && (row["amount"] || row["amount_money"] || row["amount_decimal"]).present? }
+        next unless metadata_rows.all? { |row| timestamp_metadata_valid?(row) }
+
         # Map account ID
         new_account_id = mapped_id(:accounts, data["account_id"], record_type: "Transaction")
         next unless new_account_id
@@ -934,6 +946,13 @@ class Family::DataImporter
         )
 
         entry ||= Entry.new(entryable: transaction)
+        if data.key?("transacted_at")
+          entry.transacted_at = data["transacted_at"].present? ? Entry::Timestamp.parse(data["transacted_at"]) : nil
+        end
+        restore_csv_source!(transaction, data)
+        if boolean_import_value(data, "transacted_at_locked", default: false)
+          entry.locked_attributes = entry.locked_attributes.merge("transacted_at" => Time.current.iso8601)
+        end
         entry.assign_attributes(
           account: account,
           date: Date.parse(data["date"].to_s),
@@ -997,7 +1016,8 @@ class Family::DataImporter
           excluded: boolean_import_value(row, "excluded", default: false),
           tag_ids: mapped_tag_ids(row["tag_ids"], record_type: "Transaction"),
           tag_ids_provided: row.key?("tag_ids"),
-          kind: row["kind"]
+          kind: row["kind"],
+          csv_metadata: row.slice("csv_transacted_at", "csv_source_date", "csv_sure_entry_ids", "entry_id")
         }
       end
     end
@@ -1020,6 +1040,7 @@ class Family::DataImporter
           merchant_id: row[:merchant_id_provided] ? row[:merchant_id] : transaction.merchant_id,
           kind: row[:kind].presence || transaction.kind
         )
+        transaction.save! if restore_csv_source!(transaction, row[:csv_metadata])
         child_entry.update!(notes: row[:notes]) if row[:notes].present?
 
         tag_ids = row[:tag_ids_provided] ? row[:tag_ids] : fallback_tag_ids
@@ -1030,6 +1051,45 @@ class Family::DataImporter
         map_source!(:transactions, row[:old_id], transaction) if row[:old_id].present?
         @created_entries << child_entry
       end
+    end
+
+    def restore_csv_source!(transaction, data)
+      source = {}
+      source["transacted_at"] = Entry::Timestamp.parse(data["csv_transacted_at"]).utc.iso8601(6) if data["csv_transacted_at"].present?
+      source["date"] = Date.iso8601(data["csv_source_date"]).iso8601 if data["csv_source_date"].present?
+      ids = (Array(data["csv_sure_entry_ids"]) + [ data["entry_id"] ]).compact_blank.map(&:downcase).uniq
+      source["sure_entry_ids"] = ids if ids.any?
+      return false if source.empty?
+
+      transaction.extra = transaction.extra.deep_merge("csv" => source)
+      true
+    end
+
+    def timestamp_metadata_valid?(data)
+      %w[transacted_at csv_transacted_at csv_source_date csv_sure_entry_ids entry_id].each do |field|
+        value = data[field]
+        next if value.nil? || (value == "" && field != "csv_sure_entry_ids")
+
+        begin
+          valid = case field
+          when "csv_sure_entry_ids"
+            value.is_a?(Array) && value.all? { |id| id.is_a?(String) && id.present? }
+          when "entry_id"
+            # Legacy opaque IDs can also appear in aliases after a re-export.
+            value.is_a?(String) && value.present?
+          when "csv_source_date"
+            value.is_a?(String) && Date.iso8601(value)
+          else
+            value.is_a?(String) && Entry::Timestamp.parse(value)
+          end
+          raise ArgumentError unless valid
+        rescue ArgumentError, TypeError
+          invalid_record!("Transaction", field, value)
+          return false
+        end
+      end
+
+      true
     end
 
     def import_transfers(records)
@@ -1066,7 +1126,15 @@ class Family::DataImporter
     def imported_transfer_outflow_kind(transfer)
       source_account = transfer.outflow_transaction.entry.account
       destination_account = transfer.inflow_transaction.entry.account
-      Transfer.kind_for_account(destination_account, from_account: source_account)
+      return "loan_payment" if destination_account.loan?
+      return "cc_payment" if destination_account.liability?
+      return "investment_contribution" if investment_account?(destination_account) && !investment_account?(source_account)
+
+      "funds_movement"
+    end
+
+    def investment_account?(account)
+      account.investment? || account.crypto?
     end
 
     def import_rejected_transfers(records)
@@ -1136,6 +1204,9 @@ class Family::DataImporter
         )
 
         entry ||= Entry.new(entryable: trade)
+        if data.key?("transacted_at")
+          entry.transacted_at = data["transacted_at"].present? ? Entry::Timestamp.parse(data["transacted_at"]) : nil
+        end
         entry.assign_attributes(
           account: account,
           date: Date.parse(data["date"].to_s),
@@ -1479,8 +1550,6 @@ class Family::DataImporter
 
     def resolve_multi_tag_action_value(action_data)
       value_ref = action_data["value_ref"]
-      validate_rule_text!(value_ref, field: "value_ref")
-      validate_rule_text!(action_data["value"], field: "value")
       refs = case value_ref
       when Array then value_ref
       when Hash then [ value_ref ]
@@ -1533,8 +1602,6 @@ class Family::DataImporter
 
     def rule_operand_value(data)
       raw_value = data["value"]
-      validate_rule_text!(raw_value, field: "value")
-      validate_rule_text!(data["value_ref"], field: "value_ref")
       value = raw_value.is_a?(String) ? raw_value.presence : raw_value
       value_ref_name = data.dig("value_ref", "name")
 
@@ -1542,12 +1609,6 @@ class Family::DataImporter
       return value unless value.nil?
 
       value_ref_name
-    end
-
-    def validate_rule_text!(value, field:)
-      return if DatabaseTextValidator.acceptable?(value)
-
-      raise InvalidRecordError.new(record_type: "Rule", field: field, value: "(invalid text)")
     end
 
     def uuid_like?(value)

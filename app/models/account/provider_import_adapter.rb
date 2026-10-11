@@ -1,4 +1,16 @@
 class Account::ProviderImportAdapter
+  AmbiguousTimestampMatch = Class.new(StandardError)
+
+  # Matches a transaction any provider has flagged pending, for the lookups below that
+  # join `transactions` directly. Derived from Transaction::PENDING_PROVIDERS rather
+  # than spelled out, so a newly supported provider cannot silently drop out of
+  # pending→posted reconciliation. Frozen constant built from a frozen provider list:
+  # no user input reaches the SQL (same reasoning as Transaction::PENDING_CHECK_SQL).
+  PENDING_LOOKUP_SQL = Transaction::PENDING_PROVIDERS
+    .map { |provider| "(transactions.extra -> '#{provider}' ->> 'pending')::boolean = true" }
+    .join(" OR ")
+    .freeze
+
   attr_reader :account, :skipped_entries
 
   # @param account [Account] the account every import through this adapter lands on
@@ -54,7 +66,14 @@ class Account::ProviderImportAdapter
 
       # Determine early whether the incoming transaction is pending — needed by both
       # the protection check (pending→booked bypass) and the auto-claim path below.
-      incoming_pending = extra.is_a?(Hash) && Transaction.pending_extra?(extra.with_indifferent_access)
+      incoming_pending = false
+      if extra.is_a?(Hash)
+        pending_extra = extra.with_indifferent_access
+        boolean_type = ActiveModel::Type::Boolean.new
+        incoming_pending = Transaction::PENDING_PROVIDERS.any? do |provider|
+          boolean_type.cast(pending_extra.dig(provider, "pending"))
+        end
+      end
 
       # === PROTECTION CHECK: Skip entries that should not be overwritten ===
       # Check persisted Transaction entries for protection flags before making changes.
@@ -75,7 +94,8 @@ class Account::ProviderImportAdapter
           # here (determine_skip_reason reports user_modified first) but is excluded
           # from that refresh, so this is the only thing that clears its pending flag.
           if skip_reason == "user_modified" && !incoming_pending && entry.entryable.is_a?(Transaction)
-            if entry.transaction.pending?
+            entry_is_pending = Transaction::PENDING_PROVIDERS.any? { |p| entry.transaction.extra&.dig(p, "pending") }
+            if entry_is_pending
               entry.transaction.update!(extra: clear_pending_flags_from_extra(entry.transaction.extra))
             end
           end
@@ -175,7 +195,7 @@ class Account::ProviderImportAdapter
       # must clear the stale pending flag here before the final save.
       # (The auto-claim path already clears it in-memory, so this is a no-op there.)
       if !incoming_pending && entry.entryable.is_a?(Transaction)
-        if entry.transaction.pending?
+        if Transaction::PENDING_PROVIDERS.any? { |p| entry.transaction.extra&.dig(p, "pending") }
           entry.transaction.extra = clear_pending_flags_from_extra(entry.transaction.extra)
         end
       end
@@ -259,15 +279,8 @@ class Account::ProviderImportAdapter
           entry.transaction.assign_attributes(investment_activity_label: detected_label)
         end
 
-        # A leg that is already matched to a Transfer takes its kind from the
-        # transfer, not from this row. Re-classifying it here, e.g. a negative
-        # amount on a Loan turning the matched inflow back into loan_payment,
-        # makes budgets and reports count the same payment as an expense on
-        # both legs. Deriving it from the transfer also repairs legs an earlier
-        # sync already overwrote.
         if auto_kind.present?
-          transfer = matched_transfer_for(entry)
-          entry.transaction.assign_attributes(kind: transfer ? transfer.kind_for_leg(entry.transaction) : auto_kind)
+          entry.transaction.assign_attributes(kind: auto_kind)
         end
 
         if auto_category.present? && entry.transaction.category_id.blank?
@@ -759,7 +772,7 @@ class Account::ProviderImportAdapter
   #   provider sync: a provider must not claim another provider's entry. A
   #   statement import passes true, because the whole question it is asking is
   #   whether this transaction already arrived via sync.
-  def find_duplicate_transaction(date:, amount:, currency:, name: nil, exclude_entry_ids: nil, date_window: 0, include_provider_entries: false)
+  def find_duplicate_transaction(date:, amount:, currency:, name: nil, exclude_entry_ids: nil, date_window: 0, include_provider_entries: false, csv_timestamp: nil, csv_dates: nil, csv_source_date: nil, allow_legacy_timestamp_match: true, allow_cross_date_timestamp_match: true)
     # Convert date to Date object if it's a string
     date = Date.parse(date.to_s) unless date.is_a?(Date)
 
@@ -777,12 +790,6 @@ class Account::ProviderImportAdapter
                    .where(amount: amount)
                    .where(currency: currency)
 
-    query = if date_window.to_i.zero?
-      query.where(date: date)
-    else
-      query.where(date: (date - date_window.days)..(date + date_window.days))
-    end
-
     query = query.where(external_id: nil) unless include_provider_entries
 
     # Add name filter if provided
@@ -790,6 +797,16 @@ class Account::ProviderImportAdapter
 
     # Exclude already claimed entries if provided
     query = query.where.not(id: exclude_entry_ids) if exclude_entry_ids.present?
+
+    if csv_timestamp
+      return find_timestamped_csv_duplicate(query, csv_timestamp, csv_dates || [ date ], csv_source_date || date, allow_legacy: allow_legacy_timestamp_match, allow_cross_date: allow_cross_date_timestamp_match)
+    end
+
+    query = if date_window.to_i.zero?
+      query.where(date: date)
+    else
+      query.where(date: (date - date_window.days)..(date + date_window.days))
+    end
 
     candidates = query.order(created_at: :asc)
 
@@ -829,7 +846,7 @@ class Account::ProviderImportAdapter
       .where(amount: amount)
       .where(currency: currency)
       .where(date: (date - date_window.days)..date) # Pending must be ON or BEFORE posted date
-      .where(Transaction.pending_sql("transactions"))
+      .where(PENDING_LOOKUP_SQL)
       .order(date: :desc) # Prefer most recent pending transaction
 
     candidates.first
@@ -871,7 +888,7 @@ class Account::ProviderImportAdapter
       .where(currency: currency)
       .where(date: (date - date_window.days)..date) # Pending ON or BEFORE posted
       .where("ABS(entries.amount) BETWEEN ? AND ?", min_pending_abs, max_pending_abs)
-      .where(Transaction.pending_sql("transactions"))
+      .where(PENDING_LOOKUP_SQL)
 
     # If merchant_id is provided, prioritize matching by merchant
     if merchant_id.present?
@@ -936,7 +953,7 @@ class Account::ProviderImportAdapter
       .where(currency: currency)
       .where(date: (date - date_window.days)..date)
       .where("ABS(entries.amount) BETWEEN ? AND ?", min_pending_abs, max_pending_abs)
-      .where(Transaction.pending_sql("transactions"))
+      .where(PENDING_LOOKUP_SQL)
 
     # For low confidence, require BOTH merchant AND name match (stronger signal needed)
     if merchant_id.present? && name.present?
@@ -1049,18 +1066,56 @@ class Account::ProviderImportAdapter
 
   private
 
-    # Loads the transfer together with both legs, their entries and accounts in
-    # one joined query, so Transfer#kind_for_leg reads them without the lazy
-    # loads it would otherwise pay on every re-imported row. Looked up per row
-    # rather than memoized per adapter: most processors build an adapter per
-    # row, and some link or destroy transfers mid-sync (Trade Republic), so a
-    # memo would be both costlier and stale.
-    def matched_transfer_for(entry)
-      return nil unless entry.persisted?
+    def find_timestamped_csv_duplicate(query, timestamp, dates, source_date, allow_legacy:, allow_cross_date:)
+      # Retain the CSV's original instant separately from a user's correction.
+      # It is matching evidence, not an external_id (which would mark it linked).
+      csv_query = query.joins("INNER JOIN transactions AS csv_transactions ON csv_transactions.id = entries.entryable_id")
+      source_key = "csv_transactions.extra -> 'csv' ->> 'transacted_at'"
+      date_key = "csv_transactions.extra -> 'csv' ->> 'date'"
+      unprovenanced = csv_query.where.not(date: dates).where("#{date_key} IS NULL")
+        .where("(#{source_key} = ? OR (#{source_key} IS NULL AND entries.transacted_at = ?))", timestamp.getutc.iso8601(6), timestamp)
+      # An exported CSV contains the current, possibly corrected time rather
+      # than the original CSV instant. Match it only on the original source day.
+      current = csv_query.where(date: dates, transacted_at: timestamp)
+        .where("#{date_key} IS NOT NULL").limit(2).to_a
+      raise AmbiguousTimestampMatch if current.many?
+      current_match = current.first
+      if current_match && csv_query.where("#{source_key} = ? AND #{date_key} = ?", timestamp.getutc.iso8601(6), source_date.iso8601).where.not(id: current_match.id).exists?
+        raise AmbiguousTimestampMatch
+      end
+      source_match = find_unambiguous_timestamp_match(csv_query.where("#{source_key} = ?", timestamp.getutc.iso8601(6)), dates, source_date, allow_cross_date: allow_cross_date)
+      raise AmbiguousTimestampMatch if current_match && source_match && current_match.id != source_match.id
+      raise AmbiguousTimestampMatch if allow_cross_date && source_match && !dates.include?(source_match.date) && unprovenanced.exists?
+      return source_match if source_match
 
-      transaction_id = entry.transaction.id
-      transfers = Transfer.eager_load(inflow_transaction: { entry: :account }, outflow_transaction: { entry: :account })
-      transfers.where(inflow_transaction_id: transaction_id).or(transfers.where(outflow_transaction_id: transaction_id)).first
+      exact_match = find_unambiguous_timestamp_match(csv_query.where(transacted_at: timestamp).where("#{source_key} IS NULL"), dates, source_date, allow_cross_date: allow_cross_date)
+      raise AmbiguousTimestampMatch if current_match && exact_match && current_match.id != exact_match.id
+      raise AmbiguousTimestampMatch if allow_cross_date && (!exact_match || !dates.include?(exact_match.date)) && unprovenanced.exists?
+      return exact_match if exact_match
+      if current_match
+        raise AmbiguousTimestampMatch unless current_match.transaction.extra.dig("csv", "date") == source_date.iso8601
+
+        return current_match
+      end
+      return unless allow_legacy
+
+      legacy = csv_query.where(date: dates, transacted_at: nil).where("#{source_key} IS NULL").limit(2).to_a
+      raise AmbiguousTimestampMatch if legacy.many?
+
+      legacy.first
+    end
+
+    def find_unambiguous_timestamp_match(query, dates, source_date, allow_cross_date:)
+      date_key = "csv_transactions.extra -> 'csv' ->> 'date'"
+      preferred = query.where(date: dates).where("#{date_key} IS NULL OR #{date_key} = ?", source_date.iso8601).limit(2).to_a
+      raise AmbiguousTimestampMatch if preferred.many?
+      return preferred.first if preferred.first
+      return unless allow_cross_date
+
+      candidates = query.where("#{date_key} = ?", source_date.iso8601).limit(2).to_a
+      raise AmbiguousTimestampMatch if candidates.many?
+
+      candidates.first
     end
 
     # Memoized per adapter instance (which is per-account). Membership in

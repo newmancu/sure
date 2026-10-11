@@ -6,6 +6,9 @@
     </div>
   <% end %>
   <% dialog.with_body do %>
+    <% if @entry.errors.any? %>
+      <%= render "shared/form_errors", model: @entry %>
+    <% end %>
     <%# Potential duplicate alert %>
     <% if @entry.transaction.has_potential_duplicate? %>
       <% potential_match = @entry.transaction.potential_duplicate_entry %>
@@ -82,8 +85,6 @@
                     disabled: @entry.linked? || split_locked || edit_locked,
                     disable_currency: @entry.linked? || split_locked || edit_locked %>
             </div>
-          <% end %>
-          <% if @entry.transaction.category_editable? %>
             <%= f.fields_for :entryable do |ef| %>
               <%= render DS::CategorySelect.new(
                     form: ef,
@@ -94,27 +95,17 @@
                     blank_label: t(".uncategorized")
                   ) %>
             <% end %>
-          <% elsif @entry.transaction.category_set_on_transfer_outflow? %>
-            <% outflow_category = transfer_outflow_category(@entry.transaction) %>
-            <div class="space-y-1">
-              <div class="opacity-60 cursor-not-allowed">
-                <%= f.fields_for :entryable do |ef| %>
-                  <%= render DS::CategorySelect.new(
-                        form: ef,
-                        categories: [],
-                        selected_category: outflow_category || transfer_category,
-                        disabled: true
-                      ) %>
-                <% end %>
-              </div>
-              <p class="text-xs text-secondary"><%= outflow_category ? t(".category_set_on_outflow") : t(".category_set_on_hidden_outflow") %></p>
-            </div>
           <% end %>
         <% end %>
       </div>
     <% end %>
     <% dialog.with_section(title: t(".details")) do %>
       <div class="space-y-2">
+        <%= styled_form_with model: @entry, url: transaction_path(@entry),
+                             class: "space-y-2", data: { controller: "auto-submit-form" } do |f| %>
+          <%= render "transactions/timestamp_field", form: f, entry: @entry,
+                     disabled: !can_edit_entry? || @entry.split_child?, auto_submit: true %>
+        <% end %>
         <%= styled_form_with model: @entry,
               url: transaction_path(@entry),
               class: "space-y-2",
