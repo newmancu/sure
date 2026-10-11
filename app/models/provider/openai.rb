@@ -7,15 +7,8 @@ class Provider::Openai < Provider
   DEFAULT_MODEL = "gpt-4.1".freeze
   DEFAULT_REQUEST_TIMEOUT = 60
   MIN_REQUEST_TIMEOUT = 1
-  SUPPORTED_MODELS = %w[gpt-4 gpt-5 gpt-6 o1 o3].freeze
-  VISION_CAPABLE_MODEL_PREFIXES = %w[gpt-4o gpt-4-turbo gpt-4.1 gpt-5 gpt-6 o1 o3].freeze
-  PDF_COMPLETION_LIMIT_MODEL_PREFIXES = %w[gpt-6 o1 o3].freeze
-
-  # Keep the provider's response budget and the PDF request parameter in sync.
-  # @return [Boolean] whether native PDF vision uses max_completion_tokens
-  def self.native_pdf_completion_limit?(model:, custom_provider:)
-    !custom_provider && PDF_COMPLETION_LIMIT_MODEL_PREFIXES.any? { |prefix| model.to_s.start_with?(prefix) }
-  end
+  SUPPORTED_MODELS = %w[gpt-4 gpt-5 o1 o3].freeze
+  VISION_CAPABLE_MODEL_PREFIXES = %w[gpt-4o gpt-4-turbo gpt-4.1 gpt-5 o1 o3].freeze
 
   # Returns the effective model that would be used by the provider.
   # Priority: explicit ENV > Setting > DEFAULT_MODEL. A blank ENV value is
@@ -72,7 +65,9 @@ class Provider::Openai < Provider
   # @param uri_base [String, nil] custom endpoint base URL (OpenAI when nil)
   # @param model [String, nil] default model; required when uri_base is set
   # @return [void]
-  def initialize(access_token, uri_base: nil, model: nil)
+  def initialize(access_token, uri_base: nil, model: nil, eval_temperature: nil, on_model_response: nil)
+    @eval_temperature = eval_temperature
+    @on_model_response = on_model_response
     client_options = { access_token: access_token }
     llm_uri_base = uri_base.presence
     llm_model = model.presence
@@ -89,6 +84,10 @@ class Provider::Openai < Provider
       raise Error, "Model is required when using a custom OpenAI‑compatible provider"
     end
     @default_model = llm_model.presence || self.class.effective_model
+  end
+
+  def self.temperature_supported?(model)
+    model.to_s !~ /\A(?:o[1-9]|gpt-5)(?:\b|[-.])/i
   end
 
   def supports_model?(model)
@@ -213,7 +212,9 @@ class Provider::Openai < Provider
           custom_provider: custom_provider?,
           langfuse_trace: trace,
           family: family,
-          json_mode: json_mode
+          json_mode: json_mode,
+          eval_temperature: @eval_temperature,
+          on_model_response: @on_model_response
         ).auto_categorize
       end
 
@@ -268,7 +269,9 @@ class Provider::Openai < Provider
           custom_provider: custom_provider?,
           langfuse_trace: trace,
           family: family,
-          json_mode: json_mode
+          json_mode: json_mode,
+          eval_temperature: @eval_temperature,
+          on_model_response: @on_model_response
         ).auto_detect_merchants
       end
 
@@ -319,11 +322,6 @@ class Provider::Openai < Provider
     VISION_CAPABLE_MODEL_PREFIXES.any? { |prefix| model.start_with?(prefix) }
   end
 
-  # Analyze PDF bytes with the selected model and attribute usage to the family.
-  # @param pdf_content [String] PDF bytes
-  # @param model [String] optional override of the configured model
-  # @param family [Family, nil] usage attribution
-  # @return [Provider::Response] structured result or provider failure
   def process_pdf(pdf_content:, model: "", family: nil)
     with_provider_response do
       effective_model = model.presence || @default_model
@@ -334,14 +332,6 @@ class Provider::Openai < Provider
         input: { pdf_size: pdf_content&.bytesize }
       )
 
-      # Reasoning-model completion limits include reasoning; the fallback is a budget reserve.
-      response_limit =
-        if self.class.native_pdf_completion_limit?(model: effective_model, custom_provider: custom_provider?)
-          explicit_max_response_tokens
-        else
-          max_response_tokens
-        end
-
       result = PdfProcessor.new(
         client,
         model: effective_model,
@@ -349,7 +339,7 @@ class Provider::Openai < Provider
         custom_provider: custom_provider?,
         langfuse_trace: trace,
         family: family,
-        max_response_tokens: response_limit
+        max_response_tokens: max_response_tokens
       ).process
 
       upsert_langfuse_trace(trace: trace, output: result.to_h)
@@ -523,9 +513,15 @@ class Provider::Openai < Provider
             stream: stream_proxy
           }
           request_params[:tool_choice] = "none" if tool_choice == :none && chat_config.tools.present?
+          # Per-eval override only. Reasoning models (o-series and GPT-5) reject
+          # temperature. Production providers leave this nil and use API defaults.
+          if !@eval_temperature.nil? && self.class.temperature_supported?(model)
+            request_params[:temperature] = @eval_temperature
+          end
           request_params[:max_output_tokens] = explicit_max_response_tokens if explicit_max_response_tokens
 
           raw_response = session_client.responses.create(parameters: request_params)
+          @on_model_response&.call(raw_response["model"]) if raw_response && stream_proxy.nil?
 
           # If streaming, Ruby OpenAI does not return anything, so to normalize this method's API, we search
           # for the "response chunk" in the stream and return it (it is already parsed)
@@ -541,6 +537,7 @@ class Provider::Openai < Provider
             end
 
             response = response_chunk.data
+            @on_model_response&.call(response.model)
             usage = response_chunk.usage
             Rails.logger.debug("Stream response usage: #{usage.inspect}")
             log_langfuse_generation(
@@ -617,9 +614,11 @@ class Provider::Openai < Provider
         params[:tools] = tools if tools.present?
         params[:tool_choice] = "none" if tool_choice == :none && tools.present?
         params[:max_tokens] = explicit_max_response_tokens if explicit_max_response_tokens
+        params[:temperature] = @eval_temperature if !@eval_temperature.nil? && self.class.temperature_supported?(model)
 
         begin
           raw_response = session_client.chat(parameters: params)
+          @on_model_response&.call(raw_response["model"])
 
           parsed = GenericChatParser.new(raw_response).parsed
 
@@ -689,11 +688,11 @@ class Provider::Openai < Provider
       if function_results.any?
         # Build assistant message with tool_calls
         tool_calls = function_results.map do |fn_result|
-          # Shared with ToolCall::Function.serialize_arguments so history and
-          # follow-up payloads stay in sync for strict OpenAI-compatible endpoints.
-          arguments_str = ToolCall::Function.serialize_arguments(fn_result[:arguments])
+          # Convert arguments to JSON string if it's not already a string
+          arguments = fn_result[:arguments]
+          arguments_str = arguments.is_a?(String) ? arguments : arguments.to_json
 
-          call = {
+          {
             id: fn_result[:call_id],
             type: "function",
             function: {
@@ -701,8 +700,6 @@ class Provider::Openai < Provider
               arguments: arguments_str
             }
           }
-          call[:extra_content] = fn_result[:extra_content] if fn_result[:extra_content].present?
-          call
         end
 
         payload << {
@@ -728,6 +725,7 @@ class Provider::Openai < Provider
           payload << {
             role: "tool",
             tool_call_id: fn_result[:call_id],
+            name: fn_result[:name],
             content: content
           }
         end
