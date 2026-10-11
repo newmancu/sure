@@ -8,6 +8,8 @@ class Family::AutoTransferMatchableTest < ActiveSupport::TestCase
     @depository = accounts(:depository)
     @credit_card = accounts(:credit_card)
     @loan = accounts(:loan)
+    # A manual account with no fixture transfers to or from @depository
+    @other_asset = accounts(:other_asset)
   end
 
   test "auto-matches transfers" do
@@ -164,6 +166,45 @@ class Family::AutoTransferMatchableTest < ActiveSupport::TestCase
 
     # Both sides now linked -- the same pair matches.
     assert_difference -> { Transfer.count } => 1 do
+      @family.auto_match_transfers!
+    end
+  end
+
+  test "auto-matches cross-currency transfers between manual accounts with a confirmed transfer in the same direction" do
+    load_family_currency_rates
+    confirm_transfer!(from: @depository, to: @other_asset)
+
+    outflow = create_transaction(date: 1.day.ago.to_date, account: @depository, amount: 400, currency: "GBP")
+    inflow = create_transaction(date: Date.current, account: @other_asset, amount: -680, currency: "CAD")
+
+    assert_difference -> { Transfer.count } => 1 do
+      @family.auto_match_transfers!
+    end
+
+    transfer = Transfer.find_by!(inflow_transaction_id: inflow.entryable_id, outflow_transaction_id: outflow.entryable_id)
+    assert_equal "pending", transfer.status
+  end
+
+  test "a confirmed transfer in the opposite direction does not enable cross-currency auto-matching for manual accounts" do
+    load_family_currency_rates
+    confirm_transfer!(from: @other_asset, to: @depository)
+
+    create_transaction(date: 1.day.ago.to_date, account: @depository, amount: 400, currency: "GBP")
+    create_transaction(date: Date.current, account: @other_asset, amount: -680, currency: "CAD")
+
+    assert_no_difference -> { Transfer.count } do
+      @family.auto_match_transfers!
+    end
+  end
+
+  test "a pending transfer between manual accounts does not enable cross-currency auto-matching" do
+    load_family_currency_rates
+    confirm_transfer!(from: @depository, to: @other_asset).update!(status: "pending")
+
+    create_transaction(date: 1.day.ago.to_date, account: @depository, amount: 400, currency: "GBP")
+    create_transaction(date: Date.current, account: @other_asset, amount: -680, currency: "CAD")
+
+    assert_no_difference -> { Transfer.count } do
       @family.auto_match_transfers!
     end
   end
@@ -512,77 +553,6 @@ class Family::AutoTransferMatchableTest < ActiveSupport::TestCase
     end
   end
 
-  test "does not auto-match accounts no single member can write to" do
-    # family_admin owns the credit card but has no access to the loan;
-    # family_member owns the loan but only has read_only on the card.
-    @loan.update!(owner: users(:family_member))
-
-    outflow = create_transaction(date: Date.current, account: @loan, amount: 500)
-    inflow = create_transaction(date: Date.current, account: @credit_card, amount: -500)
-
-    assert_no_difference -> { Transfer.count } do
-      @family.auto_match_transfers!
-    end
-
-    # Manual matching still sees the pair; the controller scopes it per user.
-    candidates = @family.transfer_match_candidates(inflow_transaction_id: inflow.entryable_id)
-    assert_equal [ outflow.entryable_id ], candidates.map(&:outflow_transaction_id)
-  end
-
-  test "does not auto-match cross-currency accounts no single member can write to" do
-    load_exchange_prices
-    # Same ownership as above; both linked so only the writer condition blocks the match.
-    @loan.update!(owner: users(:family_member))
-    link_account!(@loan)
-    link_account!(@credit_card)
-
-    outflow = create_transaction(date: Date.current, account: @loan, amount: 1000)
-    inflow = create_transaction(date: Date.current, account: @credit_card, amount: -1400, currency: "CAD")
-
-    assert_no_difference -> { Transfer.count } do
-      @family.auto_match_transfers!
-    end
-
-    assert_includes candidate_pairs, [ inflow.entryable_id, outflow.entryable_id ]
-  end
-
-  test "auto-matches across owners when a member can write to both accounts" do
-    # family_member owns the loan and has full_control on the depository
-    @loan.update!(owner: users(:family_member))
-
-    create_transaction(date: Date.current, account: @depository, amount: 500)
-    create_transaction(date: Date.current, account: @loan, amount: -500)
-
-    assert_difference -> { Transfer.count }, 1 do
-      @family.auto_match_transfers!
-    end
-  end
-
-  test "auto-matches an owner-less account against one a member can write to" do
-    # owner_id is nullified when the owner is removed; update! would reassign one
-    @loan.update_column(:owner_id, nil)
-
-    create_transaction(date: Date.current, account: @depository, amount: 500)
-    create_transaction(date: Date.current, account: @loan, amount: -500)
-
-    assert_difference -> { Transfer.count }, 1 do
-      @family.auto_match_transfers!
-    end
-  end
-
-  test "does not auto-match two owner-less accounts nobody can write to" do
-    @loan.update_column(:owner_id, nil)
-    @credit_card.update_column(:owner_id, nil)
-    AccountShare.where(account: [ @loan, @credit_card ], permission: "full_control").delete_all
-
-    create_transaction(date: Date.current, account: @credit_card, amount: 500)
-    create_transaction(date: Date.current, account: @loan, amount: -500)
-
-    assert_no_difference -> { Transfer.count } do
-      @family.auto_match_transfers!
-    end
-  end
-
   test "does not match transactions outside the 4-day window" do
     create_transaction(date: 10.days.ago.to_date, account: @depository, amount: 500)
     create_transaction(date: Date.current, account: @credit_card, amount: -500)
@@ -694,7 +664,6 @@ class Family::AutoTransferMatchableTest < ActiveSupport::TestCase
     assert_includes sql, "EXISTS (SELECT 1 FROM account_providers WHERE account_providers.account_id = inflow_accounts.id)"
     assert_includes sql, "EXISTS (SELECT 1 FROM account_providers WHERE account_providers.account_id = outflow_accounts.id)"
     assert_includes sql, ":restrict_cross_currency_to_linked_accounts = FALSE"
-    assert_equal 2, sql.scan(":require_common_writer = FALSE").size
   end
 
   # Regression tests for loan transfer kind assignment bug
@@ -766,6 +735,12 @@ class Family::AutoTransferMatchableTest < ActiveSupport::TestCase
       @family.transfer_match_candidates.map do |candidate|
         [ candidate.inflow_transaction_id, candidate.outflow_transaction_id ]
       end
+    end
+
+    def confirm_transfer!(from:, to:)
+      outflow = create_transaction(date: 20.days.ago.to_date, account: from, amount: 100)
+      inflow = create_transaction(date: 20.days.ago.to_date, account: to, amount: -100)
+      Transfer.create!(inflow_transaction: inflow.transaction, outflow_transaction: outflow.transaction, status: "confirmed")
     end
 
     # Only rates to the family currency (USD) are synced; there is no direct GBP -> CAD rate

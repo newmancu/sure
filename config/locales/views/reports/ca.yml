@@ -112,7 +112,6 @@ ca:
       view_details: Veure detalls
       weight: Pes
       withdrawals: Retirades del període
-      period_return: Rendiment del període
     net_worth:
       assets_vs_liabilities: Actius vs. Passius
       current_net_worth: Patrimoni net actual
@@ -137,7 +136,6 @@ ca:
         value: Valor
         weight: Pes
         withdrawals: Retirades
-        period_return: Rendiment del període
       net_worth:
         assets: Actius
         current_balance: Saldo actual
