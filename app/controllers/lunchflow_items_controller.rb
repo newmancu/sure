@@ -120,7 +120,7 @@ class LunchflowItemsController < ApplicationController
              layout: false
     rescue StandardError => e
       Rails.logger.error("Unexpected error in select_accounts: #{e.class}: #{e.message}")
-      @error_message = t("lunchflow_items.api_error.unexpected_error")
+      @error_message = "An unexpected error occurred. Please try again later."
       @return_path = safe_return_to_path
       render partial: "lunchflow_items/api_error",
              locals: { error_message: @error_message, return_path: @return_path },
@@ -324,7 +324,7 @@ class LunchflowItemsController < ApplicationController
              layout: false
     rescue StandardError => e
       Rails.logger.error("Unexpected error in select_existing_account: #{e.class}: #{e.message}")
-      @error_message = t("lunchflow_items.api_error.unexpected_error")
+      @error_message = "An unexpected error occurred. Please try again later."
       render partial: "lunchflow_items/api_error",
              locals: { error_message: @error_message, return_path: accounts_path },
              layout: false
@@ -417,9 +417,32 @@ class LunchflowItemsController < ApplicationController
       # Trigger initial sync to fetch accounts
       @lunchflow_item.sync_later
 
-      redirect_to accounts_path, notice: t(".success"), status: :see_other
+      if turbo_frame_request?
+        flash.now[:notice] = t(".success")
+        @lunchflow_items = Current.family.lunchflow_items.ordered
+        render turbo_stream: [
+          turbo_stream.replace(
+            "lunchflow-providers-panel",
+            partial: "settings/providers/lunchflow_panel",
+            locals: { lunchflow_items: @lunchflow_items }
+          ),
+          *flash_notification_stream_items
+        ]
+      else
+        redirect_to accounts_path, notice: t(".success"), status: :see_other
+      end
     else
-      render_provider_panel("lunchflow", alert: @lunchflow_item.errors.full_messages.join(", "))
+      @error_message = @lunchflow_item.errors.full_messages.join(", ")
+
+      if turbo_frame_request?
+        render turbo_stream: turbo_stream.replace(
+          "lunchflow-providers-panel",
+          partial: "settings/providers/lunchflow_panel",
+          locals: { error_message: @error_message }
+        ), status: :unprocessable_entity
+      else
+        redirect_back_or_to accounts_path, alert: @error_message
+      end
     end
   end
 
@@ -428,9 +451,32 @@ class LunchflowItemsController < ApplicationController
 
   def update
     if @lunchflow_item.update(lunchflow_params)
-      render_provider_panel("lunchflow", notice: t(".success"), fallback_path: accounts_path)
+      if turbo_frame_request?
+        flash.now[:notice] = t(".success")
+        @lunchflow_items = Current.family.lunchflow_items.ordered
+        render turbo_stream: [
+          turbo_stream.replace(
+            "lunchflow-providers-panel",
+            partial: "settings/providers/lunchflow_panel",
+            locals: { lunchflow_items: @lunchflow_items }
+          ),
+          *flash_notification_stream_items
+        ]
+      else
+        redirect_to accounts_path, notice: t(".success"), status: :see_other
+      end
     else
-      render_provider_panel("lunchflow", alert: @lunchflow_item.errors.full_messages.join(", "))
+      @error_message = @lunchflow_item.errors.full_messages.join(", ")
+
+      if turbo_frame_request?
+        render turbo_stream: turbo_stream.replace(
+          "lunchflow-providers-panel",
+          partial: "settings/providers/lunchflow_panel",
+          locals: { error_message: @error_message }
+        ), status: :unprocessable_entity
+      else
+        render :edit, status: :unprocessable_entity
+      end
     end
   end
 
