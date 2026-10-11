@@ -111,8 +111,6 @@ class Settings::ProvidersController < ApplicationController
   def connect_form
     provider_key = params[:provider_key]
 
-    # Not FAMILY_PANELS_BY_KEY[provider_key]: Brakeman reads that as the param
-    # choosing the partial to render.
     panel = FAMILY_PANELS.find { |p| p[:key] == provider_key }
     if panel
       @panel_key     = panel[:key]
@@ -207,6 +205,7 @@ class Settings::ProvidersController < ApplicationController
       { key: "kraken",         title: "Kraken",          turbo_id: "kraken",         partial: "kraken_panel" },
       { key: "coinspot",       title: "CoinSpot",        turbo_id: "coinspot",       partial: "coinspot_panel" },
       { key: "onchain_wallet", title: "On-chain wallets", turbo_id: "onchain_wallet", partial: "onchain_wallet_panel" },
+      { key: "bitstamp",       title: "Bitstamp",        turbo_id: "bitstamp",       partial: "bitstamp_panel" },
       { key: "snaptrade",      title: "SnapTrade",       turbo_id: "snaptrade",      partial: "snaptrade_panel", auto_open: "manage" },
       { key: "ibkr",           title: "Interactive Brokers", turbo_id: "ibkr",      partial: "ibkr_panel" },
       { key: "trading212",     title: "Trading 212",     turbo_id: "trading212", partial: "trading212_panel" },
@@ -217,7 +216,6 @@ class Settings::ProvidersController < ApplicationController
     ].freeze
 
     FAMILY_PANEL_KEYS = FAMILY_PANELS.map { |p| p[:key] }.freeze
-    FAMILY_PANELS_BY_KEY = FAMILY_PANELS.index_by { |p| p[:key] }.freeze
 
     # Maps panel key → ActiveRecord model name for sync health queries
     PANEL_SYNCABLE_TYPES = {
@@ -238,6 +236,7 @@ class Settings::ProvidersController < ApplicationController
       "kraken"         => "KrakenItem",
       "coinspot"       => "CoinspotItem",
       "onchain_wallet" => "OnchainWalletItem",
+      "bitstamp"       => "BitstampItem",
       "snaptrade"      => "SnaptradeItem",
       "questrade"      => "QuestradeItem",
       "ibkr"           => "IbkrItem",
@@ -283,6 +282,8 @@ class Settings::ProvidersController < ApplicationController
         @coinspot_items = Current.family.coinspot_items.active.ordered
       when "onchain_wallet"
         @onchain_wallet_items = Current.family.onchain_wallet_items.active.ordered
+      when "bitstamp"
+        @bitstamp_items = Current.family.bitstamp_items.active.ordered
       when "snaptrade"
         @snaptrade_items = Current.family.snaptrade_items.includes(:snaptrade_accounts).ordered
       when "ibkr"
@@ -290,7 +291,7 @@ class Settings::ProvidersController < ApplicationController
       when "trading212"
         @trading212_items = Current.family.trading212_items.ordered
       when "trade_republic"
-        @trade_republic_items = Current.family.trade_republic_items.active.ordered.includes(:trade_republic_accounts)
+        @trade_republic_items = Current.family.trade_republic_items.ordered
       when "indexa_capital"
         @indexa_capital_items = Current.family.indexa_capital_items.ordered
       when "sophtron"
@@ -326,7 +327,7 @@ class Settings::ProvidersController < ApplicationController
       @snaptrade_items = Current.family.snaptrade_items.ordered
       @ibkr_items = Current.family.ibkr_items.ordered.select(:id)
       @trading212_items = Current.family.trading212_items.ordered
-      @trade_republic_items = Current.family.trade_republic_items.active.ordered.includes(:trade_republic_accounts)
+      @trade_republic_items = Current.family.trade_republic_items.ordered.select(:id)
       @indexa_capital_items = Current.family.indexa_capital_items.ordered.select(:id)
       @binance_items = Current.family.binance_items.active.ordered
       @kraken_items = Current.family.kraken_items.active.ordered
@@ -343,6 +344,7 @@ class Settings::ProvidersController < ApplicationController
           accounts = item.accounts.select { |account| accessible_account_ids.include?(account.id) && !account.pending_deletion? }
           { item: item, accounts: accounts } if accounts.any?
         end
+      @bitstamp_items = Current.family.bitstamp_items.active.ordered
 
       @provider_sync_health = compute_provider_sync_health(family_panel_items)
 
@@ -378,6 +380,7 @@ class Settings::ProvidersController < ApplicationController
         "kraken"         => @kraken_items,
         "coinspot"       => @coinspot_items,
         "onchain_wallet" => @onchain_wallet_items,
+        "bitstamp"       => @bitstamp_items,
         "snaptrade"      => @snaptrade_items,
         "questrade"      => @questrade_items,
         "ibkr"           => @ibkr_items,
