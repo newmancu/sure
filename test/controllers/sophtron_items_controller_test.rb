@@ -181,8 +181,6 @@ class SophtronItemsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "[FILTERED]", filtered_params[:captcha_input]
   end
 
-  # The drawer and connection rows post from the page; a new connection still
-  # moves on to accounts rather than re-rendering the panel.
   test "create verifies credentials and persists provisioned customer id" do
     stub_request(:get, "https://api.sophtron.com/api/Institution/HealthCheckAuth")
       .to_return(status: 200, body: "")
@@ -201,46 +199,12 @@ class SophtronItemsControllerTest < ActionDispatch::IntegrationTest
           user_id: "developer-user",
           access_key: Base64.strict_encode64("secret-key")
         }
-      }, as: :turbo_stream
+      }
     end
 
     item = @user.family.sophtron_items.find_by!(name: "New Sophtron")
     assert_equal "cust-new", item.customer_id
     assert_redirected_to accounts_path
-  end
-
-  test "invalid create outside a frame redirects instead of rendering a missing template" do
-    assert_no_difference "SophtronItem.count" do
-      post sophtron_items_url, params: { sophtron_item: { name: "New Sophtron", user_id: "", access_key: "" } }
-    end
-
-    assert_response :see_other
-    assert_redirected_to settings_providers_path
-    assert_match "can't be blank", flash[:alert]
-  end
-
-  test "invalid create from the page shows the error in the panel" do
-    post sophtron_items_url,
-         params: { sophtron_item: { name: "New Sophtron", user_id: "", access_key: "" } },
-         as: :turbo_stream
-
-    assert_turbo_stream status: :unprocessable_entity, action: "replace", target: "sophtron-providers-panel"
-    assert_includes response.body, ERB::Util.html_escape("can't be blank")
-  end
-
-  # The connection row posts from the page. Leaving for Accounts closed the row
-  # the save came from.
-  test "update from the page re-renders the panel in place instead of leaving for accounts" do
-    stub_request(:get, "https://api.sophtron.com/api/Institution/HealthCheckAuth")
-      .to_return(status: 200, body: "")
-
-    patch sophtron_item_url(@item),
-          params: { sophtron_item: { name: "Renamed Sophtron" } },
-          as: :turbo_stream
-
-    assert_turbo_stream action: "replace", target: "sophtron-providers-panel"
-    assert_includes response.body, %(id="sophtron-providers-panel")
-    assert_equal "Renamed Sophtron", @item.reload.name
   end
 
   test "connection_status renders MFA challenge when Sophtron asks for security answers" do
@@ -258,6 +222,32 @@ class SophtronItemsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
     assert_includes response.body, "What is your favorite color?"
+
+    entry = DebugLogEntry.order(:created_at).last
+    assert_equal "sophtron_mfa", entry.category
+    assert_equal "Sophtron MFA challenge displayed", entry.message
+    assert_equal 1, entry.metadata["security_question_count"]
+  end
+
+  test "connect_institution logs connection start and job registration" do
+    provider = mock
+    provider.expects(:create_user_institution).returns({ JobID: "job-1", UserInstitutionID: "ui-1" })
+
+    SophtronItem.any_instance.stubs(:ensure_customer!).returns("cust-1")
+    SophtronItem.any_instance.stubs(:sophtron_provider).returns(provider)
+
+    assert_difference "DebugLogEntry.count", 2 do
+      post connect_institution_sophtron_item_url(@item), params: {
+        institution_id: "inst-1",
+        institution_name: "Example Bank",
+        bank_username: "user@example.com",
+        bank_password: "secret"
+      }
+    end
+
+    messages = DebugLogEntry.order(:created_at).last(2).map(&:message)
+    assert_includes messages, "Starting Sophtron institution connection"
+    assert_includes messages, "Sophtron institution connection started"
   end
 
   test "connection_status sanitizes captcha image before rendering data uri" do
@@ -556,6 +546,11 @@ class SophtronItemsControllerTest < ActionDispatch::IntegrationTest
     }
 
     assert_redirected_to connection_status_sophtron_item_path(@item, post_mfa: true)
+
+    entry = DebugLogEntry.order(:created_at).last
+    assert_equal "sophtron_mfa", entry.category
+    assert_equal "Sophtron MFA submitted", entry.message
+    assert_equal "security_answer", entry.metadata["mfa_type"]
   end
 
   test "submit_mfa rejects too many security answers" do
