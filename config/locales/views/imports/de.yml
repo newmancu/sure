@@ -68,11 +68,6 @@ de:
       show:
         description: Wähle die Spalten aus, die den jeweiligen Feldern in deiner CSV entsprechen.
         title: Import konfigurieren
-        template_found: Importvorlage gefunden
-        template_description: Wir haben eine Konfiguration aus einem früheren Import für dieses Konto gefunden. Möchtest du sie für diesen Import übernehmen?
-        manually_configure: Manuell konfigurieren
-        apply_template: Vorlage übernehmen
-        sample_caption: Beispieldaten aus deiner hochgeladenen CSV-Datei
       trade_import:
         date_format_label: Datumsformat
         account_label: Konto
@@ -247,7 +242,6 @@ de:
       map: Zuordnen
       confirm: Bestätigen
       select: Auswählen
-      label: Schritt %{step}
       progress: Schritt %{step} von %{total}
     index:
       title: Importe

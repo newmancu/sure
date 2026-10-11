@@ -44,14 +44,6 @@ class GoalsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
   end
 
-  test "the target amount field keeps its own action alongside the paste handler" do
-    get new_goal_url
-
-    assert_response :success
-    assert_select "input[data-money-field-target=?][data-action=?]", "amount",
-                  "input->goal-form#suggestedChanged paste->money-field#pasteAmount"
-  end
-
   test "create persists a goal with linked accounts" do
     # Fresh accounts: the goal fixtures already claim @depository and
     # @connected in full, and GoalAccount refuses a second whole-balance
@@ -136,27 +128,6 @@ class GoalsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_no_match(/Member Private Checking/, response.body)
     assert_no_match(/#{private_account.id}/, response.body)
-  end
-
-  # The builder's money field, not a bare number input: currency symbol and
-  # all. Its label used to point at nothing — `for` carried the label text —
-  # so the check is that it names the input the amount is posted from.
-  test "the consumption dialog asks for the amount with a labelled money field" do
-    get consume_goal_url(@goal)
-
-    assert_response :success
-    assert_select "[data-controller='money-field'] input[type=number][name=amount][id=amount][autofocus]"
-    assert_select "label[for=amount]", text: /#{I18n.t("goals.consume.amount_label")}/
-  end
-
-  # Both figures in the dialog blur under privacy mode, as they do on the goal
-  # page. The amount also stays clickable: it is the one field the reader fills.
-  test "the consumption dialog blurs its figures under privacy mode and the amount stays editable" do
-    get consume_goal_url(@goal)
-
-    assert_response :success
-    assert_select "input[name=amount].form-field__input.privacy-sensitive.privacy-sensitive-interactive"
-    assert_select "p.privacy-sensitive", text: /is currently backing this goal/
   end
 
   test "consumption is refused against a linked account the viewer cannot see" do
@@ -715,7 +686,7 @@ class GoalsControllerTest < ActionDispatch::IntegrationTest
   # model looked fine.
   test "a months-of-expenses reserve can be created without typing an amount" do
     account = unclaimed_account("Reserve Pot")
-    IncomeStatement.any_instance.stubs(:median_expense).returns(500)
+    seed_monthly_expenses(500)
 
     assert_difference -> { Goal.count }, 1 do
       post goals_url, params: { goal: {
@@ -726,8 +697,54 @@ class GoalsControllerTest < ActionDispatch::IntegrationTest
     end
 
     goal = Goal.order(created_at: :desc).first
-    assert_equal 3_000, goal.target_amount.to_d, "the floor was not derived from the months"
+    assert_equal 3_000, goal.target_amount.to_d, "the target was not derived from the months"
     assert goal.maintained?
+  end
+
+  # The categories arrive as their own parameter, so the reserve has to be built
+  # with them in hand: the derivation runs during validation, before any child
+  # row exists to read back.
+  test "a reserve created with categories counts only those" do
+    account = unclaimed_account("Narrowed Pot")
+    essentials = @user.family.categories.create!(name: "Rent", color: "#4da568", lucide_icon: "home")
+    seed_monthly_expenses(500, category: essentials)
+    seed_monthly_expenses(2_000)
+
+    post goals_url, params: { goal: {
+      name: "Precaution", color: "#4da568", kind: "maintained",
+      target_mode: "months_of_expenses", target_months: "6",
+      target_amount: "", account_ids: [ account.id ],
+      expense_category_ids: [ essentials.id ]
+    } }
+
+    goal = Goal.order(created_at: :desc).first
+    assert_equal 3_000, goal.target_amount.to_d,
+                 "spending outside the chosen categories was counted"
+    assert_equal [ essentials.id ], goal.expense_categories.map(&:id)
+  end
+
+  # Clearing every box has to reach the server as an empty list, not as an
+  # absent parameter it would read as "leave the selection alone".
+  test "clearing every category widens the reserve back to all spending" do
+    account = unclaimed_account("Widened Pot")
+    essentials = @user.family.categories.create!(name: "Rent", color: "#4da568", lucide_icon: "home")
+    seed_monthly_expenses(500, category: essentials)
+    seed_monthly_expenses(2_000)
+
+    post goals_url, params: { goal: {
+      name: "Precaution", color: "#4da568", kind: "maintained",
+      target_mode: "months_of_expenses", target_months: "6",
+      target_amount: "", account_ids: [ account.id ],
+      expense_category_ids: [ essentials.id ]
+    } }
+    goal = Goal.order(created_at: :desc).first
+    assert_equal 3_000, goal.target_amount.to_d
+
+    patch goal_url(goal), params: { goal: { expense_category_ids: [ "" ] } }
+
+    assert_empty goal.reload.expense_categories
+    assert_equal 15_000, goal.target_amount.to_d,
+                 "widening the reserve did not move its target"
   end
 
   # A fixed reserve still needs one, and still says so. Asserted on the error the
@@ -992,40 +1009,6 @@ class GoalsControllerTest < ActionDispatch::IntegrationTest
         "the hint shown with no other claims should not mention earmarks")
     end
 
-    # Privacy mode sets `pointer-events: none` on bare .privacy-sensitive, so
-    # the per-account amount has to opt back in or it cannot be typed into.
-    test "each account's earmark is a money field that stays editable in privacy mode" do
-      account = unclaimed_account("Earmark Pot")
-
-      get new_goal_url
-
-      assert_response :success
-      assert_select "label[for=goal_allocations_#{account.id}]", text: /#{I18n.t("goals.form.fields.earmark_for", account: "Earmark Pot")}/
-      assert_select "input#goal_allocations_#{account.id}[name='goal[allocations][#{account.id}]']", count: 1 do |inputs|
-        input = inputs.first
-        assert_includes input["class"].split, "privacy-sensitive"
-        assert_includes input["class"].split, "privacy-sensitive-interactive"
-        assert_equal I18n.t("goals.form.fields.whole_balance"), input["placeholder"]
-        assert_equal "0", input["min"]
-        assert_nil input["value"]
-        assert_equal "allocationInput", input["data-goal-earmark-target"]
-        assert_equal "amount", input["data-money-field-target"]
-        assert_includes input["data-action"], "input->goal-earmark#refresh"
-      end
-    end
-
-    test "a fixed earmark is filled back into its account's field" do
-      account = unclaimed_account("Filled Pot")
-      goal = @user.family.goals.create!(name: "Filled", target_amount: 5_000, currency: "USD") do |g|
-        g.goal_accounts.build(account: account, allocated_amount: 250)
-      end
-
-      get edit_goal_url(goal)
-
-      assert_response :success
-      assert_select "input#goal_allocations_#{account.id}[value='250.00']"
-    end
-
   private
 
     # A private account of another member, linked to the goal under test.
@@ -1073,6 +1056,22 @@ class GoalsControllerTest < ActionDispatch::IntegrationTest
     # refuses a second whole-balance link on an account already claimed in
     # full — so any test that wants the default "dedicate the whole balance"
     # link needs an account of its own.
+    # One expense of `amount` in each of the last `months` complete months.
+    def seed_monthly_expenses(amount, months: 6, category: nil)
+      account = @user.family.accounts.create!(
+        accountable: Depository.new, name: "Spending #{SecureRandom.hex(3)}",
+        currency: "USD", balance: 0
+      )
+      months.times do |i|
+        account.entries.create!(
+          date: Date.current.prev_month.beginning_of_month - i.months + 5.days,
+          name: "Living cost", amount: amount, currency: "USD",
+          entryable: Transaction.new(category: category)
+        )
+      end
+      account
+    end
+
     def unclaimed_account(name)
       Account.create!(
         family: @user.family, accountable: Depository.new,

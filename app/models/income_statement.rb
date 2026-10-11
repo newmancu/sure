@@ -117,23 +117,6 @@ class IncomeStatement
   # `income_totals`/`expense_totals`, this isn't memoized per-period since
   # callers (e.g. a monthly bar chart) typically query several distinct
   # periods and account combinations in one request.
-  # Per-day expense totals (in family currency) across a period, powering the
-  # dashboard's cumulative spending chart. Same scoping as `expense_totals`.
-  def daily_expense_series(period:)
-    Rails.cache.fetch([
-      "income_statement", "daily_expense_series", family.id, user&.id,
-      included_account_ids_hash, period.start_date, period.end_date,
-      *cache_freshness_key
-    ]) do
-      DailyExpenseTotals.new(
-        family,
-        transactions_scope: family.transactions.visible.excluding_pending.in_period(period),
-        date_range: period.date_range,
-        included_account_ids: included_account_ids
-      ).call
-    end
-  end
-
   def totals_for(period, account_ids: nil)
     scope = family.transactions.visible.excluding_pending.in_period(period)
     scope = scope.where(entries: { account_id: account_ids }) if account_ids.present?
@@ -163,6 +146,20 @@ class IncomeStatement
     else
       family_stats(interval: interval).find { |stat| stat.classification == "expense" }&.median || 0
     end
+  end
+
+  # Total spending between two dates, as opposed to the shape of a typical
+  # month. A reserve sized in months of expenses asks this: "six months of
+  # expenses" is what six months actually cost, not six times a median drawn
+  # from every month on record.
+  def expense_total(date_range:, category_ids: nil, include_uncategorized: false)
+    IncomeStatement::ExpenseWindow.new(
+      family,
+      date_range: date_range,
+      account_ids: included_account_ids,
+      category_ids: category_ids,
+      include_uncategorized: include_uncategorized
+    ).total
   end
 
   def avg_expense(interval: "month", category: nil)
@@ -272,21 +269,11 @@ class IncomeStatement
       @included_account_ids_hash ||= included_account_ids ? Digest::MD5.hexdigest(included_account_ids.sort.join(",")) : nil
     end
 
-    # An IncomeStatement is a request-scoped reporting snapshot, like its memoized
-    # period totals. Share these aggregate reads across totals and daily series.
-    # Rates and target currency can change without touching entries or accounts.
-    def cache_freshness_key
-      @cache_freshness_key ||= [
-        family.entries_cache_version, family.accounts.maximum(:updated_at)&.to_i,
-        family.currency, ExchangeRate.maximum(:updated_at)&.to_i
-      ]
-    end
-
     def totals_query(transactions_scope:, date_range:)
       sql_hash = Digest::MD5.hexdigest(transactions_scope.to_sql)
 
       Rails.cache.fetch([
-        "income_statement", "totals_query", "v2", family.id, user&.id, included_account_ids_hash, sql_hash, date_range.begin, date_range.end, *cache_freshness_key
+        "income_statement", "totals_query", "v2", family.id, user&.id, included_account_ids_hash, sql_hash, date_range.begin, date_range.end, family.entries_cache_version, family.accounts.maximum(:updated_at)&.to_i
       ]) { Totals.new(family, transactions_scope: transactions_scope, date_range: date_range, included_account_ids: included_account_ids).call }
     end
 
