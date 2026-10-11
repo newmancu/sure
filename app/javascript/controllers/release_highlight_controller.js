@@ -1,10 +1,5 @@
 import { Controller } from "@hotwired/stimulus";
-
-// A drawer or modal over the page, or a frame that may still be fetching one.
-// Any loading frame counts, not just #drawer and #modal: dialogs also arrive
-// in frames of their own, such as the transactions bulk-edit drawer, and
-// listing frame ids would miss the next one.
-const COVERED = "dialog:modal, turbo-frame[busy]";
+import { driver } from "driver.js";
 
 // "What's new" release highlight.
 //
@@ -13,11 +8,11 @@ const COVERED = "dialog:modal, turbo-frame[busy]";
 //      (so the popup never interrupts the initial render, and the PWA only
 //      pops it once the user is actually engaging),
 //   2. fetches the release notes for the pending tag (no notes = no popup),
-//   3. opens them in a DS::Dialog once no drawer or modal covers the page,
+//   3. opens one centered driver.js popover with the notes,
 //   4. marks the release tag as seen server-side when the user dismisses it
-//      (Done, Close, Escape or a click outside: anything that closes it).
+//      (Done button, close icon, overlay click, or Escape).
 //
-// Navigating away without dismissing is not "seen": the dialog is removed
+// Navigating away without dismissing is not "seen": the popover is torn down
 // quietly and the next page offers it again. A window-level flag keyed to the
 // tag prevents double-shows across Turbo reconnects, cached page restores,
 // and duplicate mounts.
@@ -26,6 +21,8 @@ export default class extends Controller {
     contentUrl: String,
     dismissUrl: String,
     tag: String,
+    title: String,
+    doneLabel: String,
   };
 
   connect() {
@@ -45,12 +42,14 @@ export default class extends Controller {
   disconnect() {
     this.removeInteractionListeners();
     window.clearTimeout(this.showTimeout);
-    this.stopWaiting();
     this.fetchAbort?.abort();
 
-    // Removed for navigation, not closed by the user: not seen. Removing an
-    // open dialog fires no close event.
-    this.removeDialog();
+    if (this.driverObj) {
+      // Tearing down for navigation, not a user dismissal: do not mark seen.
+      this.tearingDown = true;
+      this.driverObj.destroy();
+      this.driverObj = null;
+    }
 
     if (!this.dismissed) this.releaseShownFlag();
   }
@@ -66,7 +65,7 @@ export default class extends Controller {
     };
     this.removeInteractionListeners();
 
-    // Let the triggering interaction land before the dialog takes over; if
+    // Let the triggering interaction land before the popover takes over; if
     // it started a navigation, disconnect() cancels this before it shows.
     this.showTimeout = window.setTimeout(() => this.show(), 150);
   }
@@ -80,54 +79,33 @@ export default class extends Controller {
       return;
     }
 
-    // Gone while the notes loaded (Turbo swapped the page): don't open.
-    if (this.notesHtml || !this.element.isConnected) return;
-    this.notesHtml = notesHtml;
-    this.openWhenUncovered();
-  }
+    if (this.driverObj) return;
 
-  // That first click is often the one that opens a drawer or a modal. Opening
-  // this over it would cut it short, so it waits for the page to be clear.
-  // Polled rather than waiting for a close event: a dialog can also leave
-  // with its frame, without one.
-  openWhenUncovered() {
-    if (document.querySelector(COVERED)) {
-      this.uncoveredPoll ??= window.setInterval(
-        () => this.openWhenUncovered(),
-        250,
-      );
-      return;
-    }
+    this.driverObj = driver({
+      showProgress: false,
+      showButtons: ["close", "next"],
+      doneBtnText: this.doneLabelValue,
+      allowClose: true,
+      overlayClickBehavior: "close",
+      popoverClass: "release-highlight-popover",
+      steps: [
+        {
+          popover: {
+            title: this.titleValue,
+            description: notesHtml,
+          },
+        },
+      ],
+      onDestroyed: () => {
+        this.dismissed = !this.tearingDown;
 
-    this.stopWaiting();
+        if (this.dismissed) {
+          this.markSeen();
+        }
+      },
+    });
 
-    const template = document.createElement("template");
-    template.innerHTML = this.notesHtml;
-    this.dialogWrapper = template.content.firstElementChild;
-    // Kept out of Turbo's page cache, or Back would bring it back.
-    this.dialogWrapper.dataset.turboTemporary = "";
-    this.dialogWrapper
-      .querySelector("dialog")
-      .addEventListener("close", () => this.dismiss(), { once: true });
-    // On <body>, not in this element: a modal dialog inside a hidden
-    // ancestor blocks the page without showing.
-    document.body.append(this.dialogWrapper);
-  }
-
-  stopWaiting() {
-    window.clearInterval(this.uncoveredPoll);
-    this.uncoveredPoll = null;
-  }
-
-  dismiss() {
-    this.dismissed = true;
-    this.removeDialog();
-    this.markSeen();
-  }
-
-  removeDialog() {
-    this.dialogWrapper?.remove();
-    this.dialogWrapper = null;
+    this.driverObj.drive();
   }
 
   async fetchNotes() {
