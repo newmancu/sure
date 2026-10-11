@@ -1,109 +1,158 @@
-<%# locals: (account:, as_of: Date.current) %>
+<% loan = account.loan %>
+<% breakdown = loan.payment_breakdown %>
 
-<%# ONE reference date for every figure on this tab, supplied by the caller
-    where it has one (the account page passes the same date to the Schedule
-    tab). %>
-<% today = as_of %>
+<div class="space-y-4">
 
-<div class="grid grid-cols-3 gap-2">
-  <%= summary_card title: t(".original_principal") do %>
-    <%= format_money account.loan.original_balance %>
-  <% end %>
-
-  <%= summary_card title: t(".remaining_principal") do %>
-    <%= format_money account.balance_money %>
-  <% end %>
-
-  <%# The rate in force today, not the one the loan was written at. On a
-      variable loan with a recorded change the Schedule tab beside this card
-      re-amortises at that change; quoting `interest_rate` here showed the
-      origination rate next to a schedule that no longer used it. For a fixed
-      loan, or before any change applies, this is the column unchanged. %>
-  <%= summary_card title: t(".interest_rate") do %>
-    <% current_rate = account.loan.current_variable_rate(today) %>
-    <% if current_rate.present? %>
-      <%= number_to_percentage(current_rate, precision: 3) %>
-    <% else %>
-      <%= t(".unknown") %>
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <%= summary_card title: t(".original_principal") do %>
+      <%= format_money loan.initial_balance %>
     <% end %>
-  <% end %>
 
-  <%# A fixed loan's contracted repayment. A variable loan has no single one, so
-      the card quotes the repayment in force today -- the next scheduled payment,
-      sized at every rate change recorded before it -- and N/A only when there
-      is no schedule or it has run out. %>
-  <%= summary_card title: t(".monthly_payment") do %>
-    <% if account.loan.variable_rate_type? %>
-      <% payment_in_force = account.loan.amortization_schedule&.payment_in_force(today) %>
-      <%= payment_in_force ? format_money(payment_in_force) : t(".not_applicable") %>
-    <% elsif account.loan.monthly_payment.present? %>
-      <%= format_money(account.loan.monthly_payment) %>
-    <% else %>
-      <%= t(".unknown") %>
-    <% end %>
-  <% end %>
+    <%= summary_card title: t(".repayment_progress") do %>
+      <% if loan.balance_paid_ratio.present? %>
+        <% percentage = (loan.balance_paid_ratio * 100).round(1) %>
+        <div class="flex items-center justify-between gap-4">
+          <div class="text-sm text-secondary">
+            <%= t(".already_paid_html",
+                  percentage: tag.span(number_to_percentage(percentage, precision: 1),class: "font-medium text-warning")) %>
+          </div>
 
-  <%= summary_card title: t(".term") do %>
-    <% if account.loan.term_months.present? %>
-      <% if account.loan.term_months < 12 %>
-        <%= pluralize(account.loan.term_months, "month") %>
+          <div
+            data-controller="donut-chart"
+            data-donut-chart-segments-value="<%= loan.to_donut_segments.to_json %>"
+            data-donut-chart-segment-height-value="6"
+            data-donut-chart-overage-segment-id-value="paid"
+            class="relative w-16 h-16"
+            aria-hidden="true">
+            <div data-donut-chart-target="chartContainer" class="absolute inset-0 pointer-events-none"></div>
+            <div data-donut-chart-target="contentContainer" class="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <div data-donut-chart-target="defaultContent"></div>
+            </div>
+          </div>
+        </div>
+
       <% else %>
-        <%= pluralize(account.loan.term_months / 12, "year") %>
+        <%= t(".unknown") %>
       <% end %>
-    <% else %>
-      <%= t(".unknown") %>
     <% end %>
-  <% end %>
+  </div>
 
-  <%# When the contract's last payment falls due. A variable loan keeps this
-      date through its rate changes -- the schedule resizes the repayment
-      instead -- so it is the loan's original payoff date either way. %>
-  <%= summary_card title: t(".original_payoff_date") do %>
-    <% original_payoff_date = account.loan.amortization_schedule&.payoff_date %>
-    <%= original_payoff_date ? l(original_payoff_date, format: :long) : t(".unknown") %>
-  <% end %>
-
-  <%= summary_card title: t(".type") do %>
-    <%= account.loan.rate_type&.titleize || t(".unknown") %>
-  <% end %>
-
-  <%# What the loan costs in total: the Schedule tab's "Total Cost" (principal
-      and interest) plus any premium charged beside it. With a premium the
-      title says so, because both tabs render on one page and the same title
-      over two different amounts reads as a mistake. Unknown without a schedule
-      to read interest from, the same condition the payoff date answers with. %>
-  <%= summary_card title: account.loan.insurance.present? ? t(".total_cost_with_insurance") : t(".total_cost") do %>
-    <% total_cost = account.loan.total_cost %>
-    <%= total_cost ? format_money(total_cost) : t(".unknown") %>
-  <% end %>
-
-  <%# Only for a loan carrying a premium. A card reading zero would say the
-      borrower has insurance costing nothing rather than none recorded. A rate
-      saved on a loan with no schedule to project it against still shows, as
-      the rate, rather than vanishing as though the save had been lost. %>
-  <% if account.loan.insurance.present? %>
-    <%= summary_card title: t(".total_insurance") do %>
-      <%= format_money(account.loan.total_insurance) %>
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+    <%= summary_card title: t(".interest_rate") do %>
+      <%= loan.interest_rate.present? ? number_to_percentage(loan.interest_rate, precision: 3) : t(".unknown") %>
     <% end %>
-  <% elsif account.loan.insurance_rate&.positive? %>
-    <%= summary_card title: t(".total_insurance") do %>
-      <%= t(".insurance_rate_only", rate: number_to_percentage(account.loan.insurance_rate, strip_insignificant_zeros: true)) %>
-    <% end %>
-  <% end %>
 
-  <%# Leverage needs a down payment to be a ratio at all, and a loan with none
-      recorded is not unleveraged -- it is one nobody has told us about. %>
-  <% if account.loan.initial_leverage_ratio.present? %>
-    <%= summary_card title: t(".leverage") do %>
-      <span class="<%= loan_leverage_band_class(account.loan.leverage_band) %>">
-        <%= t(".leverage_multiple", ratio: number_with_precision(account.loan.initial_leverage_ratio, precision: 1)) %>
-        <span class="text-sm"><%= t(".leverage_band_#{account.loan.leverage_band}") %></span>
-      </span>
+    <%= summary_card title: t(".term") do %>
+      <% if loan.term_months.present? %>
+        <% years, months = loan.term_months.divmod(12) %>
+        <%= [
+              (t(".years", count: years) if years.positive?),
+              (t(".months", count: months) if months.positive?)
+            ].compact.join(" ") %>
+      <% else %>
+        <%= t(".unknown") %>
+      <% end %>
     <% end %>
+
+    <%= summary_card title: t(".type") do %>
+      <%= loan.rate_type.present? ? t(".rate_types.#{loan.rate_type}") : t(".unknown") %>
+    <% end %>
+
+    <%= summary_card title: t(".initial_leverage") do %>
+      <% if (band = loan.leverage_band) %>
+        <% ratio = loan.initial_leverage_ratio %>
+        <% color = {
+            conservative: "text-success",
+            moderate:     "text-accent",
+            high:         "text-destructive"
+          }.fetch(band) %>
+        <div class="text-2xl font-semibold <%= color %>">
+          <%= number_with_precision(ratio, precision: 1) %>x
+        </div>
+        <div class="text-xs font-medium <%= color %> mt-0.5">
+          <%= t(".leverage_bands.#{band}") %>
+        </div>
+        <div class="text-xs text-secondary mt-1">
+          <%= t(".debt_over_down_payment") %>
+        </div>
+      <% else %>
+        <%= t(".unknown") %>
+      <% end %>
+    <% end %>
+
+  </div>
+  <% if loan.rate_type == "fixed" %>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <%= summary_card title: t(".total_cost") do %>
+        <% if loan.total_cost.present? %>
+
+          <div>
+            <%= format_money(loan.total_cost) %>
+          </div>
+
+          <div class="my-3 h-px bg-surface-subtle"></div>
+
+          <div class="space-y-2">
+            <div class="flex justify-between">
+              <span class="text-sm text-secondary"><%= t(".principal") %></span>
+              <span><%= format_money(loan.original_balance) %></span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-sm text-secondary"><%= t(".interest") %></span>
+              <span><%= format_money(loan.total_interest) %></span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-sm text-secondary"><%= t(".insurance") %></span>
+              <span><%= format_money(loan.total_insurance) %></span>
+            </div>
+          </div>
+
+        <% else %>
+          <%= t(".unknown") %>
+        <% end %>
+      <% end %>
+
+      <%= summary_card title: t(".monthly_payment") do %>
+        <% if loan.monthly_payment.present? && breakdown.present? %>
+          <% monthly_payment = breakdown[:principal] + breakdown[:interest] + breakdown[:insurance] %>
+
+          <div>
+            <%= format_money(monthly_payment) %>
+          </div>
+
+          <div class="my-3 h-px bg-surface-subtle"></div>
+
+          <div class="space-y-2">
+            <div class="flex justify-between">
+              <span class="text-sm text-secondary"><%= t(".principal") %></span>
+              <span><%= format_money(breakdown[:principal]) %></span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-sm text-secondary"><%= t(".interest") %></span>
+              <span><%= format_money(breakdown[:interest]) %></span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-sm text-secondary"><%= t(".insurance") %></span>
+              <span><%= format_money(breakdown[:insurance]) %></span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-sm text-secondary"><%= t(".months_elapsed") %></span>
+              <span><%= loan.months_elapsed %></span>
+            </div>
+            <div class="flex justify-between">
+              <span class="text-sm text-secondary"><%= t(".remaining_months") %></span>
+              <span><%= loan.remaining_months %></span>
+            </div>
+          </div>
+
+        <% else %>
+          <%= t(".unknown") %>
+        <% end %>
+      <% end %>
+
+    </div>
   <% end %>
 </div>
-
-<%= render "loans/tabs/repayment_progress", loan: account.loan, as_of: today %>
 
 <div class="flex justify-center py-8">
   <%= render DS::Link.new(

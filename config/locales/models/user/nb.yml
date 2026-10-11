@@ -4,8 +4,8 @@ nb:
     attributes:
       user:
         email: E-post
-        family: "%{moniker}"
-        family_id: "%{moniker}"
+        family: Husholdning
+        family_id: Husholdning
         first_name: Fornavn
         last_name: Etternavn
         password: Passord

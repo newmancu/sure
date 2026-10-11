@@ -7,10 +7,8 @@ ca:
     providers:
       alpha_vantage: Alpha Vantage
       binance_public: Binance
-      moex_public: MOEX
       eodhd: EODHD
       mfapi: MFAPI.in
       tiingo: Tiingo
       twelve_data: Twelve Data
       yahoo_finance: Yahoo Finance
-      mansa: Mansa

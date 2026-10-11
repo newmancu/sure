@@ -6,10 +6,7 @@ import '../models/account.dart';
 import '../models/account_balance.dart';
 import '../models/account_holding.dart';
 import '../providers/auth_provider.dart';
-import '../providers/privacy_provider.dart';
 import '../services/account_detail_service.dart';
-import '../l10n/app_localizations.dart';
-import '../utils/money_masker.dart';
 
 class AccountDetailHeader extends StatefulWidget {
   final Account account;
@@ -32,7 +29,7 @@ class _AccountDetailHeaderState extends State<AccountDetailHeader> {
       widget.accountDetailService == null;
   late Account _account;
   bool _isLoading = false;
-  bool _detailsUnavailable = false;
+  String? _error;
   List<AccountBalance> _balances = [];
   List<AccountHolding> _holdings = [];
   bool _disposed = false;
@@ -49,9 +46,6 @@ class _AccountDetailHeaderState extends State<AccountDetailHeader> {
   Future<void> _loadDetails() async {
     if (_disposed) return;
 
-    // NOTE: this runs synchronously from initState(); do not touch inherited
-    // widgets (e.g. AppLocalizations.of) here. The failure message is localized
-    // at render time in build() via the _detailsUnavailable flag.
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     final accessToken = await authProvider.getValidAccessToken();
     if (_disposed) return;
@@ -66,7 +60,7 @@ class _AccountDetailHeaderState extends State<AccountDetailHeader> {
     if (mounted) {
       setState(() {
         _isLoading = true;
-        _detailsUnavailable = false;
+        _error = null;
       });
     }
 
@@ -123,7 +117,7 @@ class _AccountDetailHeaderState extends State<AccountDetailHeader> {
         }
         if (accountResult['success'] != true &&
             balancesResult['success'] != true) {
-          _detailsUnavailable = true;
+          _error = 'Account details are temporarily unavailable';
         }
         _isLoading = false;
       });
@@ -157,10 +151,8 @@ class _AccountDetailHeaderState extends State<AccountDetailHeader> {
 
   @override
   Widget build(BuildContext context) {
-    final l = AppLocalizations.of(context);
     final colorScheme = Theme.of(context).colorScheme;
     final latestBalance = _balances.isNotEmpty ? _balances.first : null;
-    final hideAmounts = context.watch<PrivacyProvider>().hidden;
 
     return Card(
       margin: const EdgeInsets.fromLTRB(16, 8, 16, 8),
@@ -183,7 +175,7 @@ class _AccountDetailHeaderState extends State<AccountDetailHeader> {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        MoneyMasker.mask(_account.balance, hidden: hideAmounts),
+                        _account.balance,
                         style: Theme.of(context)
                             .textTheme
                             .headlineSmall
@@ -204,7 +196,7 @@ class _AccountDetailHeaderState extends State<AccountDetailHeader> {
                 else
                   IconButton(
                     icon: const Icon(Icons.refresh),
-                    tooltip: l.accountDetailRefreshTooltip,
+                    tooltip: 'Refresh account details',
                     onPressed: _loadDetails,
                   ),
               ],
@@ -230,10 +222,7 @@ class _AccountDetailHeaderState extends State<AccountDetailHeader> {
                     ),
                   if (_account.cashBalance != null)
                     _DetailChip(
-                      label: l.accountDetailCashChip(
-                        MoneyMasker.mask(_account.cashBalance!,
-                            hidden: hideAmounts),
-                      ),
+                      label: 'Cash ${_account.cashBalance}',
                       icon: Icons.payments_outlined,
                     ),
                   if (_account.status != null)
@@ -250,7 +239,7 @@ class _AccountDetailHeaderState extends State<AccountDetailHeader> {
                 children: [
                   Expanded(
                     child: Text(
-                      l.accountDetailRecentBalanceHistory,
+                      'Recent balance history',
                       style: Theme.of(context).textTheme.titleSmall,
                     ),
                   ),
@@ -275,7 +264,7 @@ class _AccountDetailHeaderState extends State<AccountDetailHeader> {
             if (_holdings.isNotEmpty) ...[
               const SizedBox(height: 16),
               Text(
-                l.accountDetailTopHoldings,
+                'Top holdings',
                 style: Theme.of(context).textTheme.titleSmall,
               ),
               const SizedBox(height: 8),
@@ -288,15 +277,12 @@ class _AccountDetailHeaderState extends State<AccountDetailHeader> {
                             child: Text(
                               holding.ticker?.isNotEmpty == true
                                   ? holding.ticker!
-                                  : holding.securityName?.trim().isNotEmpty == true
-                                      ? holding.securityName!
-                                      : l.accountDetailHoldingFallback,
+                                  : holding.securityName ?? 'Holding',
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
                           Text(
-                            MoneyMasker.mask(holding.amount,
-                                hidden: hideAmounts),
+                            holding.amount,
                             style: Theme.of(context)
                                 .textTheme
                                 .bodyMedium
@@ -309,10 +295,10 @@ class _AccountDetailHeaderState extends State<AccountDetailHeader> {
                     ),
                   ),
             ],
-            if (_detailsUnavailable) ...[
+            if (_error != null) ...[
               const SizedBox(height: 8),
               Text(
-                l.accountDetailUnavailable,
+                _error!,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: colorScheme.error,
                     ),

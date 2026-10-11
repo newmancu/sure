@@ -69,9 +69,6 @@ coverage
 .cursor/rules/structure.mdc
 .cursor/rules/agent.mdc
 
-# Ignore Redis dump file
-dump.rdb
-
 # Ignore node related files
 node_modules
 
