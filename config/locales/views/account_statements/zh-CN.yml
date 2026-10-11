@@ -36,17 +36,16 @@ zh-CN:
       files_hint: PDF、CSV 或 XLSX。每个文件最大 %{max_size}MB。
       files_label: 对账单文件
       inbox_upload: 上传
-      period_hint: "如果 PDF 中写明了账单周期，Sure 会直接读取，否则从文件名中的日期（例如 2026-04）读取。你也可以在账单上手动设置。"
     index:
       account_label: 账户
-      confidence: "%{confidence} 匹配"
+      confidence: 匹配度 %{confidence}
       empty_linked: 尚无已关联的对账单。
       empty_unmatched: 对账单收件箱已清空。
       leave_unmatched: 保持未匹配
       linked_title: 已关联的对账单
       no_suggestion: 没有建议
       storage_used: 已用存储
-      title: 对账单库
+      title: 对账单
       unmatched_title: 未匹配收件箱
       upload_description: 将对账单上传到收件箱，或选择一个账户立即关联。
       upload_title: 上传对账单
