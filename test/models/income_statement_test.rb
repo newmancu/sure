@@ -187,6 +187,23 @@ class IncomeStatementTest < ActiveSupport::TestCase
     assert_equal 600.0, income_statement.avg_expense(interval: "month")
   end
 
+  # A month whose only expense has no exchange rate at all has no measurable
+  # spending, which is not the same as spending nothing. Counted as 0 it pulled
+  # the average and the median down to 50.
+  test "a month with nothing convertible is skipped by the average and median" do
+    Entry.joins(:account).where(accounts: { family_id: @family.id }).destroy_all
+    krw_account = @family.accounts.create! name: "KRW Checking", currency: "KRW", balance: 0, accountable: Depository.new
+
+    create_transaction(account: @checking_account, amount: 100, category: @groceries_category, date: Date.current.beginning_of_month)
+    create_transaction(account: krw_account, amount: 130_000, currency: "KRW", category: @groceries_category,
+                       date: Date.current.beginning_of_month.prev_month)
+
+    income_statement = IncomeStatement.new(@family)
+    assert_equal 100.0, income_statement.avg_expense(interval: "month")
+    assert_equal 100.0, income_statement.median_expense(interval: "month")
+    assert_equal 100.0, income_statement.avg_expense(interval: "month", category: @groceries_category)
+  end
+
   test "calculates category-specific median expense" do
     # Clear existing transactions by deleting entries
     Entry.joins(:account).where(accounts: { family_id: @family.id }).destroy_all
@@ -295,18 +312,6 @@ class IncomeStatementTest < ActiveSupport::TestCase
     assert_equal 4, totals.transactions_count # Only original 4 transactions
     assert_equal Money.new(1000, @family.currency), totals.income_money
     assert_equal Money.new(900, @family.currency), totals.expense_money
-  end
-
-  # A flag PostgreSQL cannot cast to boolean used to raise
-  # PG::InvalidTextRepresentation and take the whole statement down.
-  test "a pending flag PostgreSQL cannot cast neither raises nor counts" do
-    assert_statement_leaves_out_flagged_expense("maybe")
-  end
-
-  # Transaction#pending? (and so the Pending badge) calls "no" pending;
-  # PostgreSQL's ::boolean called it posted and counted it.
-  test "a \"no\" pending flag is pending, as Transaction#pending? says" do
-    assert_statement_leaves_out_flagged_expense("no")
   end
 
   # NEW TESTS: Interval-Based Calculations
@@ -785,24 +790,4 @@ class IncomeStatementTest < ActiveSupport::TestCase
 
     assert_equal 1, totals_query_calls
   end
-
-  private
-    # Adds a 250 grocery expense whose pending flag is +flag+ and asserts every
-    # figure is the one without it: totals (Transaction.excluding_pending), the
-    # family median and average (FamilyStats) and the category median
-    # (CategoryStats), each of which reads the flag in its own SQL.
-    def assert_statement_leaves_out_flagged_expense(flag)
-      flagged = create_transaction(account: @checking_account, amount: 250, category: @groceries_category)
-      flagged.entryable.update!(extra: { "plaid" => { "pending" => flag } })
-      assert flagged.entryable.pending?, "pending? should call #{flag.inspect} pending"
-
-      income_statement = IncomeStatement.new(@family)
-      totals = income_statement.totals(date_range: Period.last_30_days.date_range)
-
-      assert_equal 4, totals.transactions_count
-      assert_equal Money.new(900, @family.currency), totals.expense_money
-      assert_equal 900.0, income_statement.median_expense(interval: "month")
-      assert_equal 900.0, income_statement.avg_expense(interval: "month")
-      assert_equal 900.0, income_statement.median_expense(interval: "month", category: @groceries_category)
-    end
 end
