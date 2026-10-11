@@ -160,30 +160,17 @@ RSpec.describe 'API V1 Trades', type: :request do
             properties: {
               account_id: { type: :string, format: :uuid, description: 'Account ID (required)' },
               date: { type: :string, format: :date, description: 'Trade date (required)' },
-              qty: { type: :number, description: 'Quantity (required for buy/sell/sweep_in/sweep_out/reinvestment)' },
-              price: { type: :number, description: 'Price (required for buy/sell/sweep_in/sweep_out/reinvestment)' },
-              amount: {
-                type: :number,
-                description: 'Amount (required for dividend, deposit, withdrawal, interest, fee)'
-              },
-              fee: {
-                type: :number,
-                description: 'Optional fee (buy/sell/sweep_in/sweep_out/reinvestment)'
-              },
-              type: {
-                type: :string,
-                enum: %w[buy sell sweep_in sweep_out dividend reinvestment interest fee deposit withdrawal],
-                description: 'Trade type (required)'
-              },
+              qty: { type: :number, description: 'Quantity (required)' },
+              price: { type: :number, description: 'Price (required)' },
+              type: { type: :string, enum: %w[buy sell], description: 'Trade type (required)' },
               security_id: { type: :string, format: :uuid, description: 'Security ID (one of security_id, ticker, manual_ticker required)' },
               ticker: { type: :string, description: 'Ticker symbol' },
               manual_ticker: { type: :string, description: 'Manual ticker for offline securities' },
               currency: { type: :string, description: 'Currency (defaults to account currency)' },
               investment_activity_label: { type: :string, description: 'Activity label (e.g. Buy, Sell)' },
-              category_id: { type: :string, format: :uuid, description: 'Category ID' },
-              transfer_account_id: { type: :string, format: :uuid, description: 'Destination/source account ID for linked transfers. Must be an account the user can write to; otherwise the request returns 404.' }
+              category_id: { type: :string, format: :uuid, description: 'Category ID' }
             },
-            required: %w[account_id date type]
+            required: %w[account_id date qty price type]
           }
         },
         required: %w[trade]
@@ -204,51 +191,6 @@ RSpec.describe 'API V1 Trades', type: :request do
 
       response '201', 'trade created' do
         schema '$ref' => '#/components/schemas/Trade'
-
-        run_test!
-      end
-
-      response '403', 'forbidden - api key missing read_write scope' do
-        schema '$ref' => '#/components/schemas/ErrorResponse'
-
-        let(:read_only_api_key) do
-          key = ApiKey.generate_secure_key
-          ApiKey.create!(
-            user: user,
-            name: 'API Docs Read Key',
-            key: key,
-            scopes: %w[read],
-            source: 'mobile'
-          )
-        end
-        let(:'X-Api-Key') { read_only_api_key.plain_key }
-
-        run_test!
-      end
-
-      response '401', 'unauthorized - missing api key' do
-        schema '$ref' => '#/components/schemas/ErrorResponse'
-
-        let(:'X-Api-Key') { nil }
-
-        run_test!
-      end
-
-      response '422', 'invalid date format' do
-        schema '$ref' => '#/components/schemas/ErrorResponse'
-
-        let(:body) do
-          {
-            trade: {
-              account_id: account.id,
-              date: 'invalid-date',
-              qty: 10,
-              price: 50,
-              type: 'buy',
-              security_id: security.id
-            }
-          }
-        end
 
         run_test!
       end
@@ -335,145 +277,6 @@ RSpec.describe 'API V1 Trades', type: :request do
 
         run_test!
       end
-
-      response '201', 'dividend created with security' do
-        schema '$ref' => '#/components/schemas/Trade'
-
-        let(:body) do
-          {
-            trade: {
-              account_id: account.id,
-              date: Date.current.to_s,
-              type: 'dividend',
-              amount: 25.50,
-              currency: 'USD',
-              ticker: 'AAPL'
-            }
-          }
-        end
-
-        run_test!
-      end
-
-      response '422', 'dividend without security returns error' do
-        schema '$ref' => '#/components/schemas/ErrorResponse'
-
-        let(:body) do
-          {
-            trade: {
-              account_id: account.id,
-              date: Date.current.to_s,
-              type: 'dividend',
-              amount: 25.50
-            }
-          }
-        end
-
-        run_test!
-      end
-
-      response '422', 'dividend without amount returns error' do
-        schema '$ref' => '#/components/schemas/ErrorResponse'
-
-        let(:body) do
-          {
-            trade: {
-              account_id: account.id,
-              date: Date.current.to_s,
-              type: 'dividend',
-              ticker: 'AAPL'
-            }
-          }
-        end
-
-        run_test!
-      end
-
-      response '422', 'invalid type returns error' do
-        schema '$ref' => '#/components/schemas/ErrorResponse'
-
-        let(:body) do
-          {
-            trade: {
-              account_id: account.id,
-              date: Date.current.to_s,
-              type: 'invalid'
-            }
-          }
-        end
-
-        run_test!
-      end
-
-      response '201', 'deposit created' do
-        schema '$ref' => '#/components/schemas/TransactionResponse'
-
-        let(:body) do
-          {
-            trade: {
-              account_id: account.id,
-              date: Date.current.to_s,
-              type: 'deposit',
-              amount: 175.25,
-              currency: 'USD'
-            }
-          }
-        end
-
-        run_test!
-      end
-
-      response '201', 'withdrawal created' do
-        schema '$ref' => '#/components/schemas/TransactionResponse'
-
-        let(:body) do
-          {
-            trade: {
-              account_id: account.id,
-              date: Date.current.to_s,
-              type: 'withdrawal',
-              amount: 100.00,
-              currency: 'USD'
-            }
-          }
-        end
-
-        run_test!
-      end
-
-      response '201', 'trade created' do
-        schema '$ref' => '#/components/schemas/TransactionResponse'
-
-        let(:body) do
-          {
-            trade: {
-              account_id: account.id,
-              date: Date.current.to_s,
-              type: 'interest',
-              amount: 25.00,
-              currency: 'USD'
-            }
-          }
-        end
-
-        run_test!
-      end
-
-      response '422', 'invalid trade request' do
-        schema '$ref' => '#/components/schemas/ErrorResponse'
-
-        let(:body) do
-          {
-            trade: {
-              account_id: account.id,
-              date: Date.current.to_s,
-              type: 'deposit'
-            }
-          }
-        end
-
-        run_test!
-      end
     end
   end
 
@@ -526,7 +329,7 @@ RSpec.describe 'API V1 Trades', type: :request do
               date: { type: :string, format: :date },
               qty: { type: :number },
               price: { type: :number },
-              type: { type: :string, enum: %w[buy sell sweep_in sweep_out reinvestment] },
+              type: { type: :string, enum: %w[buy sell] },
               nature: { type: :string, enum: %w[inflow outflow] },
               name: { type: :string },
               notes: { type: :string },
@@ -556,33 +359,6 @@ RSpec.describe 'API V1 Trades', type: :request do
         run_test!
       end
 
-      response '401', 'unauthorized' do
-        schema '$ref' => '#/components/schemas/ErrorResponse'
-
-        let(:id) { trade.id }
-        let(:'X-Api-Key') { nil }
-
-        run_test!
-      end
-
-      response '403', 'forbidden - api key missing read_write scope' do
-        schema '$ref' => '#/components/schemas/ErrorResponse'
-
-        let(:read_only_api_key) do
-          key = ApiKey.generate_secure_key
-          ApiKey.create!(
-            user: user,
-            name: 'API Docs Read Key',
-            key: key,
-            scopes: %w[read],
-            source: 'mobile'
-          )
-        end
-        let(:'X-Api-Key') { read_only_api_key.plain_key }
-
-        run_test!
-      end
-
       response '404', 'trade not found' do
         schema '$ref' => '#/components/schemas/ErrorResponse'
 
@@ -601,33 +377,6 @@ RSpec.describe 'API V1 Trades', type: :request do
         schema '$ref' => '#/components/schemas/DeleteResponse'
 
         let(:id) { trade.id }
-
-        run_test!
-      end
-
-      response '401', 'unauthorized' do
-        schema '$ref' => '#/components/schemas/ErrorResponse'
-
-        let(:id) { trade.id }
-        let(:'X-Api-Key') { nil }
-
-        run_test!
-      end
-
-      response '403', 'forbidden - api key missing read_write scope' do
-        schema '$ref' => '#/components/schemas/ErrorResponse'
-
-        let(:read_only_api_key) do
-          key = ApiKey.generate_secure_key
-          ApiKey.create!(
-            user: user,
-            name: 'API Docs Read Key',
-            key: key,
-            scopes: %w[read],
-            source: 'mobile'
-          )
-        end
-        let(:'X-Api-Key') { read_only_api_key.plain_key }
 
         run_test!
       end

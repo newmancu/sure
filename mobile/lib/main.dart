@@ -10,7 +10,6 @@ import 'providers/tags_provider.dart';
 import 'providers/transactions_provider.dart';
 import 'providers/chat_provider.dart';
 import 'providers/theme_provider.dart';
-import 'providers/privacy_provider.dart';
 import 'screens/backend_config_screen.dart';
 import 'screens/login_screen.dart';
 import 'screens/biometric_lock_screen.dart';
@@ -22,8 +21,6 @@ import 'services/log_service.dart';
 import 'services/preferences_service.dart';
 import 'services/telemetry_service.dart';
 import 'theme/sure_theme.dart';
-import 'l10n/app_localizations.dart';
-import 'package:upgrader/upgrader.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -32,31 +29,13 @@ void main() async {
   // Add initial log entry
   LogService.instance.info('App', 'Sure app starting...');
 
-  // Read the privacy preference before the first frame so money values are
-  // never briefly rendered unmasked for a user who enabled "Hide amounts".
-  // Default to masked (fail-closed) if it can't be read.
-  bool moneyHidden = true;
-  try {
-    moneyHidden = await PreferencesService.instance.getMoneyHidden();
-  } catch (e) {
-    LogService.instance.warning(
-      'App',
-      'Failed to read privacy preference at startup with ${e.runtimeType}',
-    );
-  }
-
   await TelemetryService.instance.initialize(
-    appRunner: () => runApp(SureApp(moneyHidden: moneyHidden)),
+    appRunner: () => runApp(const SureApp()),
   );
 }
 
 class SureApp extends StatelessWidget {
-  // Fail-closed default (masked) for the no-argument path; main() always passes
-  // the persisted value explicitly.
-  const SureApp({super.key, this.moneyHidden = true});
-
-  /// The persisted "hide amounts" state, read before `runApp` (see `main`).
-  final bool moneyHidden;
+  const SureApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -70,8 +49,6 @@ class SureApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => MerchantsProvider()),
         ChangeNotifierProvider(create: (_) => TagsProvider()),
         ChangeNotifierProvider(create: (_) => ThemeProvider()),
-        ChangeNotifierProvider(
-            create: (_) => PrivacyProvider(initialHidden: moneyHidden)),
         ChangeNotifierProxyProvider<ConnectivityService, AccountsProvider>(
           create: (_) => AccountsProvider(),
           update: (_, connectivityService, accountsProvider) {
@@ -101,9 +78,7 @@ class SureApp extends StatelessWidget {
       ],
       child: Consumer<ThemeProvider>(
         builder: (context, themeProvider, _) => MaterialApp(
-          onGenerateTitle: (ctx) => AppLocalizations.of(ctx).appTitle,
-          localizationsDelegates: AppLocalizations.localizationsDelegates,
-          supportedLocales: AppLocalizations.supportedLocales,
+          title: 'Sure Finances',
           debugShowCheckedModeBanner: false,
           navigatorObservers: TelemetryService.instance.navigatorObservers,
           theme: SureTheme.light,
@@ -134,12 +109,6 @@ class _AppWrapperState extends State<AppWrapper> with WidgetsBindingObserver {
   bool _isLocked = false;
   late final AppLinks _appLinks;
   StreamSubscription<Uri>? _linkSubscription;
-
-  final _upgrader = Upgrader(
-    durationUntilAlertAgain: const Duration(days: 7),
-    countryCode: 'us',
-    messages: _SureUpgraderMessages(),
-  );
 
   @override
   void initState() {
@@ -298,11 +267,7 @@ class _AppWrapperState extends State<AppWrapper> with WidgetsBindingObserver {
         if (authProvider.isAuthenticated) {
           return Stack(
             children: [
-              UpgradeAlert(
-                upgrader: _upgrader,
-                showIgnore: false,
-                child: const MainNavigationScreen(),
-              ),
+              const MainNavigationScreen(),
               if (_isLocked)
                 BiometricLockScreen(
                   onUnlocked: _onUnlocked,
@@ -327,24 +292,4 @@ class _AppWrapperState extends State<AppWrapper> with WidgetsBindingObserver {
       },
     );
   }
-}
-
-class _SureUpgraderMessages extends UpgraderMessages {
-  @override
-  String get title => 'Update available';
-
-  @override
-  String get body =>
-      '{{appName}} {{currentAppStoreVersion}} is now available — '
-      'you have {{currentInstalledVersion}}.\n\n'
-      "What's new? Check the store for release notes.";
-
-  @override
-  String get buttonTitleUpdate => 'Update now';
-
-  @override
-  String get buttonTitleLater => 'Later';
-
-  @override
-  String get releaseNotes => '';
 }

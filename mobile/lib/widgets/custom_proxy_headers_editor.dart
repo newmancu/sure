@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../l10n/app_localizations.dart';
 import '../models/custom_proxy_header.dart';
-import 'sure_text_field.dart';
 
 class CustomProxyHeadersEditor extends StatefulWidget {
   final List<CustomProxyHeader> initialHeaders;
@@ -15,8 +13,7 @@ class CustomProxyHeadersEditor extends StatefulWidget {
   });
 
   @override
-  State<CustomProxyHeadersEditor> createState() =>
-      _CustomProxyHeadersEditorState();
+  State<CustomProxyHeadersEditor> createState() => _CustomProxyHeadersEditorState();
 }
 
 class _CustomProxyHeadersEditorState extends State<CustomProxyHeadersEditor> {
@@ -33,12 +30,7 @@ class _CustomProxyHeadersEditorState extends State<CustomProxyHeadersEditor> {
   void _notifyChanged() {
     widget.onChanged(
       _drafts
-          .map(
-            (draft) => CustomProxyHeader(
-              name: draft.name.text,
-              value: draft.value.text,
-            ),
-          )
+          .map((draft) => CustomProxyHeader(name: draft.name.text, value: draft.value.text))
           .where((header) => header.isComplete)
           .toList(),
     );
@@ -66,7 +58,6 @@ class _CustomProxyHeadersEditorState extends State<CustomProxyHeadersEditor> {
 
   @override
   Widget build(BuildContext context) {
-    final l = AppLocalizations.of(context);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -81,7 +72,7 @@ class _CustomProxyHeadersEditorState extends State<CustomProxyHeadersEditor> {
         OutlinedButton.icon(
           onPressed: _addHeader,
           icon: const Icon(Icons.add),
-          label: Text(l.proxyHeadersAddHeader),
+          label: const Text('Add header'),
         ),
       ],
     );
@@ -101,36 +92,36 @@ class _HeaderRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final l = AppLocalizations.of(context);
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Expanded(
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              SureTextField(
+              TextFormField(
                 controller: draft.name,
-                label: l.proxyHeadersNameLabel,
-                hint: l.proxyHeadersNameHint,
-                validator: (value) =>
-                    CustomProxyHeader.validateName(value ?? ''),
+                decoration: const InputDecoration(
+                  labelText: 'Header name',
+                  hintText: 'X-Auth-Token',
+                ),
+                validator: (value) => CustomProxyHeader.validateName(value ?? ''),
                 onChanged: (_) => onChanged(),
               ),
-              const SizedBox(height: 12),
-              SureTextField(
+              const SizedBox(height: 8),
+              TextFormField(
                 controller: draft.value,
-                label: l.proxyHeadersValueLabel,
+                decoration: const InputDecoration(
+                  labelText: 'Header value',
+                ),
                 obscureText: true,
-                validator: (value) =>
-                    CustomProxyHeader.validateValue(value ?? ''),
+                validator: (value) => CustomProxyHeader.validateValue(value ?? ''),
                 onChanged: (_) => onChanged(),
               ),
             ],
           ),
         ),
         IconButton(
-          tooltip: l.proxyHeadersRemove,
+          tooltip: 'Remove header',
           icon: const Icon(Icons.delete_outline),
           onPressed: onRemove,
         ),
@@ -144,8 +135,8 @@ class _HeaderDraft {
   final TextEditingController value;
 
   _HeaderDraft({String name = '', String value = ''})
-    : name = TextEditingController(text: name),
-      value = TextEditingController(text: value);
+      : name = TextEditingController(text: name),
+        value = TextEditingController(text: value);
 
   void dispose() {
     name.dispose();
