@@ -9,7 +9,9 @@
         <div class="flex items-center gap-2">
           <%= icon "chevron-right", class: "group-open:rotate-90 motion-safe:transition-transform motion-safe:duration-150" %>
 
-          <%= render ProviderLogo.new(provider_key: :trading212) %>
+          <div class="flex items-center justify-center h-8 w-8 rounded-full bg-teal-600/10">
+            <span class="text-teal-600 text-xs font-medium">T2</span>
+          </div>
 
           <div class="pl-1 text-sm">
             <div class="flex items-center gap-2">
@@ -81,9 +83,8 @@
 
     <% unless trading212_item.scheduled_for_deletion? %>
       <div class="space-y-4 mt-4">
-        <% visible_accounts = trading212_item.accounts & Current.user.accessible_accounts.to_a %>
-        <% if visible_accounts.any? %>
-          <%= render "accounts/index/account_groups", accounts: visible_accounts %>
+        <% if trading212_item.accounts.any? %>
+          <%= render "accounts/index/account_groups", accounts: trading212_item.accounts %>
         <% end %>
 
         <% stats = trading212_item.syncs.ordered.first&.sync_stats || {} %>

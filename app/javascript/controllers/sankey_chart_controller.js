@@ -178,7 +178,7 @@ export default class extends Controller {
 
     Turbo.visit(
       buildCategoryTransactionsUrl({
-        filterValue: d.filter_value,
+        name: d.name,
         startDate: this.startDateValue,
         endDate: this.endDateValue,
       }),
