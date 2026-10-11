@@ -121,7 +121,7 @@ class MonobankAccount::Transactions::Processor
       stale_pending_entries = account.entries
         .joins("INNER JOIN transactions ON transactions.id = entries.entryable_id AND entries.entryable_type = 'Transaction'")
         .where(source: "monobank")
-        .where(Transaction.pending_sql("transactions", providers: [ "monobank" ]))
+        .where("(transactions.extra -> 'monobank' ->> 'pending')::boolean = true")
       stale_pending_entries = stale_pending_entries.where.not(external_id: current_pending_external_ids) if current_pending_external_ids.any?
 
       pruned = 0
