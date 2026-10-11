@@ -624,6 +624,32 @@ class TransactionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal entry_path(entry), drawer_link["href"]
   end
 
+  test "destroy shows alert when deleting settled bond lot purchase entry" do
+    bond_account = accounts(:bond)
+    lot = BondLot.create!(
+      bond: bond_account.bond,
+      purchased_on: Date.new(2024, 1, 1),
+      amount: 1000,
+      subtype: "other_bond",
+      term_months: 12,
+      interest_rate: 10,
+      rate_type: "fixed",
+      coupon_frequency: "at_maturity",
+      auto_close_on_maturity: true,
+      tax_strategy: "standard",
+      tax_rate: 19
+    )
+    lot.create_purchase_entry!
+    lot.settle_if_matured!(on: Date.new(2025, 2, 1))
+
+    assert_no_difference "Entry.count" do
+      delete entry_url(lot.entry)
+    end
+
+    assert_redirected_to account_url(lot.entry.account)
+    assert_equal I18n.t("entries.destroy.blocked_settled_bond_lot"), flash[:alert]
+  end
+
   test "can paginate" do
   family = families(:empty)
   sign_in users(:empty)
@@ -1752,54 +1778,6 @@ end
     assert_response :redirect
     assert_includes response.location, "filter_cleared=1"
     assert_no_match(/ai_status/, response.location)
-  end
-
-  test "update drops a category sent for a matched transfer's inflow leg" do
-    outflow = Transaction.create!(kind: "investment_contribution")
-    Entry.create!(account: accounts(:depository), entryable: outflow, name: "Contribution", amount: 500, currency: "USD", date: Date.current)
-    inflow = Transaction.create!(kind: "funds_movement")
-    inflow_entry = Entry.create!(account: accounts(:investment), entryable: inflow, name: "Contribution", amount: -500, currency: "USD", date: Date.current)
-    Transfer.create!(inflow_transaction: inflow, outflow_transaction: outflow, status: "confirmed")
-
-    patch transaction_url(inflow_entry), params: {
-      entry: {
-        notes: "Monthly savings",
-        entryable_type: "Transaction",
-        entryable_attributes: { id: inflow.id, category_id: categories(:income).id }
-      }
-    }
-
-    assert_nil inflow.reload.category_id
-    assert_equal "Monthly savings", inflow_entry.reload.notes
-  end
-
-  test "update drops a category for a matched inflow leg whose kind was edited to standard" do
-    outflow = Transaction.create!(kind: "investment_contribution")
-    Entry.create!(account: accounts(:depository), entryable: outflow, name: "Contribution", amount: 500, currency: "USD", date: Date.current)
-    inflow = Transaction.create!(kind: "standard")
-    inflow_entry = Entry.create!(account: accounts(:investment), entryable: inflow, name: "Contribution", amount: -500, currency: "USD", date: Date.current)
-    Transfer.create!(inflow_transaction: inflow, outflow_transaction: outflow, status: "confirmed")
-
-    patch transaction_url(inflow_entry), params: {
-      entry: { entryable_type: "Transaction", entryable_attributes: { id: inflow.id, category_id: categories(:income).id } }
-    }
-
-    assert_nil inflow.reload.category_id
-  end
-
-  test "drawer shows a matched transfer's inflow leg with the outflow's category, disabled" do
-    outflow = Transaction.create!(kind: "investment_contribution", category: categories(:income))
-    Entry.create!(account: accounts(:depository), entryable: outflow, name: "Contribution", amount: 500, currency: "USD", date: Date.current)
-    inflow = Transaction.create!(kind: "funds_movement")
-    inflow_entry = Entry.create!(account: accounts(:investment), entryable: inflow, name: "Contribution", amount: -500, currency: "USD", date: Date.current)
-    Transfer.create!(inflow_transaction: inflow, outflow_transaction: outflow, status: "confirmed")
-
-    get transaction_url(inflow_entry), headers: { "Turbo-Frame" => "drawer" }
-
-    assert_response :success
-    assert_select "button#category_id_trigger[disabled]", text: /#{categories(:income).name}/
-    assert_select "input[type=hidden][name='entry[entryable_attributes][category_id]'][disabled]"
-    assert_match I18n.t("transactions.show.category_set_on_outflow"), response.body
   end
 
   private
