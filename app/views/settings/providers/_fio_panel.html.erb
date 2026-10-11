@@ -3,7 +3,7 @@
 
   <%= render "settings/providers/setup_steps",
              steps: [
-               t("settings.providers.fio_panel.step_1_html", link: link_to(t("providers.fio.name"), "https://ib.fio.cz", target: "_blank", rel: "noopener noreferrer", class: "text-link underline")),
+               t("settings.providers.fio_panel.step_1_html", link: link_to(t("providers.fio.name"), "https://ib.fio.cz", target: "_blank", rel: "noopener noreferrer", class: "text-primary font-medium underline")),
                t("settings.providers.fio_panel.step_2"),
                t("settings.providers.fio_panel.step_3")
              ] %>
@@ -22,7 +22,9 @@
           <% disclosure.with_summary_content do %>
             <div class="flex items-center justify-between gap-2 w-full">
               <div class="flex items-center gap-3">
-                <%= render ProviderLogo.new(provider_key: :fio) %>
+                <div class="flex items-center justify-center h-8 w-8 bg-surface rounded-full">
+                  <p class="text-primary text-xs font-medium"><%= item.name.to_s.first.to_s.upcase %></p>
+                </div>
                 <div>
                   <p class="font-medium text-primary"><%= item.name %></p>
                   <p class="text-xs text-secondary">
@@ -69,7 +71,7 @@
                 icon: "refresh-cw",
                 variant: :outline,
                 size: :sm,
-                href: sync_fio_item_path(item, source: "panel"),
+                href: sync_fio_item_path(item),
                 method: :post,
                 disabled: item.syncing?
               ) %>
@@ -129,7 +131,10 @@
 
   <% fio_item = Current.family.fio_items.build(name: t("fio_items.provider_panel.default_connection_name")) %>
   <% if active_items.any? %>
-    <%= render "settings/providers/add_connection_heading", label: t("fio_items.provider_panel.add_connection") %>
+    <h3 class="flex items-center gap-2 text-sm font-medium text-primary mt-4">
+      <%= icon "plus", size: "sm" %>
+      <%= t("fio_items.provider_panel.add_connection") %>
+    </h3>
   <% end %>
 
   <%= styled_form_with model: fio_item,
