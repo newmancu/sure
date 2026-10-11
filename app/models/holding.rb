@@ -290,22 +290,21 @@ class Holding < ApplicationRecord
         .where(security_id: security.id)
         .where("trades.qty > 0 AND entries.date <= ?", date)
 
-      # An internal movement is not a purchase: securities moved in from elsewhere were
+      # A transfer is not a purchase: coins moved in from elsewhere were
       # acquired at a price nothing here knows, so treating the day they
       # arrived as their cost states a number that looks authoritative and is
       # wrong — a coin bought at 30k and moved in at 60k would report no gain.
       #
-      # One internal movement makes the whole position unknown, rather than just its own
+      # One transfer makes the whole position unknown, rather than just its own
       # row. Averaging the purchases alone and applying that to every unit is
       # the same fabrication in a quieter form: buy one at 30k, receive one, and
       # the position would report 30k a unit for two units it did not cost that.
-      return nil if trades.where(investment_activity_label: Trade::INTERNAL_MOVEMENT_LABELS).exists?
+      return nil if trades.where(investment_activity_label: Trade::TRANSFER_LABEL).exists?
 
       # IS DISTINCT FROM, because `!=` is NULL for an unlabelled row and would
       # drop the ordinary purchases that carry no label at all.
       trades = trades.where(
-        "trades.investment_activity_label NOT IN (?) OR trades.investment_activity_label IS NULL",
-        Trade::INTERNAL_MOVEMENT_LABELS
+        "trades.investment_activity_label IS DISTINCT FROM ?", Trade::TRANSFER_LABEL
       )
 
       total_cost, total_qty = trades.pick(
