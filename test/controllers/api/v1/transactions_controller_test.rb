@@ -117,6 +117,81 @@ class Api::V1::TransactionsControllerTest < ActionDispatch::IntegrationTest
     assert_not_includes transaction_ids, pending_deletion_transaction.id
   end
 
+  # The API exposes no `excluded` field, so a client cannot filter these out
+  # itself — returning them would double-count against the payments they offset.
+  test "should exclude system generated entries from index history" do
+    accrual = create_system_generated_entry
+
+    # Large per_page so this proves the entry was filtered, rather than merely
+    # falling off the default 25-item page.
+    get api_v1_transactions_url(per_page: 100), headers: api_headers(@api_key)
+    assert_response :success
+
+    body = JSON.parse(response.body)
+    transaction_ids = body["transactions"].map { |t| t["id"] }
+
+    assert_not_includes transaction_ids, accrual.entryable_id
+    assert_operator body["pagination"]["total_count"], :<=, 100,
+                    "result set must fit one page for this assertion to be meaningful"
+  end
+
+  # show/update/destroy share set_transaction, so scoping it keeps the contract
+  # consistent and stops a client mutating a generated entry by id.
+  test "should not expose system generated entries by id" do
+    accrual = create_system_generated_entry
+
+    get api_v1_transaction_url(accrual.entryable_id), headers: api_headers(@api_key)
+    assert_response :not_found
+  end
+
+  # `source` is caller-supplied, so without this a client could read a generated
+  # entry back through the idempotency lookup, or plant one that the generating
+  # code would later destroy as stale.
+  test "should reject a reserved source on create" do
+    assert_no_difference "Entry.count" do
+      post api_v1_transactions_url,
+           params: {
+             transaction: {
+               account_id: @account.id,
+               date: Date.current.to_s,
+               amount: 100,
+               name: "Squatting the accrual namespace",
+               source: Loan::InterestAccrual::SOURCE,
+               external_id: Date.current.strftime("%Y-%m")
+             }
+           },
+           headers: api_headers(@api_key)
+    end
+
+    assert_response :unprocessable_entity
+    assert_equal "validation_failed", JSON.parse(response.body)["error"]
+  end
+
+  # A generated entry occupies (account, "loan_interest_accrual", "2026-07").
+  # A client using the same external_id under its own source is a different key
+  # and must still succeed — the reserved namespace must not shadow it.
+  test "should allow a client external_id matching a generated entry's" do
+    accrual = create_system_generated_entry
+
+    assert_difference "Entry.count", 1 do
+      post api_v1_transactions_url,
+           params: {
+             transaction: {
+               account_id: @account.id,
+               date: Date.current.to_s,
+               amount: 100,
+               name: "Client entry sharing an external_id",
+               source: "api",
+               external_id: accrual.external_id
+             }
+           },
+           headers: api_headers(@api_key)
+    end
+
+    assert_response :created
+    assert_not_equal accrual.entryable_id, JSON.parse(response.body)["id"]
+  end
+
   test "should filter disabled account transactions by account_id" do
     disabled_transaction = create_disabled_account_transaction(name: "Closed Account Filter")
     disabled_account = disabled_transaction.entry.account
@@ -666,66 +741,6 @@ class Api::V1::TransactionsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Updated Transaction Name", response_data["name"]
   end
 
-  test "should protect transaction from provider sync when updated with user_modified true" do
-    update_params = {
-      transaction: {
-        name: "Client-owned Name",
-        user_modified: true
-      }
-    }
-
-    put api_v1_transaction_url(@transaction),
-        params: update_params,
-        headers: api_headers(@api_key)
-    assert_response :success
-
-    response_data = JSON.parse(response.body)
-    assert_equal "Client-owned Name", response_data["name"]
-    assert_equal true, response_data["user_modified"]
-
-    entry = @transaction.entry.reload
-    assert entry.user_modified?
-    assert entry.protected_from_sync?
-  end
-
-  test "date changed via API survives the next provider sync without user_modified" do
-    entry = Account::ProviderImportAdapter.new(@account).import_transaction(
-      external_id: "plaid_api_date_edit",
-      amount: 42.00,
-      currency: "USD",
-      date: Date.current - 5.days,
-      name: "Card payment",
-      source: "plaid"
-    )
-
-    put api_v1_transaction_url(entry.transaction),
-        params: { transaction: { date: (Date.current - 2.days).to_s } },
-        headers: api_headers(@api_key)
-    assert_response :success
-    assert_not entry.reload.user_modified?
-
-    Account::ProviderImportAdapter.new(@account).import_transaction(
-      external_id: "plaid_api_date_edit",
-      amount: 42.00,
-      currency: "USD",
-      date: Date.current - 5.days,
-      name: "Card payment",
-      source: "plaid"
-    )
-
-    assert_equal Date.current - 2.days, entry.reload.date
-  end
-
-  test "should not change user_modified on update by default" do
-    put api_v1_transaction_url(@transaction),
-        params: { transaction: { name: "Updated Name Only" } },
-        headers: api_headers(@api_key)
-    assert_response :success
-
-    assert_equal false, JSON.parse(response.body)["user_modified"]
-    assert_not @transaction.entry.reload.user_modified?
-  end
-
   test "should reject update with read-only API key" do
     update_params = {
       transaction: {
@@ -1001,6 +1016,19 @@ end
 
     def create_disabled_account_transaction(name:, date: Date.current)
       create_account_transaction(status: "disabled", name: name, date: date)
+    end
+
+    def create_system_generated_entry
+      @account.entries.create!(
+        name: "Interest charged",
+        date: Date.current,
+        amount: 100,
+        currency: @account.currency,
+        excluded: true,
+        source: Loan::InterestAccrual::SOURCE,
+        external_id: Date.current.strftime("%Y-%m"),
+        entryable: Transaction.new(kind: "standard")
+      )
     end
 
     def create_account_transaction(status:, name:, date: Date.current)

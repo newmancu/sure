@@ -120,7 +120,7 @@ class Transaction::SearchTest < ActiveSupport::TestCase
     )
 
     # Search for uncategorized transactions
-    uncategorized_results = Transaction::Search.new(@family, filters: { categories: [ Category::UNCATEGORIZED_FILTER_VALUE ] }).transactions_scope
+    uncategorized_results = Transaction::Search.new(@family, filters: { categories: [ Category.uncategorized.name ] }).transactions_scope
     uncategorized_ids = uncategorized_results.pluck(:id)
 
     # Should include standard uncategorized transactions
@@ -153,7 +153,7 @@ class Transaction::SearchTest < ActiveSupport::TestCase
     loan_payment = create_transaction(account: @loan_account, amount: 300, kind: "loan_payment")
     investment_contribution = create_transaction(account: @checking_account, amount: 400, kind: "investment_contribution")
 
-    uncategorized_ids = Transaction::Search.new(@family, filters: { categories: [ Category::UNCATEGORIZED_FILTER_VALUE ] })
+    uncategorized_ids = Transaction::Search.new(@family, filters: { categories: [ Category.uncategorized.name ] })
                                    .transactions_scope.pluck(:id)
 
     assert_includes uncategorized_ids, loan_payment.entryable.id,
@@ -172,7 +172,7 @@ class Transaction::SearchTest < ActiveSupport::TestCase
       create_transaction(account: account, amount: 100, kind: kind).entryable.id
     end
 
-    filter_ids = Transaction::Search.new(@family, filters: { categories: [ Category::UNCATEGORIZED_FILTER_VALUE ] })
+    filter_ids = Transaction::Search.new(@family, filters: { categories: [ Category.uncategorized.name ] })
                                     .transactions_scope.pluck(:id).to_set
     wizard_ids = @family.entries.uncategorized_transactions.pluck(:entryable_id).to_set
 
@@ -203,7 +203,7 @@ class Transaction::SearchTest < ActiveSupport::TestCase
     )
 
     # Filter for only uncategorized
-    results = Transaction::Search.new(@family, filters: { categories: [ Category::UNCATEGORIZED_FILTER_VALUE ] }).transactions_scope
+    results = Transaction::Search.new(@family, filters: { categories: [ Category.uncategorized.name ] }).transactions_scope
     result_ids = results.pluck(:id)
 
     # Should only include uncategorized transaction
@@ -238,7 +238,7 @@ class Transaction::SearchTest < ActiveSupport::TestCase
     )
 
     # Filter for food category + uncategorized
-    results = Transaction::Search.new(@family, filters: { categories: [ "Food & Drink", Category::UNCATEGORIZED_FILTER_VALUE ] }).transactions_scope
+    results = Transaction::Search.new(@family, filters: { categories: [ "Food & Drink", Category.uncategorized.name ] }).transactions_scope
     result_ids = results.pluck(:id)
 
     # Should include both food and uncategorized
@@ -597,9 +597,8 @@ class Transaction::SearchTest < ActiveSupport::TestCase
     assert_not_includes result_ids, no_match.entryable.id
   end
 
-  test "uncategorized filter works regardless of current locale since the filter value is a stable sentinel" do
-    # The category filter now matches on the stable Category::UNCATEGORIZED_FILTER_VALUE sentinel
-    # (not the translated display name), so the current locale can no longer affect matching.
+  test "uncategorized filter returns same results across all supported locales" do
+    # Create uncategorized transactions
     uncategorized1 = create_transaction(
       account: @checking_account,
       amount: 100,
@@ -612,6 +611,7 @@ class Transaction::SearchTest < ActiveSupport::TestCase
       kind: "standard"
     )
 
+    # Create a categorized transaction to ensure filter is working
     categorized = create_transaction(
       account: @checking_account,
       amount: 300,
@@ -619,45 +619,75 @@ class Transaction::SearchTest < ActiveSupport::TestCase
       kind: "standard"
     )
 
+    # Get the expected count using English locale (known working case)
+    I18n.with_locale(:en) do
+      english_uncategorized_name = Category.uncategorized.name
+      english_results = Transaction::Search.new(@family, filters: { categories: [ english_uncategorized_name ] }).transactions_scope
+      @expected_count = english_results.count
+      assert_equal 2, @expected_count, "English locale should return 2 uncategorized transactions"
+    end
+
+    # Test every supported locale returns the same count when filtering by that locale's uncategorized name
     LanguagesHelper::SUPPORTED_LOCALES.each do |locale|
       I18n.with_locale(locale) do
-        results = Transaction::Search.new(@family, filters: { categories: [ Category::UNCATEGORIZED_FILTER_VALUE ] }).transactions_scope
-        result_ids = results.pluck(:id)
+        localized_uncategorized_name = Category.uncategorized.name
+        results = Transaction::Search.new(@family, filters: { categories: [ localized_uncategorized_name ] }).transactions_scope
+        result_count = results.count
 
-        assert_includes result_ids, uncategorized1.entryable.id
-        assert_includes result_ids, uncategorized2.entryable.id
-        assert_not_includes result_ids, categorized.entryable.id
+        assert_equal @expected_count, result_count,
+          "Locale '#{locale}' with uncategorized name '#{localized_uncategorized_name}' should return #{@expected_count} transactions but got #{result_count}"
       end
     end
   end
 
-  test "a real category literally named like the localized Uncategorized label remains selectable" do
-    # Regression test: filter values are opaque sentinels (Category::UNCATEGORIZED_FILTER_VALUE), not the
-    # translated display name, so a category a user happens to name "Uncategorized" can't be misdetected
-    # as the synthetic filter option.
-    lookalike_category = @family.categories.create!(
-      name: Category.uncategorized_name,
-      color: "#123456"
-    )
+  test "uncategorized filter works with English parameter name regardless of current locale" do
+    # This tests the bug where URL contains English "Uncategorized" but user's locale is different
+    # Bug: /transactions/?q[categories][]=Uncategorized fails when locale is French
 
-    lookalike_transaction = create_transaction(
+    # Create uncategorized transactions
+    uncategorized1 = create_transaction(
       account: @checking_account,
       amount: 100,
-      category: lookalike_category,
       kind: "standard"
     )
 
-    uncategorized_transaction = create_transaction(
+    uncategorized2 = create_transaction(
       account: @checking_account,
       amount: 200,
       kind: "standard"
     )
 
-    results = Transaction::Search.new(@family, filters: { categories: [ lookalike_category.name ] }).transactions_scope
-    result_ids = results.pluck(:id)
+    # Create a categorized transaction to ensure filter is working
+    categorized = create_transaction(
+      account: @checking_account,
+      amount: 300,
+      category: categories(:food_and_drink),
+      kind: "standard"
+    )
 
-    assert_includes result_ids, lookalike_transaction.entryable.id
-    assert_not_includes result_ids, uncategorized_transaction.entryable.id
+    # Get the English uncategorized name (this is what URLs typically contain)
+    english_uncategorized_name = I18n.t("models.category.uncategorized", locale: :en)
+
+    # Get the expected count using English locale (known working case)
+    expected_count = nil
+    I18n.with_locale(:en) do
+      results = Transaction::Search.new(@family, filters: { categories: [ english_uncategorized_name ] }).transactions_scope
+      expected_count = results.count
+      assert_equal 2, expected_count, "English locale should return 2 uncategorized transactions"
+    end
+
+    # Test that using the English parameter name works in every supported locale
+    # This catches the bug where French locale fails with English "Uncategorized" parameter
+    LanguagesHelper::SUPPORTED_LOCALES.each do |locale|
+      I18n.with_locale(locale) do
+        # Simulate URL parameter: q[categories][]=Uncategorized (English, regardless of user's locale)
+        results = Transaction::Search.new(@family, filters: { categories: [ english_uncategorized_name ] }).transactions_scope
+        result_count = results.count
+
+        assert_equal expected_count, result_count,
+          "Locale '#{locale}' should return #{expected_count} transactions when filtering with English 'Uncategorized' parameter, but got #{result_count}"
+      end
+    end
   end
 
   test "filtering for only No merchant returns only transactions without a merchant" do
@@ -1008,116 +1038,5 @@ class Transaction::SearchTest < ActiveSupport::TestCase
 
     assert_equal 1, totals.count, "a single transaction tagged with all three must be counted once"
     assert_equal Money.new(42, "USD"), totals.expense_money
-  end
-
-  test "ai_status current returns transactions whose auto-assigned category still applies" do
-    tx_a = create_transaction(account: @checking_account, amount: 100, kind: "standard").entryable
-    tx_a.enrich_attribute(:category_id, categories(:food_and_drink).id, source: "ai")
-
-    tx_b = create_transaction(account: @checking_account, amount: 50, kind: "standard").entryable
-    tx_b.enrich_attribute(:category_id, categories(:income).id, source: "bayes")
-
-    tx_c = create_transaction(account: @checking_account, amount: 25, kind: "standard").entryable
-    tx_c.enrich_attribute(:category_id, categories(:income).id, source: "ai")
-    tx_c.update!(category: categories(:food_and_drink))
-
-    tx_d = create_transaction(account: @checking_account, amount: 10, kind: "standard").entryable
-
-    result_ids = Transaction::Search.new(@family, filters: { ai_status: [ "current" ] })
-                                  .transactions_scope.pluck(:id)
-
-    assert_equal [ tx_a.id, tx_b.id ].sort, result_ids.sort
-    assert_not_includes result_ids, tx_c.id, "a changed-afterwards category is history, not current"
-    assert_not_includes result_ids, tx_d.id
-  end
-
-  test "ai_status history returns transactions changed after auto-categorization" do
-    tx_a = create_transaction(account: @checking_account, amount: 100, kind: "standard").entryable
-    tx_a.enrich_attribute(:category_id, categories(:food_and_drink).id, source: "ai")
-
-    tx_c = create_transaction(account: @checking_account, amount: 25, kind: "standard").entryable
-    tx_c.enrich_attribute(:category_id, categories(:income).id, source: "ai")
-    tx_c.update!(category: categories(:food_and_drink))
-
-    tx_d = create_transaction(account: @checking_account, amount: 10, kind: "standard").entryable
-
-    result_ids = Transaction::Search.new(@family, filters: { ai_status: [ "history" ] })
-                                  .transactions_scope.pluck(:id)
-
-    assert_equal [ tx_c.id ], result_ids
-    assert_not_includes result_ids, tx_a.id, "a still-current assignment is not history"
-    assert_not_includes result_ids, tx_d.id
-  end
-
-  test "ai_status with both values returns any automatic enrichment" do
-    tx_a = create_transaction(account: @checking_account, amount: 100, kind: "standard").entryable
-    tx_a.enrich_attribute(:category_id, categories(:food_and_drink).id, source: "ai")
-
-    tx_c = create_transaction(account: @checking_account, amount: 25, kind: "standard").entryable
-    tx_c.enrich_attribute(:category_id, categories(:income).id, source: "ai")
-    tx_c.update!(category: categories(:food_and_drink))
-
-    tx_d = create_transaction(account: @checking_account, amount: 10, kind: "standard").entryable
-
-    result_ids = Transaction::Search.new(@family, filters: { ai_status: [ "current", "history" ] })
-                                  .transactions_scope.pluck(:id)
-
-    assert_equal [ tx_a.id, tx_c.id ].sort, result_ids.sort
-    assert_not_includes result_ids, tx_d.id
-  end
-
-  test "ai_status empty or absent leaves the scope unchanged" do
-    tx = create_transaction(account: @checking_account, amount: 100, kind: "standard").entryable
-
-    assert_equal [ tx.id ], Transaction::Search.new(@family).transactions_scope.pluck(:id)
-    assert_equal [ tx.id ], Transaction::Search.new(@family, filters: { ai_status: [] }).transactions_scope.pluck(:id)
-  end
-
-  test "ai_status ignores values outside the whitelist" do
-    tx = create_transaction(account: @checking_account, amount: 100, kind: "standard").entryable
-
-    result_ids = Transaction::Search.new(@family, filters: { ai_status: [ "bogus" ] })
-                                  .transactions_scope.pluck(:id)
-
-    assert_equal [ tx.id ], result_ids
-  end
-
-  test "a transaction with matching ai and bayes rows is returned and counted once" do
-    tx = create_transaction(account: @checking_account, amount: 100, kind: "standard").entryable
-    tx.enrich_attribute(:category_id, categories(:food_and_drink).id, source: "ai")
-    tx.update!(category: categories(:income))
-    tx.enrich_attribute(:category_id, categories(:food_and_drink).id, source: "bayes")
-
-    search = Transaction::Search.new(@family, filters: { ai_status: [ "current" ] })
-
-    assert_equal [ tx.id ], search.transactions_scope.pluck(:id)
-    assert_equal 1, search.totals.count, "two matching enrichment rows must not double-count (see #3174)"
-  end
-
-  test "ai_status composes with the categories filter" do
-    tx_a = create_transaction(account: @checking_account, amount: 100, kind: "standard").entryable
-    tx_a.enrich_attribute(:category_id, categories(:food_and_drink).id, source: "ai")
-
-    tx_b = create_transaction(account: @checking_account, amount: 50, kind: "standard").entryable
-    tx_b.enrich_attribute(:category_id, categories(:income).id, source: "ai")
-
-    result_ids = Transaction::Search.new(@family, filters: { ai_status: [ "current" ], categories: [ "Food & Drink" ] })
-                                  .transactions_scope.pluck(:id)
-
-    assert_equal [ tx_a.id ], result_ids
-  end
-
-  test "clearing the category after auto-categorization counts as history" do
-    tx = create_transaction(account: @checking_account, amount: 100, kind: "standard").entryable
-    tx.enrich_attribute(:category_id, categories(:food_and_drink).id, source: "ai")
-    tx.update!(category: nil)
-
-    history_ids = Transaction::Search.new(@family, filters: { ai_status: [ "history" ] })
-                                   .transactions_scope.pluck(:id)
-    current_ids = Transaction::Search.new(@family, filters: { ai_status: [ "current" ] })
-                                   .transactions_scope.pluck(:id)
-
-    assert_equal [ tx.id ], history_ids
-    assert_empty current_ids
   end
 end

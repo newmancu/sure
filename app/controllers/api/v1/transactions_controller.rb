@@ -14,8 +14,13 @@ class Api::V1::TransactionsController < Api::V1::BaseController
       .accessible_by(current_resource_owner)
       .where.not(status: "pending_deletion")
       .select(:id)
+    # System-generated entries (e.g. loan interest accruals) are derived output
+    # that the web surfaces already hide. The API has no `excluded` field for a
+    # client to filter on, so returning them here would silently double-count
+    # against the payments they offset.
     transactions_query = family.transactions
       .joins(:entry).where(entries: { account_id: accessible_account_ids })
+      .merge(Entry.excluding_system_generated)
 
     # Apply filters
     transactions_query = apply_filters(transactions_query)
@@ -90,6 +95,20 @@ class Api::V1::TransactionsController < Api::V1::BaseController
       return
     end
 
+    # `source` is caller-supplied and otherwise unconstrained, so a client could
+    # write into a namespace the app owns. That cuts both ways: the entry would
+    # be readable through the idempotency lookup despite the API-wide exclusion,
+    # and the generating code would later destroy it as stale — silent data loss
+    # for the client. Reserved namespaces are refused outright.
+    if Entry::SYSTEM_GENERATED_SOURCES.include?(idempotency_source_param)
+      render json: {
+        error: "validation_failed",
+        message: "Source is reserved",
+        errors: [ "Source '#{idempotency_source_param}' is reserved for system-generated entries" ]
+      }, status: :unprocessable_entity
+      return
+    end
+
     account = family.accounts.writable_by(current_resource_owner).find(account_id_param)
 
     if idempotency_key_requested? && (existing_entry = existing_idempotent_entry(account))
@@ -153,7 +172,6 @@ class Api::V1::TransactionsController < Api::V1::BaseController
 
         @entry.sync_account_later
         @entry.lock_saved_attributes!
-        @entry.mark_user_modified! if user_modified_requested?
 
         @transaction = @entry.transaction
         render :show
@@ -206,9 +224,14 @@ class Api::V1::TransactionsController < Api::V1::BaseController
       raise ActiveRecord::RecordNotFound unless valid_uuid?(params[:id])
 
       family = current_resource_owner.family
+      # Same exclusion as #index, so the contract holds across the whole
+      # resource: a generated entry is a 404 here rather than something a client
+      # can fetch by id — and, since update/destroy share this lookup, not
+      # something the API can mutate (e.g. un-exclude) either.
       @transaction = family.transactions
         .joins(entry: :account)
         .merge(Account.accessible_by(current_resource_owner))
+        .merge(Entry.excluding_system_generated)
         .find(params[:id])
       @entry = @transaction.entry
     rescue ActiveRecord::RecordNotFound
@@ -316,8 +339,8 @@ class Api::V1::TransactionsController < Api::V1::BaseController
       )
     end
 
-    # An API client can opt a transaction it creates or updates into the
-    # same sync-protection a manual edit gets (Entry#protected_from_sync?) -
+    # An API client can opt a transaction it creates into the same
+    # sync-protection a manual edit gets (Entry#protected_from_sync?) -
     # useful for a client that owns its own writes into an account also
     # linked to a bank-sync provider (Plaid/SimpleFin/etc.), so the next
     # sync only links its external_id to the entry instead of overwriting
@@ -407,11 +430,16 @@ class Api::V1::TransactionsController < Api::V1::BaseController
       value.to_s.presence if value.is_a?(String) || value.is_a?(Numeric)
     end
 
+    # Scoped as well as gated at the boundary above: belt and braces, so this
+    # cannot resurface a generated entry even if a future caller path reaches
+    # here without passing that validation.
     def existing_idempotent_entry(account)
-      account.entries.find_by(
-        external_id: idempotency_external_id,
-        source: idempotency_source
-      )
+      account.entries
+             .merge(Entry.excluding_system_generated)
+             .find_by(
+               external_id: idempotency_external_id,
+               source: idempotency_source
+             )
     end
 
     def render_existing_idempotent_entry(entry)
