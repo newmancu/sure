@@ -255,15 +255,11 @@ class CoinstatsEntry::Processor
 
       case timestamp
       when Integer, Float
-        Time.at(timestamp).in_time_zone(account&.family&.timezone).to_date
+        Time.at(timestamp).to_date
       when String
-        if timestamp.include?("T") || timestamp.include?(":")
-          Time.parse(timestamp).in_time_zone(account&.family&.timezone).to_date
-        else
-          Date.parse(timestamp)
-        end
+        Time.parse(timestamp).to_date
       when Time, DateTime
-        timestamp.in_time_zone(account&.family&.timezone).to_date
+        timestamp.to_date
       when Date
         timestamp
       else

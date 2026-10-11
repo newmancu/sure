@@ -9,9 +9,6 @@ nb:
       per_share: per aksje
       shares: "%{qty} aksjer"
     index:
-      positions:
-        one: "%{count} posisjon"
-        other: "%{count} posisjoner"
       average_cost: Gjennomsnittlig kostnad
       holdings: Beholdninger
       name: Navn
