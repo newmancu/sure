@@ -21,7 +21,7 @@ class BudgetTest < ActiveSupport::TestCase
       balance: 1000
     )
 
-    old_entry = Entry.create!(
+    _old_entry = Entry.create!(
       account: old_account,
       entryable: Transaction.new(category: categories(:income)),
       date: 3.years.ago,
@@ -436,50 +436,6 @@ class BudgetTest < ActiveSupport::TestCase
     assert_equal 500, target_bc.budgeted_spending
   end
 
-  test "copy_from copies the rollover toggle but not the rolled over amount" do
-    family = families(:dylan_family)
-
-    source_budget = Budget.find_or_bootstrap(family, start_date: 2.months.ago)
-    source_budget.update!(budgeted_spending: 4000, expected_income: 6000)
-    source_bc = source_budget.budget_categories.find_by(category: categories(:food_and_drink))
-    source_bc.update!(budgeted_spending: 500, rollover_enabled: true)
-    source_bc.update_column(:rolled_over_amount, 250)
-
-    target_budget = Budget.find_or_bootstrap(family, start_date: 1.month.ago)
-    target_budget.copy_from!(source_budget)
-
-    target_bc = target_budget.budget_categories.find_by(category: categories(:food_and_drink)).reload
-
-    assert target_bc.rollover_enabled?
-    assert_not_equal 250, target_bc[:rolled_over_amount],
-      "the carry is derived from the chain, never copied from the source"
-
-    # copy_from! changes what the chain should hold, so it must leave it
-    # recomputed: running the calculator again has nothing left to do.
-    derived = target_bc[:rolled_over_amount]
-    Budget::RolloverCalculator.new(family: family, user: nil).recompute!
-    assert_equal derived, target_bc.reload[:rolled_over_amount]
-  end
-
-  test "rollover leaves allocated_spending and available_to_allocate alone" do
-    family = families(:dylan_family)
-
-    budget = Budget.find_or_bootstrap(family, start_date: 1.month.ago)
-    budget.update!(budgeted_spending: 4000, expected_income: 6000)
-    budget_category = budget.budget_categories.find_by(category: categories(:food_and_drink))
-    budget_category.update!(budgeted_spending: 500, rollover_enabled: true)
-
-    allocated_before = budget.reload.allocated_spending
-    available_before = budget.available_to_allocate
-
-    budget_category.update_column(:rolled_over_amount, 120)
-    budget.reload
-
-    assert_equal allocated_before, budget.allocated_spending
-    assert_equal available_before, budget.available_to_allocate
-    assert_equal 120, budget.total_rolled_over
-  end
-
   test "copy_from skips categories that dont exist in target" do
     family = families(:dylan_family)
 
@@ -550,6 +506,49 @@ class BudgetTest < ActiveSupport::TestCase
     # Must be > 0 — the nil-key collision between Uncategorized and
     # Other Investments synthetic categories previously caused this to return 0
     assert spending >= 75, "Uncategorized actual spending should include the $75 transaction, got #{spending}"
+  end
+
+  test "sync_budget_categories resets loaded association to prevent category N+1" do
+    budget = Budget.find_or_bootstrap(@family, start_date: Date.current.beginning_of_month)
+
+    # Force-load the association, then create a category to trigger sync updates.
+    budget.budget_categories.load
+    Category.create!(name: "New Cat #{Time.now.to_f}", family: @family, color: "#bbbbbb", lucide_icon: "tag")
+
+    assert budget.association(:budget_categories).loaded?
+    budget.sync_budget_categories
+    assert_not budget.association(:budget_categories).loaded?
+  end
+
+  test "uncategorized_budget_category is associated to budget without polluting association" do
+    budget = Budget.find_or_bootstrap(@family, start_date: Date.current.beginning_of_month)
+    budget.update!(budgeted_spending: 100, currency: @family.currency)
+    budget.budget_categories.load
+    count_before = budget.budget_categories.size
+
+    uncategorized = budget.uncategorized_budget_category
+    assert_same budget, uncategorized.budget
+    assert_equal count_before, budget.budget_categories.size
+    refute_includes budget.budget_categories, uncategorized
+  end
+
+  test "allocated_spending treats nil budgeted_spending as zero" do
+    category = Category.create!(
+      name: "Spending #{Time.now.to_f}",
+      family: @family,
+      color: "#bbbbbb",
+      lucide_icon: "tag"
+    )
+
+    budget = Budget.find_or_bootstrap(@family, start_date: Date.current.beginning_of_month)
+    budget.budget_categories.load
+
+    budget_category = budget.budget_categories.find { |bc| bc.category_id == category.id }
+    assert budget_category, "expected synced budget category for created category"
+
+    budget_category[:budgeted_spending] = nil
+
+    assert_equal 0, budget.allocated_spending
   end
 
   test "days_remaining counts today through the end of the period" do

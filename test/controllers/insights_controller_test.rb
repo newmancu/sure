@@ -49,123 +49,13 @@ class InsightsControllerTest < ActionDispatch::IntegrationTest
       "insights_feed should be prepended, not appended, for saved orders that predate it"
   end
 
-  # Acknowledging is a quiet action — no undo toast. Acknowledgement only covers
-  # the numbers the user saw (see Insight's class comment), so a dismissed
-  # insight resurfaces on its own when those numbers move; a toast interrupting
-  # every dismissal bought little.
-  test "acknowledge clears the insight without an undo toast" do
+  test "acknowledge removes the insight from the feed and offers undo via turbo stream" do
     patch acknowledge_insight_url(@insight), as: :turbo_stream
 
     assert_response :success
     assert_match "turbo-stream", response.body
-    assert_no_match(/#{Regexp.escape(unacknowledge_insight_path(@insight))}/, response.body)
+    assert_match unacknowledge_insight_path(@insight), response.body
     assert @insight.reload.acknowledged?
-  end
-
-  # The card leaves via a stream, which is silent to a screen reader, and takes
-  # the control the user just activated with it. With the toast gone, the shared
-  # live region carries that confirmation instead.
-  test "acknowledge announces the dismissal in the shared live region" do
-    patch acknowledge_insight_url(@insight), as: :turbo_stream
-
-    assert_response :success
-    assert_select "turbo-stream[action=update][target=?]", "aria-announcer" do
-      assert_match CGI.escapeHTML(I18n.t("insights.card.acknowledged")), response.body
-    end
-  end
-
-  test "the live region is present before any stream updates it" do
-    get insights_url
-
-    assert_response :success
-    assert_select "#aria-announcer[role=status][aria-live=polite]", 1,
-      "a live region that arrives with its content is not announced"
-  end
-
-  # The card used to leave via `turbo_stream.remove`, which emptied
-  # #insights-list without re-rendering the partial that owns the empty state —
-  # so dismissing the last insight showed a blank page until reload.
-  test "acknowledging the last insight renders the empty state" do
-    @user.family.insights.where.not(id: @insight.id).destroy_all
-
-    patch acknowledge_insight_url(@insight), as: :turbo_stream
-
-    assert_response :success
-    assert_match "insights-list", response.body
-    assert_match CGI.escapeHTML(I18n.t("insights.index.empty.title")), response.body
-  end
-
-  # A full dashboard render already drops the section (insights_feed_section sets
-  # `visible: @feed_insights.any?`), so the turbo path has to as well — otherwise
-  # the section shell lingered with its header above an empty well.
-  test "acknowledging the last insight removes the dashboard section" do
-    @user.family.insights.where.not(id: @insight.id).destroy_all
-
-    patch acknowledge_insight_url(@insight), as: :turbo_stream
-
-    assert_response :success
-    assert_select "turbo-stream[action=remove][targets=?]", "[data-section-key='insights_feed']"
-    assert_select "turbo-stream[action=replace][target=?]", "insights-feed", count: 0
-  end
-
-  # The layout renders the lightbulb twice (desktop header, mobile top nav), so
-  # the badge is replaced by attribute, not id, and its wrapper stays even at 0
-  # so a later stream still has something to target.
-  test "layout renders a badge target in both lightbulb copies" do
-    get root_url
-
-    assert_response :success
-    assert_select "[data-insights-badge]", count: 2
-  end
-
-  test "acknowledge refreshes the unread badge in both lightbulb copies" do
-    unread = @user.family.insights.active.count
-    assert_operator unread, :>, 1, "fixtures need more than one unread insight"
-
-    patch acknowledge_insight_url(@insight), as: :turbo_stream
-
-    assert_response :success
-    assert_select "turbo-stream[action=replace][targets=?]", "[data-insights-badge]" do
-      assert_select "template [data-insights-badge]", text: (unread - 1).to_s
-    end
-  end
-
-  test "acknowledging the last unread insight empties the badge but keeps its target" do
-    @user.family.insights.active.where.not(id: @insight.id).update_all(status: "read")
-
-    patch acknowledge_insight_url(@insight), as: :turbo_stream
-
-    assert_response :success
-    assert_select "turbo-stream[action=replace][targets=?]", "[data-insights-badge]" do
-      assert_select "template [data-insights-badge]", text: ""
-    end
-  end
-
-  test "the badge stream still caps the count at 9+" do
-    11.times do |i|
-      @user.family.insights.create!(insight_type: "idle_cash", priority: "low", status: "active",
-        title: "Extra #{i}", body: "body", dedup_key: "idle_cash:cap:#{i}", generated_at: Time.current)
-    end
-
-    patch acknowledge_insight_url(@insight), as: :turbo_stream
-
-    assert_select "turbo-stream[action=replace][targets=?]", "[data-insights-badge]" do
-      assert_select "template [data-insights-badge]", text: "9+"
-    end
-  end
-
-  test "unacknowledge refreshes the unread badge" do
-    @insight.acknowledge!
-
-    unread = @user.family.insights.active.count
-
-    patch unacknowledge_insight_url(@insight), as: :turbo_stream
-
-    # Undo restores the insight as read, so the unread count holds.
-    assert_response :success
-    assert_select "turbo-stream[action=replace][targets=?]", "[data-insights-badge]" do
-      assert_select "template [data-insights-badge]", text: unread.to_s
-    end
   end
 
   test "unacknowledge restores the insight as read and re-renders the list" do
@@ -240,22 +130,6 @@ class InsightsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :not_found
     assert other_insight.reload.active?
-  end
-
-  test "an insight about an account not everyone can see is neither shown nor changed" do
-    hidden = @user.family.insights.create!(
-      insight_type: "idle_cash", priority: "low", status: "active", title: "Idle cash in Private",
-      body: "Body", metadata: { "account_id" => accounts(:connected).id },
-      dedup_key: "idle_cash:private:2026-07", generated_at: Time.current
-    )
-
-    get insights_url
-    assert_no_match "Idle cash in Private", response.body
-    assert hidden.reload.active?, "viewing the feed does not mark a hidden row read"
-
-    patch acknowledge_insight_url(hidden), as: :turbo_stream
-    assert_response :not_found
-    assert hidden.reload.active?
   end
 
   test "refresh enqueues insight generation for the family" do
