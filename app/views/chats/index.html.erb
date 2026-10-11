@@ -1,4 +1,4 @@
-<div data-controller="chat hotkey" data-chat-response-timeout-value="<%= Chat.response_timeout_ms %>" class="h-full">
+<div data-controller="chat hotkey" class="h-full">
   <%= turbo_frame_tag chat_frame do %>
     <div class="flex flex-col h-full md:p-4">
       <% if show_demo_warning? %>
@@ -23,12 +23,6 @@
           <div class="space-y-2 px-0.5">
             <%= render @chats %>
           </div>
-          <%# The mobile "Assistant" nav item lands here and the layout's
-              consent prompt only lives in the desktop sidebar, so an
-              AI-disabled user with existing chats needs it shown here too. %>
-          <% unless Current.user.ai_enabled? %>
-            <%= render "chats/chat_composer" %>
-          <% end %>
         </div>
       <% else %>
         <div class="grow flex flex-col">
@@ -36,7 +30,7 @@
           <div class="mt-auto py-8">
             <%= render "chats/ai_greeting" %>
           </div>
-          <%= render "chats/chat_composer" %>
+          <%= render "messages/chat_form" %>
         </div>
       <% end %>
     </div>

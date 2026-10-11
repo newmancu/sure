@@ -2,7 +2,6 @@
 
 class Provider::Kraken
   include HTTParty
-  include Provider::RateLimitable  # fully qualified: Provider::Kraken does not inherit from Provider, unlike the other includers
   extend SslConfigurable
 
   class Error < StandardError; end
@@ -12,21 +11,6 @@ class Provider::Kraken
   class NonceError < Error; end
   class OTPRequiredError < Error; end
   class ApiError < Error; end
-
-  # Kraken meters private endpoints with a counter that decays by 0.5 points
-  # per second (1.0 on higher-limit accounts) against a cap of 20. Ordinary
-  # calls cost 1 point; public endpoints are limited separately, per IP, at
-  # about one per second. One interval covers both.
-  MIN_REQUEST_INTERVAL = 1.0
-
-  # Account-history endpoints cost 4 points each. The paginated backfills
-  # (MAX_LEDGER_PAGES = 200) issue them back to back, so they get their own,
-  # slower pacing: 4 points at the slowest decay is one call every 8 seconds,
-  # which a sustained run cannot exceed once the initial allowance is spent.
-  # Overridable through KRAKEN_HISTORY_MIN_REQUEST_INTERVAL; higher-limit
-  # accounts can halve it.
-  HISTORY_MIN_REQUEST_INTERVAL = 8.0
-  HISTORY_METHODS = %w[Ledgers TradesHistory].freeze
 
   BASE_URL = "https://api.kraken.com"
   PRIVATE_PREFIX = "/0/private"
@@ -59,15 +43,6 @@ class Provider::Kraken
     private_post("TradesHistory", params)
   end
 
-  def get_ledgers(start: nil, type: nil, offset: nil)
-    params = {}
-    params["start"] = start.to_i.to_s if start.present?
-    params["type"] = type.to_s if type.present?
-    params["ofs"] = offset.to_i.to_s if offset.present?
-
-    private_post("Ledgers", params)
-  end
-
   def get_asset_info(asset: nil)
     params = {}
     params["asset"] = asset if asset.present?
@@ -95,13 +70,11 @@ class Provider::Kraken
     attr_reader :nonce_generator
 
     def public_get(method, params = {})
-      throttle_request
       response = self.class.get("#{PUBLIC_PREFIX}/#{method}", query: params)
       handle_response(response)
     end
 
     def private_post(method, params = {})
-      throttle_request(HISTORY_METHODS.include?(method) ? :history : :default)
       path = "#{PRIVATE_PREFIX}/#{method}"
       request_params = { "nonce" => nonce_generator.call.to_s }.merge(stringify_params(params))
       body = URI.encode_www_form(request_params)
@@ -132,25 +105,6 @@ class Provider::Kraken
       digest = OpenSSL::Digest::SHA256.digest(nonce + encoded_payload)
       hmac = OpenSSL::HMAC.digest("sha512", Base64.decode64(api_secret), path + digest)
       Base64.strict_encode64(hmac)
-    end
-
-    # Two pacing clocks, one per bucket, as Provider::Monobank does: overrides
-    # RateLimitable's single-timer version and keys the timestamp by bucket,
-    # while the intervals and their validation still come from the concern.
-    # A history call is spaced from the previous history call, whatever else
-    # went out in between.
-    def throttle_request(bucket = :default)
-      @last_request_at ||= {}
-
-      elapsed = Time.current - (@last_request_at[bucket] || Time.at(0))
-      sleep_time = (bucket == :history ? history_min_request_interval : min_request_interval) - elapsed
-      sleep(sleep_time) if sleep_time > 0
-
-      @last_request_at[bucket] = Time.current
-    end
-
-    def history_min_request_interval
-      positive_interval(ENV.fetch("KRAKEN_HISTORY_MIN_REQUEST_INTERVAL", HISTORY_MIN_REQUEST_INTERVAL), "KRAKEN_HISTORY_MIN_REQUEST_INTERVAL")
     end
 
     def handle_response(response)
