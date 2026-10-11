@@ -26,7 +26,6 @@ class BrexEntry::Processor
       date: date,
       name: name,
       source: "brex",
-      kind: transaction_kind,
       merchant: merchant,
       notes: notes,
       extra: extra
@@ -83,10 +82,6 @@ class BrexEntry::Processor
       note_parts << data[:type] if data[:type].present?
       note_parts << data[:expense_id] if data[:expense_id].present?
       note_parts.any? ? note_parts.join(" - ") : nil
-    end
-
-    def transaction_kind
-      "cc_payment" if brex_account.account_kind == "card" && data[:type] == "COLLECTION" && amount.negative?
     end
 
     def merchant
@@ -151,15 +146,11 @@ class BrexEntry::Processor
 
       case date_value
       when String
-        if date_value.include?("T") || date_value.include?(":")
-          Time.parse(date_value).in_time_zone(account&.family&.timezone).to_date
-        else
-          Date.parse(date_value)
-        end
+        Date.parse(date_value)
       when Integer, Float
-        Time.at(date_value).in_time_zone(account&.family&.timezone).to_date
+        Time.at(date_value).to_date
       when Time, DateTime
-        date_value.in_time_zone(account&.family&.timezone).to_date
+        date_value.to_date
       when Date
         date_value
       else
