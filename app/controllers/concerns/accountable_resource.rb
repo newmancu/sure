@@ -64,13 +64,12 @@ module AccountableResource
     # usually the unsaved account with its nested accountable still attached --
     # but the opening valuation's `entries.create!` or `lock_saved_attributes!`
     # can raise too, and then it is an Entry or the accountable, neither of
-    # which the form can render. Recover the account through it, or rebuild
-    # it from what was submitted so the form comes back filled in rather
-    # than blank.
+    # which the form can render. Recover the account through it, or start from
+    # a fresh one as `new` does.
     @account = if e.record.is_a?(Account)
       e.record
     else
-      e.record.try(:account) || rebuilt_account_from_submission
+      e.record.try(:account) || Current.family.accounts.build(currency: Current.family.currency, accountable: accountable_type.new)
     end
     @error_message = e.record.errors.full_messages.join(", ").presence || e.message
     # The `new` template's method-selection branch reads `@provider_configs`,
@@ -83,7 +82,13 @@ module AccountableResource
     # Assigning a balance can fail before the normal update path assigns the
     # other submitted fields. Keep them available for the 422 form without
     # persisting them.
-    update_params = account_params.except(:return_to, :balance, :opening_balance_date)
+    update_params = account_params.except(
+      :return_to,
+      :balance,
+      :opening_balance_date,
+      :provider_balance_adjustment,
+      :provider_balance_adjustment_reason
+    )
 
     # The balance change and the attribute update are one form, so they commit
     # or roll back as one. `set_current_balance` writes a valuation and the
@@ -94,6 +99,18 @@ module AccountableResource
       # Handle balance update if the value actually changed
       if account_params[:balance].present? && account_params[:balance].to_d != @account.balance
         result = @account.set_current_balance(account_params[:balance].to_d)
+        unless result.success?
+          @account.assign_attributes(update_params)
+          @error_message = result.error
+          raise ActiveRecord::Rollback
+        end
+      end
+
+      if account_params.key?(:provider_balance_adjustment)
+        result = @account.set_provider_balance_adjustment(
+          amount: account_params[:provider_balance_adjustment],
+          reason: account_params[:provider_balance_adjustment_reason]
+        )
         unless result.success?
           @account.assign_attributes(update_params)
           @error_message = result.error
@@ -129,21 +146,6 @@ module AccountableResource
   end
 
   private
-    # The account the 422 form renders when the exception carried none.
-    #
-    # `accountable_attributes` is defaulted the way `create_and_sync` defaults
-    # it. `accountable_type=` only writes the type column: the accountable
-    # object itself is built as a side effect of `accountable_attributes=` or
-    # of `subtype=`. A submission that names neither -- a loan form whose
-    # nested fields are all blank, say -- rebuilt an account with a nil
-    # `accountable`, and the form came back without any of the type's own
-    # inputs, which is the opposite of what this rescue exists to do.
-    def rebuilt_account_from_submission
-      attributes = account_params.except(:return_to, :opening_balance_date)
-      attributes[:accountable_attributes] ||= {}
-      Current.family.accounts.build(attributes)
-    end
-
     def set_link_options
       account_type_name = accountable_type.name
 
@@ -172,6 +174,7 @@ module AccountableResource
         :name, :balance, :subtype, :currency, :accountable_type, :return_to,
         :opening_balance_date,
         :institution_name, :institution_domain, :notes, :exclude_from_reports,
+        :provider_balance_adjustment, :provider_balance_adjustment_reason,
         :enable_category_matcher,
         accountable_attributes: self.class.permitted_accountable_attributes
       )
