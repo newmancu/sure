@@ -81,9 +81,6 @@ module SettingsHelper
     when "coinstats"
       return { status: :off } unless @coinstats_items&.any?
       sync_based_summary(key)
-    when "wise"
-      return { status: :off } unless @wise_items&.any?
-      sync_based_summary(key)
     when "mercury"
       return { status: :off } unless @mercury_items&.any?
       sync_based_summary(key)
@@ -101,9 +98,6 @@ module SettingsHelper
       sync_based_summary(key)
     when "kraken"
       return { status: :off } unless @kraken_items&.any?
-      sync_based_summary(key)
-    when "coinspot"
-      return { status: :off } unless @coinspot_items&.any?
       sync_based_summary(key)
     when "onchain_wallet"
       return { status: :off } unless @onchain_wallet_items&.any?
@@ -253,9 +247,9 @@ module SettingsHelper
 
       return { status: :err, meta: t("settings.providers.meta.sync_error"), last_synced_at: nil } if health[:error]
 
-      valid_items = @enable_banking_items&.reject(&:needs_authorization?) || []
+      valid_items = @enable_banking_items&.select(&:session_valid?) || []
 
-      # All items have expired, missing or rejected sessions — need re-authorization
+      # All items have expired/missing sessions — need re-authorization
       if valid_items.empty?
         return { status: :warn, meta: t("settings.providers.meta.reconsent_required"), last_synced_at: last_synced_at }
       end

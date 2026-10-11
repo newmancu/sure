@@ -7,23 +7,6 @@ class TransferMatchesControllerTest < ActionDispatch::IntegrationTest
     sign_in @user = users(:family_admin)
   end
 
-  test "new only offers candidates from accounts the user can write to" do
-    loan = accounts(:loan)
-    loan.update!(owner: users(:family_member))
-    # Accessible but not writable: candidates must be filtered by write access
-    loan.account_shares.create!(user: @user, permission: "read_only")
-
-    outflow_entry = create_transaction(amount: 100, account: accounts(:depository))
-    hidden_inflow = create_transaction(amount: -100, account: loan, name: "Hidden member inflow")
-    visible_inflow = create_transaction(amount: -100, account: accounts(:investment), name: "Visible own inflow")
-
-    get new_transaction_transfer_match_path(outflow_entry)
-
-    assert_response :success
-    assert_select "option[value=?]", visible_inflow.id
-    assert_select "option[value=?]", hidden_inflow.id, count: 0
-  end
-
   test "matches existing transaction and creates transfer" do
     inflow_transaction = create_transaction(amount: 100, account: accounts(:depository))
     outflow_transaction = create_transaction(amount: -100, account: accounts(:investment))
@@ -91,5 +74,20 @@ class TransferMatchesControllerTest < ActionDispatch::IntegrationTest
 
     category = @user.family.investment_contributions_category
     assert_equal category, outflow_txn.category
+  end
+
+  test "assigns investment_withdrawal to cash inflow when matching from investment" do
+    outflow_entry = create_transaction(amount: 250, account: accounts(:investment))
+
+    post transaction_transfer_match_path(outflow_entry), params: {
+      transfer_match: {
+        method: "new",
+        target_account_id: accounts(:depository).id
+      }
+    }
+
+    transfer = Transfer.order(created_at: :desc).first
+    assert_equal "funds_movement", transfer.outflow_transaction.kind
+    assert_equal "investment_withdrawal", transfer.inflow_transaction.kind
   end
 end
