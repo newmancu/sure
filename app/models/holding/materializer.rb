@@ -103,19 +103,6 @@ class Holding::Materializer
           # For locked holdings, preserve ALL cost_basis fields
           holdings_buffer_to_upsert_without_cost << base_attrs
           flush.call(holdings_buffer_to_upsert_without_cost) if holdings_buffer_to_upsert_without_cost.size >= PERSIST_BATCH_SIZE
-        elsif holding.cost_basis_unknown && clearable_calculated_basis?(existing)
-          # The position took in a transfer, so it has no cost basis this app
-          # can know. A nil from the calculator alone would leave the previous
-          # calculated figure standing — which is the stale number reporting a
-          # transferred coin as if it had been bought on arrival. Cleared, so
-          # the read path falls through and answers "unknown" rather than
-          # confidently wrong. A manual or provider figure is somebody's
-          # assertion about what the position cost, and stays.
-          holdings_buffer_to_upsert_with_cost << base_attrs.merge(
-            "cost_basis" => nil,
-            "cost_basis_source" => nil
-          )
-          flush.call(holdings_buffer_to_upsert_with_cost) if holdings_buffer_to_upsert_with_cost.size >= PERSIST_BATCH_SIZE
         elsif reconciled[:should_update] && reconciled[:cost_basis].present?
           # Update with new cost_basis and source
           holdings_buffer_to_upsert_with_cost << base_attrs.merge(
@@ -156,28 +143,15 @@ class Holding::Materializer
       flush.call(holdings_buffer_to_upsert_without_cost) unless holdings_buffer_to_upsert_without_cost.empty?
     end
 
-    # Nothing to clear, or a figure somebody asserted rather than one this app
-    # worked out.
-    def clearable_calculated_basis?(existing)
-      return false if existing.nil? || existing.cost_basis.blank?
-
-      existing.cost_basis_source.nil? || existing.cost_basis_source == "calculated"
-    end
-
     def load_existing_holdings_map
       # Load holdings that might affect reconciliation:
       # - Locked holdings (must preserve their cost_basis)
       # - Holdings with a source (need to check priority)
       # - Provider-sourced holdings (must not be overwritten)
-      # - Anything carrying a cost_basis at all, source or not. A row with a
-      #   figure and no source was invisible here, so the transfer clearing
-      #   below saw `existing` as nil and left the stale basis standing —
-      #   exactly the rows least able to justify the number they hold.
       account.holdings
         .where(cost_basis_locked: true)
         .or(account.holdings.where.not(cost_basis_source: nil))
         .or(account.holdings.where.not(account_provider_id: nil))
-        .or(account.holdings.where.not(cost_basis: nil))
         .index_by { |h| holding_key(h) }
     end
 
@@ -246,45 +220,11 @@ class Holding::Materializer
       return nil unless result
 
       cost_basis, snap_currency, snap_date = result
-      cost_basis = split_adjusted_cost_basis(cost_basis, holding.security_id, snap_date, holding.date)
       return cost_basis if snap_currency == holding.currency
 
       Money.new(cost_basis, snap_currency).exchange_to(holding.currency, date: snap_date).amount
     rescue Money::ConversionError
       nil
-    end
-
-    # The snapshot's per-share cost, restated for the share count the holding
-    # is on.
-    #
-    # The figure carried forward is per share, and a split changes how many
-    # shares the same money bought: a $100 basis across a 2-for-1 split is $50
-    # a share afterwards, on twice as many shares, for the same $1,000 total.
-    # Carried across unchanged it doubled every position's recorded cost, and
-    # every gain and return computed from it, without anything looking wrong.
-    def split_adjusted_cost_basis(cost_basis, security_id, snap_date, holding_date)
-      factor = cumulative_split_factor(security_id, snap_date, holding_date)
-      return cost_basis if factor == 1
-
-      Security::Split.unscale(cost_basis, factor)
-    end
-
-    def cumulative_split_factor(security_id, from, to)
-      return Rational(1) if from.nil? || to.nil? || from >= to
-
-      splits_by_security[security_id].reduce(Rational(1)) do |factor, split|
-        next factor unless split.ex_date > from && split.ex_date <= to
-
-        factor * split.ratio
-      end
-    end
-
-    def splits_by_security
-      @splits_by_security ||= Security::Split
-        .where(security_id: @holdings.map(&:security_id).uniq)
-        .order(:ex_date)
-        .group_by(&:security_id)
-        .tap { |grouped| grouped.default = [] }
     end
 
     def provider_cost_basis_snapshots

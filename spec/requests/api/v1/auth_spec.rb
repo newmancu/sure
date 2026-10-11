@@ -8,8 +8,6 @@ RSpec.describe 'API V1 Auth', type: :request do
       tags 'Auth'
       consumes 'application/json'
       produces 'application/json'
-      description 'Creates a new user and family. The first user on a fresh instance is assigned ' \
-                  'the super_admin role; later family creators are assigned an admin role.'
       parameter name: :body, in: :body, required: true, schema: {
         type: :object,
         properties: {
@@ -123,7 +121,7 @@ RSpec.describe 'API V1 Auth', type: :request do
         run_test!
       end
 
-      response '401', 'invalid credentials, MFA required, or account deactivated' do
+      response '401', 'invalid credentials or MFA required' do
         schema '$ref' => '#/components/schemas/ErrorResponse'
         run_test!
       end
@@ -206,7 +204,7 @@ RSpec.describe 'API V1 Auth', type: :request do
         run_test!
       end
 
-      response '401', 'invalid or revoked refresh token, or account deactivated' do
+      response '401', 'invalid refresh token' do
         schema '$ref' => '#/components/schemas/ErrorResponse'
         run_test!
       end
@@ -262,7 +260,7 @@ RSpec.describe 'API V1 Auth', type: :request do
         run_test!
       end
 
-      response '401', 'invalid credentials, expired linking code, or account deactivated' do
+      response '401', 'invalid credentials or expired linking code' do
         schema oneOf: [
           { '$ref' => '#/components/schemas/ErrorResponse' },
           { '$ref' => '#/components/schemas/MfaRequiredResponse' }
@@ -313,10 +311,7 @@ RSpec.describe 'API V1 Auth', type: :request do
       tags 'Auth'
       consumes 'application/json'
       produces 'application/json'
-      description 'Creates a new user and family from a previously issued linking code. Links the SSO identity ' \
-                  'via OidcIdentity, logs the JIT account creation via SsoAuditLog, and issues mobile OAuth tokens. ' \
-                  'The linking code must have allow_account_creation enabled. The first user on a fresh instance is ' \
-                  'assigned the super_admin role; later family creators are assigned an admin-capable role.'
+      description 'Creates a new user and family from a previously issued linking code. Links the SSO identity via OidcIdentity, logs the JIT account creation via SsoAuditLog, and issues mobile OAuth tokens. The linking code must have allow_account_creation enabled.'
       parameter name: :body, in: :body, required: true, schema: {
         type: :object,
         properties: {

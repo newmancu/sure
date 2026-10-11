@@ -75,15 +75,10 @@ module Account::Linkable
   end
 
   # Whether this account's provider applies the category matcher to imported
-  # transactions, and therefore honors `enable_category_matcher`. Add a provider
-  # here only once its entry processor checks the toggle; listing one that
-  # ignores it shows the user a switch that does nothing.
-  CATEGORY_MATCHER_PROVIDER_TYPES = %w[PlaidAccount UpAccount MonobankAccount].freeze
-
+  # transactions. Only Plaid honors `enable_category_matcher` today; extend this
+  # when other providers (e.g. SimpleFIN) wire up category matching.
   def supports_category_matcher?
-    return true if plaid_account.present?
-
-    account_providers.exists?(provider_type: CATEGORY_MATCHER_PROVIDER_TYPES)
+    plaid_account.present? || linked_to?("PlaidAccount")
   end
 
   # Check if holdings can be deleted

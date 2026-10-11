@@ -83,17 +83,6 @@ class Provider::Anthropic::PdfProcessor
     end
 
     def output_tool
-      extracted_data_properties = {
-        institution_name: { type: [ "string", "null" ] },
-        statement_period_start: { type: [ "string", "null" ], pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "YYYY-MM-DD or null" },
-        statement_period_end: { type: [ "string", "null" ], pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "YYYY-MM-DD or null" },
-        transaction_count: { type: [ "integer", "null" ] },
-        opening_balance: { type: [ "number", "null" ] },
-        closing_balance: { type: [ "number", "null" ] },
-        currency: { type: [ "string", "null" ] },
-        account_holder: { type: [ "string", "null" ] }
-      }
-
       {
         name: TOOL_NAME,
         description: "Return the structured analysis of the attached document.",
@@ -111,7 +100,16 @@ class Provider::Anthropic::PdfProcessor
             },
             extracted_data: {
               type: "object",
-              properties: extracted_data_properties,
+              properties: {
+                institution_name: { type: [ "string", "null" ] },
+                statement_period_start: { type: [ "string", "null" ], pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "YYYY-MM-DD or null" },
+                statement_period_end: { type: [ "string", "null" ], pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "YYYY-MM-DD or null" },
+                transaction_count: { type: [ "integer", "null" ] },
+                opening_balance: { type: [ "number", "null" ] },
+                closing_balance: { type: [ "number", "null" ] },
+                currency: { type: [ "string", "null" ] },
+                account_holder: { type: [ "string", "null" ] }
+              },
               required: [],
               additionalProperties: false
             }
