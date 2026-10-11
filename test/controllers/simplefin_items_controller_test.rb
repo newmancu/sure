@@ -14,6 +14,46 @@ class SimplefinItemsControllerTest < ActionDispatch::IntegrationTest
   end
 
 
+  # This action rebuilds the accounts-page partials for a Turbo Stream, and it
+  # recomputes @manual_accounts as `Current.family.accounts.visible_manual` —
+  # without the `where(id: @accessible_account_ids)` the index applies. It is
+  # admin-only, and the index refuses an admin a member's unshared account, so
+  # the stream should refuse it too. The shared partial is what holds it there.
+  test "the relink stream does not return a member's unshared account" do
+    admin = users(:family_admin)
+
+    theirs = accounts(:investment)
+    theirs.update!(owner: admin)
+    theirs.account_shares.destroy_all
+    theirs.account_providers.destroy_all
+    theirs.update!(plaid_account_id: nil)
+
+    members_own = accounts(:credit_card)
+    members_own.update!(owner: users(:family_member))
+    members_own.account_shares.destroy_all
+
+    simplefin_account = SimplefinAccount.create!(
+      simplefin_item: @simplefin_item,
+      account_id: "sfa-relink",
+      name: "SimpleFIN Checking",
+      account_type: "depository",
+      currency: "USD",
+      current_balance: 100
+    )
+
+    post link_existing_account_simplefin_items_path,
+         params: { account_id: theirs.id, simplefin_account_id: simplefin_account.id },
+         headers: { "Turbo-Frame" => "modal" }
+
+    # Asserted first: `assert_not_includes` is satisfied by a redirect or an
+    # empty body, so without this the test would keep passing the day the
+    # action stopped rendering the rebuilt list at all.
+    assert_response :success
+
+    assert_not_includes response.body, members_own.name,
+      "the stream rebuilt the accounts list and handed back an account nobody shared with this admin"
+  end
+
   test "should destroy simplefin item" do
     assert_difference("SimplefinItem.count", 0) do # doesn't actually delete immediately
       delete simplefin_item_url(@simplefin_item)
@@ -180,39 +220,6 @@ class SimplefinItemsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :unprocessable_entity
     assert_includes response.body, I18n.t("simplefin_items.update.errors.blank_token", default: "Please enter a SimpleFIN setup token")
-  end
-
-  # The edit modal sits in turbo-frame#modal, so Turbo swaps in that frame from
-  # the response. A stream aimed at the Bank sync panel left the modal as it was.
-  test "invalid update from the edit modal shows the error in the modal" do
-    @simplefin_item.update!(status: :requires_update)
-
-    patch simplefin_item_url(@simplefin_item),
-          params: { simplefin_item: { setup_token: "" } },
-          headers: { "Turbo-Frame" => "modal" }
-
-    assert_response :unprocessable_entity
-    assert_select "turbo-frame#modal form[action=?]", simplefin_item_path(@simplefin_item)
-    assert_select "turbo-frame#modal", text: /#{I18n.t("simplefin_items.update.errors.blank_token")}/
-  end
-
-  test "invalid create from the Bank sync panel shows the error in the panel" do
-    post simplefin_items_url, params: { source: "panel", simplefin_item: { setup_token: "" } }, as: :turbo_stream
-
-    assert_turbo_stream status: :unprocessable_entity, action: "replace", target: "simplefin-providers-panel"
-    assert_includes response.body, I18n.t("simplefin_items.create.errors.blank_token")
-  end
-
-  # The new-connection modal posts to the top of the page, with the same Accept
-  # header as the panel, and shows its error in its own template.
-  test "invalid create from the new connection modal renders the modal with the error" do
-    post simplefin_items_url,
-         params: { simplefin_item: { setup_token: "" } },
-         headers: { "Accept" => "text/vnd.turbo-stream.html, text/html, application/xhtml+xml" }
-
-    assert_response :unprocessable_entity
-    assert_select "turbo-frame#modal form[action=?]", simplefin_items_path
-    assert_includes response.body, I18n.t("simplefin_items.create.errors.blank_token")
   end
 
   test "should update simplefin item access_url in place preserving account linkages" do

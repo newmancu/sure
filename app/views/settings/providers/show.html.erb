@@ -10,7 +10,7 @@
   <% else %>
     <div class="flex items-center justify-between gap-4">
       <p class="text-secondary"><%= t("settings.providers.bank_sync.lede") %></p>
-      <% if @can_sync_all %>
+      <% if @connected.any? || @needs_attention.any? %>
         <% sync_all_disabled = Current.family.last_sync_all_attempted_at.present? && Current.family.last_sync_all_attempted_at > 30.seconds.ago %>
         <%= render DS::Button.new(
               text: t("settings.providers.sync_all"),
@@ -81,7 +81,8 @@
                   kinds:        meta[:kinds],
                   tier:         meta[:tier],
                   maturity:     meta[:maturity] || :stable,
-                  external_link: entry[:external_link]
+                  logo_bg:      meta[:logo_bg],
+                  logo_text:    meta[:logo_text]
                 ) %>
           <% end %>
         </div>
