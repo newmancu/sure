@@ -4,8 +4,8 @@ nl:
     attributes:
       user:
         email: Email
-        family: "%{moniker}"
-        family_id: "%{moniker}"
+        family: Familie
+        family_id: Familie
         first_name: Voornaam
         last_name: Achternaam
         password: Wachtwoord

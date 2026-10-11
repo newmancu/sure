@@ -30,21 +30,11 @@ module Enrichable
       none
     end
 
-    # Clears AI-sourced enrichments for every record of this type in the family.
-    # Returns the number of cache entries actually removed, not the number of
-    # records visited, so callers can report a figure that means something.
-    #
-    # A single bad record would otherwise abort the sweep and throw away the
-    # tally of everything already cleared, so callers may pass a block to handle
-    # per-record failures and keep going.
-    def clear_ai_cache(family, &on_record_error)
+    def clear_ai_cache(family)
       count = 0
       family_scope(family).find_each do |record|
-        count += record.clear_ai_cache
-      rescue => e
-        raise unless on_record_error
-
-        on_record_error.call(record, e)
+        record.clear_ai_cache
+        count += 1
       end
       count
     end
@@ -152,10 +142,7 @@ module Enrichable
     end
   end
 
-  # Returns the number of AI cache entries removed from this record.
   def clear_ai_cache
-    removed_count = 0
-
     ActiveRecord::Base.transaction do
       ai_enrichments = data_enrichments.where(source: "ai")
 
@@ -174,18 +161,8 @@ module Enrichable
       end
 
       # Delete AI enrichment records
-      removed_count = ai_enrichments.delete_all
-
-      # Views and totals filtered on provenance are cached under
-      # Family#entries_cache_version, which only moves when an entry's
-      # timestamp changes. delete_all skips callbacks, so touch the record
-      # like a normal save would; `has_one :entry, touch: true` carries it to
-      # the entry. This stays inside the transaction so the cache invalidation
-      # commits or rolls back with the deletion.
-      touch if removed_count.positive?
+      ai_enrichments.delete_all
     end
-
-    removed_count
   end
 
   private
