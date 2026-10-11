@@ -1,9 +1,8 @@
 class ImportsController < ApplicationController
   include SettingsHelper
 
-  before_action :set_import, only: %i[show update publish destroy revert apply_template cancel summary]
+  before_action :set_import, only: %i[show update publish destroy revert apply_template cancel]
   before_action :require_statement_import_permission!, only: %i[update publish destroy revert apply_template cancel]
-  before_action :require_writable_import_accounts!, only: %i[publish revert]
 
   def update
     # Handle both pdf_import[account_id] and import[account_id] param formats
@@ -17,17 +16,7 @@ class ImportsController < ApplicationController
       end
       return if @import.account_statement.present? && !require_account_permission!(account)
 
-      if @import.is_a?(PdfImport)
-        # Refused for an import whose data already landed -- see
-        # PdfImport#reassignable?. A replayed or back-button PATCH gets the
-        # explanation rather than a silent unwind.
-        unless @import.assign_account!(account)
-          redirect_back_or_to import_path(@import), alert: t("imports.update.account_locked")
-          return
-        end
-      else
-        @import.update!(account: account)
-      end
+      @import.is_a?(PdfImport) ? @import.assign_account!(account) : @import.update!(account: account)
     end
 
     redirect_to import_path(@import), notice: t("imports.update.account_saved", default: "Account saved.")
@@ -39,14 +28,6 @@ class ImportsController < ApplicationController
     redirect_to import_path(@import), notice: t(".started")
   rescue Import::MaxRowCountExceededError
     redirect_back_or_to import_path(@import), alert: t(".max_rows_exceeded", max: @import.max_row_count)
-  end
-
-  # Statement imports only: what became of each extracted transaction. Without it
-  # a statement whose lines all matched finishes on the generic complete screen,
-  # which cannot distinguish "everything was already recorded" from "nothing was
-  # found".
-  def summary
-    raise ActiveRecord::RecordNotFound unless @import.is_a?(PdfImport)
   end
 
   def cancel
@@ -83,12 +64,6 @@ class ImportsController < ApplicationController
 
     if file.present? && sure_import_request?
       create_sure_import(file)
-      return
-    end
-
-    # These types require a file; without one (e.g. a dropped multipart part) don't fall through to a bogus TransactionImport.
-    if file.blank? && (document_upload_request? || sure_import_request?)
-      redirect_to new_import_path, alert: t("imports.create.missing_upload")
       return
     end
 
@@ -133,8 +108,6 @@ class ImportsController < ApplicationController
     else
       redirect_to import_upload_path(import)
     end
-  rescue ActionController::ParameterMissing
-    redirect_to new_import_path, alert: t("imports.create.missing_upload")
   end
 
   def show
@@ -186,15 +159,6 @@ class ImportsController < ApplicationController
 
       redirect_target = @import.account || @import.account_statement
       redirect_back_or_to redirect_target, alert: t("accounts.not_authorized")
-    end
-
-    # Imports are family-scoped, so a member can reach an import configured by
-    # someone else, or one whose target account was unshared since. Publishing
-    # or reverting writes into its accounts, so require write access to all.
-    def require_writable_import_accounts!
-      return if @import.accounts_writable_by?(Current.user)
-
-      redirect_back_or_to import_path(@import), alert: t("accounts.not_authorized")
     end
 
     def create_pdf_import(file)
@@ -269,8 +233,8 @@ class ImportsController < ApplicationController
     end
 
     def create_sure_import(file)
-      if file.size > SureImport.max_ndjson_size
-        redirect_to new_import_path, alert: t("imports.create.file_too_large", max_size: SureImport.max_ndjson_size / 1.megabyte)
+      if file.size > SureImport::MAX_NDJSON_SIZE
+        redirect_to new_import_path, alert: t("imports.create.file_too_large", max_size: SureImport::MAX_NDJSON_SIZE / 1.megabyte)
         return
       end
 

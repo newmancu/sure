@@ -5,9 +5,7 @@ export default class extends Controller {
   static values = {
     // How long a pending "Thinking…" bubble may wait before we assume the
     // background worker never delivered a response. Generous so slow models or
-    // tool calls don't trip it. Set from the server (`Chat.response_timeout_ms`)
-    // so self-hosters running local models can raise it; this default only
-    // applies if the value is missing from the markup.
+    // tool calls don't trip it.
     responseTimeout: { type: Number, default: 90000 },
     // How often to re-check pending bubbles.
     pollInterval: { type: Number, default: 5000 },
