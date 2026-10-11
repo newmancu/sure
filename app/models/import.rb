@@ -114,7 +114,10 @@ class Import < ApplicationRecord
   validate :rows_to_skip_within_file_bounds
 
   has_many :rows, dependent: :destroy
-  has_many :mappings, dependent: :destroy
+  # Mapping STI types can outlive the code version that created them. These rows
+  # have no destroy callbacks, so delete them directly instead of instantiating
+  # each subtype when an import is removed.
+  has_many :mappings, dependent: :delete_all
   has_many :accounts, dependent: :destroy
   has_many :entries, dependent: :destroy
 
@@ -394,6 +397,7 @@ class Import < ApplicationRecord
         amount: sanitize_number(csv_value(row, amount_col_label, "amount", "balance")).to_s,
         currency: (csv_value(row, currency_col_label, "currency") || default_currency).to_s,
         name: (csv_value(row, name_col_label, "name") || default_row_name).to_s,
+        merchant_id: merchant_id_for(import_merchant_value(row)),
         category: csv_value(row, category_col_label, "category").to_s,
         tags: csv_value(row, tags_col_label, "tags").to_s,
         entity_type: csv_value(row, entity_type_col_label, "entity_type", "account_type", "type").to_s,
@@ -472,27 +476,6 @@ class Import < ApplicationRecord
     complete? || revert_failed?
   end
 
-  # Whether the user may write to every pre-existing account this import
-  # targets (its own account, account mappings) or has already written into
-  # (entries). Accounts the import created itself are excluded.
-  def accounts_writable_by?(user)
-    ids = [ account_id ]
-    ids += mappings.accounts.where.not(mappable_id: nil).pluck(:mappable_id)
-    ids += entries.distinct.pluck(:account_id)
-    ids += preexisting_target_account_ids
-    ids = ids.compact.uniq - accounts.pluck(:id)
-    return true if ids.empty?
-    return false if user.nil?
-
-    (ids - family.accounts.writable_by(user).where(id: ids).pluck(:id)).empty?
-  end
-
-  # Existing family accounts the import resolves on its own at publish time
-  # (e.g. by name). Subclasses that do this override it.
-  def preexisting_target_account_ids
-    []
-  end
-
   def has_unassigned_account?
     mappings.accounts.where(key: "").any?
   end
@@ -513,7 +496,7 @@ class Import < ApplicationRecord
   def apply_template!(import_template)
     update!(
       import_template.attributes.slice(
-        "date_col_label", "amount_col_label", "name_col_label",
+        "date_col_label", "amount_col_label", "name_col_label", "merchant_col_label",
         "category_col_label", "tags_col_label", "account_col_label",
         "qty_col_label", "ticker_col_label", "price_col_label",
         "entity_type_col_label", "notes_col_label", "currency_col_label",
@@ -598,6 +581,14 @@ class Import < ApplicationRecord
 
     def default_row_name
       "Imported item"
+    end
+
+    def import_merchant_value(row)
+      if merchant_col_label.present?
+        csv_value(row, merchant_col_label)
+      else
+        csv_value(row, "merchant", "payee", "payer")
+      end
     end
 
     def default_currency
