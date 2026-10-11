@@ -35,7 +35,8 @@ class MonobankAccountTest < ActiveSupport::TestCase
         "balance" => 150_00,
         "creditLimit" => 100_00,
         "currencyCode" => 980,
-        "maskedPan" => [ "537541******1234" ]
+        "maskedPan" => [ "537541******1234" ],
+        "iban" => "UA-TEST-IBAN-SNAPSHOT"
       }
     )
 
@@ -44,7 +45,7 @@ class MonobankAccountTest < ActiveSupport::TestCase
     assert_equal "UAH", monobank_account.currency
     assert_equal "black", monobank_account.account_type
     assert_equal "card", monobank_account.account_kind
-    assert_equal "Black card ·1234", monobank_account.name
+    assert_equal "537541******1234", monobank_account.masked_pan
     assert_equal "Depository", monobank_account.suggested_account_type
     assert_equal "checking", monobank_account.suggested_subtype
   end
