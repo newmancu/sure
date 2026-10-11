@@ -19,4 +19,7 @@ if Rails.env.development? && ENV["CODESPACES"] == "true"
     key: "_app_session",
     same_site: :none,
     secure: true
+
+  # Behind the proxy, Origin can differ; relax the origin check instead of disabling CSRF entirely.
+  Rails.application.config.action_controller.forgery_protection_origin_check = false
 end

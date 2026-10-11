@@ -70,8 +70,6 @@ de:
       container:
         close: Schließen
         navigate: Navigieren
-        next: Weiter
-        previous: Zurück
         select: Auswählen
     show:
       activity:
@@ -119,7 +117,6 @@ de:
         activity: Aktivität
         holdings: Bestände
         overview: Übersicht
-        schedule: Tilgungsplan
         statements: Auszüge
     update:
       success: "%{type}-Konto aktualisiert"
@@ -151,6 +148,7 @@ de:
       ca: Kanada
       au: Australien
       eu: Europa
+      fr: Frankreich
       generic: Generisch
       in: Indien
     tax_treatments:
