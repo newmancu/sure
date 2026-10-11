@@ -1,10 +1,6 @@
 require "securerandom"
 
 class Demo::Generator
-  # Alias the canonical sentinel from Subscription so callers that already
-  # reference Demo::Generator::DEMO_STRIPE_SUBSCRIPTION_ID keep working.
-  DEMO_STRIPE_SUBSCRIPTION_ID = Subscription::DEMO_STRIPE_ID
-
   # @param seed [Integer, String, nil] Seed value used to initialise the internal PRNG. If nil, the ENV variable DEMO_DATA_SEED will
   #   be honoured and default to a random seed when not present.
   #
@@ -169,7 +165,7 @@ class Demo::Generator
         date_format: "%m-%d-%Y"
       )
 
-      family.start_subscription!(DEMO_STRIPE_SUBSCRIPTION_ID) if subscribed
+      family.start_subscription!("sub_demo_123") if subscribed
 
       # Admin user
       family.users.create!(
@@ -1088,10 +1084,7 @@ class Demo::Generator
         [ @student_loan, "Student Loan Payment", @interest_cat ],
         [ @car_loan, "Auto Loan Payment", @transportation_cat ]
       ].each do |account, memo, interest_category|
-        # Loan's touch callback can cache a missing account while it is saved
-        # before its parent. Within a sample-data/refresh transaction, the
-        # after-commit cache reset has not run yet, so reload before scheduling.
-        account.loan.reload.amortization_schedule.payments.each do |payment|
+        account.loan.amortization_schedule.payments.each do |payment|
           break if payment.date > Date.current
 
           make_loan_payment!(
