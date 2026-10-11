@@ -12,7 +12,7 @@
 # @attr [Boolean] scheduled_for_deletion Whether the item is scheduled for deletion
 # @attr [DateTime] last_synced_at When the last successful sync occurred
 class SophtronItem < ApplicationRecord
-  include Syncable, Provided, Unlinking, DestroyableLater
+  include Syncable, Provided, Unlinking
 
   INITIAL_LOAD_LOOKBACK_DAYS = 120
   MAX_TRANSACTION_HISTORY_YEARS = 3
@@ -54,6 +54,11 @@ class SophtronItem < ApplicationRecord
   scope :ordered, -> { order(created_at: :desc) }
   scope :needs_update, -> { where(status: :requires_update) }
 
+  def destroy_later
+    update!(scheduled_for_deletion: true)
+    DestroyJob.perform_later(self)
+  end
+
   # Imports the latest account and transaction data from Sophtron.
   #
   # This method fetches all accounts and transactions from the Sophtron API
@@ -70,12 +75,30 @@ class SophtronItem < ApplicationRecord
     provider = sophtron_provider
     unless provider
       Rails.logger.error "SophtronItem #{id} - Cannot import: Sophtron provider is not configured (missing API key)"
+      debug_log_event(
+        category: "sophtron_transaction_sync",
+        level: "error",
+        message: "Sophtron import could not start because the provider is not configured",
+        metadata: { sync_id: sync&.id }
+      )
       raise StandardError.new("Sophtron provider is not configured")
     end
+
+    debug_log_event(
+      category: "sophtron_transaction_sync",
+      message: "Sophtron import started",
+      metadata: { sync_id: sync&.id }
+    )
 
     SophtronItem::Importer.new(self, sophtron_provider: provider, sync: sync).import
   rescue => e
     Rails.logger.error "SophtronItem #{id} - Failed to import data: #{e.message}"
+    debug_log_event(
+      category: "sophtron_transaction_sync",
+      level: "error",
+      message: "Sophtron import failed",
+      metadata: { sync_id: sync&.id, error: e.message, error_class: e.class.name }
+    )
     raise
   end
 
@@ -215,6 +238,16 @@ class SophtronItem < ApplicationRecord
     extracted_customer_id = extract_customer_id(customer_payload)
     raise Provider::Sophtron::Error.new("Sophtron customer response did not include CustomerID", :invalid_response) if extracted_customer_id.blank?
 
+    debug_log_event(
+      category: "sophtron_configuration",
+      message: matching_customer.present? ? "Sophtron customer reused" : "Sophtron customer created",
+      metadata: {
+        customer_id_present: extracted_customer_id.present?,
+        customer_name: extract_customer_name(customer_payload).presence,
+        source: matching_customer.present? ? "existing" : "created"
+      }
+    )
+
     update!(
       customer_id: extracted_customer_id,
       customer_name: extract_customer_name(customer_payload).presence || generated_customer_name,
@@ -222,6 +255,33 @@ class SophtronItem < ApplicationRecord
     )
 
     customer_id
+  end
+
+  def debug_log_event(category:, message:, level: "info", metadata: {}, source: nil, account: nil, user: nil, account_provider: nil)
+    DebugLogEntry.capture(
+      category: category,
+      level: level,
+      message: message,
+      source: source || self.class.name,
+      family: family,
+      account: account,
+      user: user,
+      account_provider: account_provider,
+      provider: :sophtron,
+      metadata: debug_log_metadata(metadata)
+    )
+  end
+
+  def debug_log_metadata(metadata = {})
+    {
+      sophtron_item_id: id,
+      status: status,
+      institution_id: institution_id.presence,
+      institution_name: institution_name.presence,
+      user_institution_id_present: user_institution_id.present?,
+      current_job_id: current_job_id.presence,
+      manual_sync_enabled: manual_sync?
+    }.merge(metadata).compact
   end
 
   def connected_to_institution?
