@@ -10,20 +10,9 @@ class MfaController < ApplicationController
   end
 
   def create
-    # A duplicate submit of the enrollment form lands here again after the
-    # first one already enabled MFA; it (or any stray POST) must not fall
-    # through to disable_mfa! and tear a finished setup down.
-    return redirect_to root_path if Current.user.otp_required?
-
-    case Current.user.verify_otp(params[:code])
-    when :accepted
+    if Current.user.verify_otp?(params[:code])
       @backup_codes = Current.user.enable_mfa!
       render :backup_codes
-    when :replayed
-      # Correct code, but its time step was already claimed by a concurrent
-      # submit. Keep the pending secret so the user can enter the next code
-      # instead of restarting setup.
-      redirect_to new_mfa_path, alert: t(".code_already_used")
     else
       Current.user.disable_mfa!
       redirect_to new_mfa_path, alert: t(".invalid_code")
@@ -141,8 +130,15 @@ class MfaController < ApplicationController
     end
 
     def complete_mfa_sign_in(user)
+      # The OIDC callback stores sso_login_provider before parking the user
+      # here; a local first factor clears it (see begin_mfa_handoff), so its
+      # presence is what tells the two flows apart.
+      came_from_oidc = session[:sso_login_provider].present?
+      # Cleared up front, as PasskeySessionsController does: a rejected user
+      # mints no session, so the rotation never runs to clear it for us.
       session.delete(:mfa_user_id)
-      @session = create_session_for(user)
+
+      @session = create_session_for(user, preserve_oidc_handoff: came_from_oidc)
       return false unless @session
 
       flash[:notice] = t("invitations.accept_choice.joined_household") if accept_pending_invitation_for(user)
