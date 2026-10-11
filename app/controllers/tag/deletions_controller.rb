@@ -1,5 +1,4 @@
 class Tag::DeletionsController < ApplicationController
-  before_action :require_non_guest!
   before_action :set_tag
   before_action :set_replacement_tag, only: :create
 
