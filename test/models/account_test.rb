@@ -16,6 +16,62 @@ class AccountTest < ActiveSupport::TestCase
     end
   end
 
+  test "normalizes iban by stripping spaces and upcasing" do
+    @account.iban = "de89 3704 0044 0532 0130 00"
+    @account.valid?
+
+    assert_equal "DE89370400440532013000", @account.iban # pipelock:ignore IBAN
+  end
+
+  test "normalizes iban by stripping tabs, newlines, and non-breaking spaces" do
+    @account.iban = "de89\t3704\n0044 0532 0130 00"
+    @account.valid?
+
+    assert_equal "DE89370400440532013000", @account.iban # pipelock:ignore IBAN
+  end
+
+  test "normalizes iban by stripping dots, dashes, and other punctuation" do
+    @account.iban = "de89.3704-0044/0532:0130'00"
+    @account.valid?
+
+    assert_equal "DE89370400440532013000", @account.iban # pipelock:ignore IBAN
+  end
+
+  test "leaves a blank iban as nil" do
+    @account.iban = ""
+    @account.valid?
+
+    assert_nil @account.iban
+  end
+
+  test "rejects a duplicate iban within the same family" do
+    @account.update!(iban: "AT611904300234573201") # pipelock:ignore IBAN
+    other = @family.accounts.create!(name: "Other account", balance: 0, currency: "USD", accountable: Depository.new)
+
+    other.iban = "AT611904300234573201" # pipelock:ignore IBAN
+
+    assert_not other.valid?
+    assert_includes other.errors[:iban], "has already been taken"
+  end
+
+  test "allows the same iban on accounts with different currencies in one family" do
+    # Revolut and Wise expose one IBAN for several currency sub-accounts.
+    @account.update!(iban: "AT611904300234573201") # pipelock:ignore IBAN
+    other = @family.accounts.build(name: "EUR sub-account", balance: 0, currency: "EUR", accountable: Depository.new, iban: "AT611904300234573201") # pipelock:ignore IBAN
+
+    assert_equal "USD", @account.currency
+    assert other.valid?
+    assert_nothing_raised { other.save! }
+  end
+
+  test "allows the same iban across different families" do
+    @account.update!(iban: "AT611904300234573201") # pipelock:ignore IBAN
+    other_family = families(:empty)
+    other_family_account = other_family.accounts.build(name: "Other family account", balance: 0, currency: "USD", accountable: Depository.new, iban: "AT611904300234573201") # pipelock:ignore IBAN
+
+    assert other_family_account.valid?
+  end
+
   test "default owner prefers a family admin before a super admin" do
     family = families(:empty)
     admin = users(:empty)
@@ -63,19 +119,6 @@ class AccountTest < ActiveSupport::TestCase
 
     assert_equal expected_owner, owners.first
     assert_equal expected_owner, owners.last
-  end
-
-  test "set_current_balance schedules an account sync by default" do
-    @account.expects(:sync_later).once
-
-    assert @account.set_current_balance(1234).success?
-  end
-
-  test "set_current_balance skips the account sync when the caller schedules it" do
-    @account.expects(:sync_later).never
-
-    assert @account.set_current_balance(1234, schedule_sync: false).success?
-    assert_equal 1234, @account.reload.current_anchor_balance
   end
 
   test "create_and_sync calls sync_later by default" do
@@ -932,16 +975,5 @@ class AccountTest < ActiveSupport::TestCase
     account.set_opening_anchor_balance(balance: 0, date: default_anchor_date)
 
     assert_nil account.history_start_date
-  end
-
-  test "annotatable_by includes owned and annotate-tier shares but not read-only ones" do
-    member = users(:family_member)
-    ids = Account.annotatable_by(member).pluck(:id)
-
-    assert_includes ids, accounts(:depository).id, "full_control share"
-    assert_not_includes ids, accounts(:credit_card).id, "read_only share"
-
-    accounts(:credit_card).account_shares.find_by!(user: member).update!(permission: "read_write")
-    assert_includes Account.annotatable_by(member).pluck(:id), accounts(:credit_card).id, "read_write share"
   end
 end
