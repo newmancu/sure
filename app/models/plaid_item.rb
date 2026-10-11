@@ -1,10 +1,5 @@
 class PlaidItem < ApplicationRecord
-  include Syncable, Provided, Encryptable, DestroyableLater, ProviderItemOwnable
-
-  # A Plaid access_token only covers the institution the user authenticated
-  # to through Link, so a household member may connect their own bank without
-  # gaining any visibility into anyone else's connections.
-  credential_scope :per_connection
+  include Syncable, Provided, Encryptable
 
   enum :plaid_region, { us: "us", eu: "eu" }
   enum :status, { good: "good", requires_update: "requires_update" }, default: :good
@@ -32,83 +27,38 @@ class PlaidItem < ApplicationRecord
   scope :ordered, -> { order(created_at: :desc) }
   scope :needs_update, -> { where(status: :requires_update) }
 
-  TRANSACTIONS_REFRESH_COOLDOWN = 5.minutes
-
   # Get accounts from both new and legacy systems
   def accounts
-    @accounts ||= plaid_accounts
+    # Preload associations to avoid N+1 queries
+    plaid_accounts
       .includes(:account, account_provider: :account)
       .map(&:current_account)
       .compact
       .uniq
   end
 
-  def get_update_link_token(webhooks_url:, redirect_url:, account_selection_enabled: false)
+  def get_update_link_token(webhooks_url:, redirect_url:)
     family.get_link_token(
       webhooks_url: webhooks_url,
       redirect_url: redirect_url,
       region: plaid_region,
-      access_token: access_token,
-      account_selection_enabled: account_selection_enabled
+      access_token: access_token
     )
   rescue Plaid::ApiError => e
-    error_body = begin
-      JSON.parse(e.response_body.to_s)
-    rescue JSON::ParserError
-      {}
-    end
+    error_body = JSON.parse(e.response_body)
 
     if error_body["error_code"] == "ITEM_NOT_FOUND"
-      # Mark the connection as invalid but don't auto-delete. The caller
-      # gets nil so the calling controller can decide what to render.
+      # Mark the connection as invalid but don't auto-delete
       update!(status: :requires_update)
-      Sentry.capture_exception(e) if defined?(Sentry)
-      nil
-    else
-      # Re-raise so the controller can surface a friendly alert to the user
-      # (issue #1792). Swallowing here previously left the Plaid modal frame
-      # blank with no actionable signal.
-      raise
-    end
-  end
-
-  # Queue a fresh import after an in-flight sync. Plaid Link can finish adding
-  # accounts after the active sync already fetched its account list.
-  def sync_later_with_follow_up
-    active_sync = syncs.visible.ordered.first
-    sync_later
-
-    return unless active_sync&.reload&.in_progress?
-
-    PlaidFollowUpSyncJob.set(wait: PlaidFollowUpSyncJob::RETRY_DELAY).perform_later(self, active_sync_id: active_sync.id)
-  end
-
-  def request_transactions_refresh_later
-    return unless supports_product?("transactions")
-    return unless shared_transactions_refresh_cache?
-
-    refresh_requested = Rails.cache.write(
-      transactions_refresh_cache_key,
-      true,
-      expires_in: TRANSACTIONS_REFRESH_COOLDOWN,
-      unless_exist: true
-    )
-
-    return unless refresh_requested
-
-    enqueued_job = begin
-      PlaidTransactionsRefreshJob.perform_later(self)
-    rescue
-      Rails.cache.delete(transactions_refresh_cache_key)
-      raise
     end
 
-    Rails.cache.delete(transactions_refresh_cache_key) unless enqueued_job
+    Sentry.capture_exception(e)
+    nil
   end
 
-  def sync_later_with_provider_refresh
-    request_transactions_refresh_later
-    sync_later_with_follow_up
+  def destroy_later
+    update!(scheduled_for_deletion: true)
+    DestroyJob.perform_later(self)
   end
 
   def import_latest_plaid_data
@@ -163,20 +113,6 @@ class PlaidItem < ApplicationRecord
   end
 
   private
-    def transactions_refresh_cache_key
-      "plaid_item:#{id}:transactions_refresh_requested"
-    end
-
-    def shared_transactions_refresh_cache?
-      # Compared by name: referencing MemCacheStore autoloads it, which raises
-      # LoadError without the dalli gem, and SolidCache isn't a dependency.
-      shared_cache = Rails.cache.is_a?(ActiveSupport::Cache::RedisCacheStore) ||
-        Rails.cache.class.name.in?(%w[ActiveSupport::Cache::MemCacheStore SolidCache::Store])
-
-      Rails.logger.warn("Plaid transaction refresh requires a shared Rails cache store") unless shared_cache
-      shared_cache
-    end
-
     def remove_plaid_item
       return unless plaid_provider.present?
 
@@ -199,22 +135,10 @@ class PlaidItem < ApplicationRecord
       end
     end
 
-    # Plaid splits an item's products across three arrays. If the item has made a
-    # request for a product, it is put in the billed_products array. If it is
-    # supported but not yet used, it goes in available_products. Products granted
-    # through Link's `additional_consented_products` appear in neither -- they are
-    # reported in consented_products until the first call actually bills them.
-    #
-    # That third array matters because it is how we request `transactions` for
-    # liability accounts: Provider::Plaid#get_primary_product returns "liabilities"
-    # for CreditCard/Loan, so `transactions` can only arrive as an additionally
-    # consented product. Omitting it made supports_product?("transactions") false
-    # for every Plaid-linked credit card, so PlaidItem::AccountsSnapshot skipped
-    # the transactions fetch entirely and those accounts imported balances and
-    # liabilities but no transactions at all.
+    # Plaid returns mutually exclusive arrays here.  If the item has made a request for a product,
+    # it is put in the billed_products array.  If it is supported, but not yet used, it goes in the
+    # available_products array.
     def supported_products
-      consented = raw_payload.is_a?(Hash) ? Array(raw_payload["consented_products"]) : []
-
-      (available_products + billed_products + consented).map(&:to_s).uniq
+      available_products + billed_products
     end
 end

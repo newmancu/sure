@@ -120,32 +120,14 @@ class SimplefinItem::Syncer
     end
 
     def mark_completed(sync)
-      # Re-read under a row lock before finalizing: this job holds an
-      # in-memory copy loaded before the run, and the sync may have been
-      # cancelled (Sync#request_cancel! finalized it to stale) or otherwise
-      # terminalized while the work ran. An unguarded complete! here would
-      # overwrite that terminal status and resurrect a cancelled sync.
-      finalized = sync.with_lock do
-        if sync.cancel_requested_at? || sync.terminal?
-          false
-        else
-          sync.start! if sync.may_start?
-          sync.complete! if sync.may_complete?
-          true
-        end
+      if sync.may_start?
+        sync.start!
       end
-
-      unless finalized
-        DebugLogEntry.capture(
-          category: "provider_sync",
-          level: "info",
-          message: "SimplefinItem::Syncer#mark_completed skipped: sync was #{sync.status} (cancel requested: #{sync.cancel_requested_at.present?})",
-          source: self.class.name,
-          family: simplefin_item.family,
-          provider_key: "simplefin",
-          metadata: { sync_id: sync.id, status: sync.status, cancel_requested_at: sync.cancel_requested_at }
-        )
-        return
+      if sync.may_complete?
+        sync.complete!
+      else
+        # If aasm not used, at least set status text
+        sync.update!(status: :completed) if sync.status != "completed"
       end
 
       # After completion, compute and persist compact post-run stats for the summary panel
@@ -181,9 +163,18 @@ class SimplefinItem::Syncer
 
       # Broadcast UI updates so Providers/Accounts pages refresh without manual reload
       begin
+        # Replace the SimpleFin card
+        card_html = ApplicationController.render(
+          partial: "simplefin_items/simplefin_item",
+          formats: [ :html ],
+          locals: { simplefin_item: simplefin_item }
+        )
+        target_id = ActionView::RecordIdentifier.dom_id(simplefin_item)
+        Turbo::StreamsChannel.broadcast_replace_to(simplefin_item.family, target: target_id, html: card_html)
+
         # Broadcast a refresh signal instead of rendered HTML. Each user's browser
         # re-fetches via their own authenticated request, so the manual accounts
-        # list and the SimpleFIN card are scoped to the current user (#3630).
+        # list is correctly scoped to the current user.
         simplefin_item.family.broadcast_refresh
       rescue => e
         Rails.logger.warn("SimplefinItem::Syncer broadcast failed: #{e.class} - #{e.message}")

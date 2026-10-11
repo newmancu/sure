@@ -22,10 +22,10 @@ export default class extends Controller {
     this.cardTargets.forEach((card) => {
       const name = card.dataset.providerName ?? "";
       const region = card.dataset.providerRegion ?? "";
-      const kindTokens = (card.dataset.providerKind ?? "").split(/\s+/);
-      const haystack = `${name} ${region} ${kindTokens.join(" ")}`;
+      const kind = card.dataset.providerKind ?? "";
+      const haystack = `${name} ${region} ${kind}`;
       const matchesQuery = !query || haystack.includes(query);
-      const matchesKind = activeKind === "all" || kindTokens.includes(activeKind);
+      const matchesKind = activeKind === "all" || kind === activeKind;
       const visible = matchesQuery && matchesKind;
       card.classList.toggle("hidden", !visible);
       if (visible) visibleCount++;
@@ -58,7 +58,10 @@ export default class extends Controller {
     if (!this.hasChipTarget) return;
     this.chipTargets.forEach((chip) => {
       const active = chip.dataset.kind === this.kindValue;
-      chip.classList.toggle("segmented-control__segment--active", active);
+      chip.classList.toggle("bg-container", active);
+      chip.classList.toggle("shadow-border-xs", active);
+      chip.classList.toggle("text-primary", active);
+      chip.classList.toggle("text-secondary", !active);
       chip.setAttribute("aria-pressed", active ? "true" : "false");
     });
   }
