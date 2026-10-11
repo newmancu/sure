@@ -1,14 +1,16 @@
 class Holding::ForwardCalculator
-  include Holding::TradeCalculatorHelpers
-
   attr_reader :account
 
   def initialize(account, security_ids: nil)
     @account = account
     @security_ids = security_ids
-    # Track weighted-average cost basis per security, relieving sells so the
-    # figure stays correct after a position is fully sold and repurchased.
-    @cost_basis_trackers = Hash.new { |h, k| h[k] = Holding::CostBasisTracker.new }
+    # Track buy lots per security so cost basis can be converted into the holding's
+    # native price currency (not forced into account.currency).
+    @cost_basis_tracker = Hash.new { |h, k| h[k] = [] }
+    # Memoize cost basis by [security_id, currency, lot_count] so days without new
+    # buys are O(1), and memoize FX rates by [from, to, date] across lots/days.
+    @cost_basis_memo = {}
+    @fx_rate_memo = {}
     # Securities whose position has taken in a transfer. A coin moved in was
     # acquired at a price nothing here knows, and averaging the purchases alone
     # would apply their price to units that never cost it.
@@ -23,7 +25,8 @@ class Holding::ForwardCalculator
 
       account.start_date.upto(Date.current).each do |date|
         trades = portfolio_cache.get_trades(date: date)
-        next_portfolio = apply_trades(apply_splits(current_portfolio, date), trades)
+        update_cost_basis_tracker(trades)
+        next_portfolio = transform_portfolio(current_portfolio, trades, direction: :forward)
         holdings.concat(build_holdings(next_portfolio, date))
         current_portfolio = next_portfolio
       end
@@ -46,6 +49,19 @@ class Holding::ForwardCalculator
       empty_portfolio
     end
 
+    def transform_portfolio(previous_portfolio, trade_entries, direction: :forward)
+      new_quantities = previous_portfolio.dup
+
+      trade_entries.each do |trade_entry|
+        trade = trade_entry.entryable
+        security_id = trade.security_id
+        qty_change = trade.qty
+        qty_change = qty_change * -1 if direction == :reverse
+        new_quantities[security_id] = (new_quantities[security_id] || 0) + qty_change
+      end
+
+      new_quantities
+    end
 
     def build_holdings(portfolio, date, price_source: nil)
       portfolio.map do |security_id, qty|
@@ -71,65 +87,76 @@ class Holding::ForwardCalculator
       end.compact
     end
 
-    # A split takes effect at the open of its ex-date, before that day's trades,
-    # which are already in post-split shares (#249). It scales the position and
-    # its cost-basis tracker together, so total cost carries across unchanged.
-    def apply_splits(opening_portfolio, date)
-      opening_portfolio.to_h do |security_id, qty|
-        ratio = portfolio_cache.get_split_ratio(security_id, date)
-        next [ security_id, qty ] unless ratio
-
-        @cost_basis_trackers[security_id].split(ratio)
-        [ security_id, Security::Split.scale(qty, ratio) ]
-      end
-    end
-
-    # Applies the day's trades in order and returns the resulting portfolio, so the
-    # caller does not walk the same trades again to compute quantities.
-    #
-    # Buys raise a security's weighted-average cost basis; sells relieve quantity at
-    # the running average and a full liquidation resets it, so a later repurchase
-    # starts from a clean basis. Tracking the running position here lets an inbound
-    # transfer's "unknown" mark release the moment the position hits zero — even when
-    # a same-day sell-off and repurchase net back to a positive end-of-day quantity.
-    def apply_trades(opening_portfolio, trade_entries)
-      portfolio = opening_portfolio.dup
-
+    # Updates cost basis tracker with buy trades (qty > 0)
+    # Uses weighted average cost method
+    def update_cost_basis_tracker(trade_entries)
       trade_entries.each do |trade_entry|
         trade = trade_entry.entryable
-        security_id = trade.security_id
-        previous_quantity = portfolio[security_id] || 0
+        next unless trade.qty > 0 # Only track buys
 
-        if trade.internal_movement?
-          # An inbound transfer brings in units at a price nothing here knows, so
-          # it makes the whole position's cost basis unknowable. An outbound
-          # transfer only removes units, so relieve them at the running average
-          # (like a sell) rather than leaving them to contaminate a later buy.
-          if trade.qty.positive?
-            @transferred_security_ids << security_id
-          else
-            @cost_basis_trackers[security_id].apply(effective_trade_price(trade, date: trade_entry.date), trade.qty)
-          end
-        else
-          @cost_basis_trackers[security_id].apply(effective_trade_price(trade, date: trade_entry.date), trade.qty)
+        # A transfer is not a purchase: it contributes no cost and it makes the
+        # whole position unknowable, not just its own units.
+        if trade.investment_activity_label == Trade::TRANSFER_LABEL
+          @transferred_security_ids << trade.security_id
+          next
         end
 
-        portfolio[security_id] = previous_quantity + trade.qty
-
-        # Release the "unknown" mark only on a genuine downward crossing through
-        # zero: a position that was already non-positive never held these units, so
-        # opening and closing must not collapse onto the same trade.
-        @transferred_security_ids.delete(security_id) if previous_quantity.positive? && portfolio[security_id] <= 0
+        # Store the lot in its own currency; conversion happens in cost_basis_for,
+        # which knows the holding's native price currency and memoizes the rates.
+        @cost_basis_tracker[trade.security_id] << {
+          qty: trade.qty,
+          price: trade.price,
+          currency: trade.currency,
+          date: trade_entry.date
+        }
       end
-
-      portfolio
     end
 
-    # Returns the current cost basis for a security, or nil if nothing is held
-    # or the position contains transferred-in units of unknown cost.
+    # Returns the current cost basis for a security in the holding currency, or nil if no buys recorded
+    # or a cross-currency buy cannot be converted.
     def cost_basis_for(security_id, currency)
       return nil if @transferred_security_ids.include?(security_id)
 
-      @cost_basis_trackers[security_id].average_cost
+      buys = @cost_basis_tracker[security_id]
+      return nil if buys.empty?
+
+      memo_key = [ security_id, currency, buys.size ]
+      return @cost_basis_memo[memo_key] if @cost_basis_memo.key?(memo_key)
+
+      @cost_basis_memo[memo_key] = weighted_average_cost(buys, currency)
+    end
+
+    def weighted_average_cost(buys, currency)
+      total_qty = buys.sum { |buy| buy[:qty] }
+      return nil if total_qty.zero?
+
+      total_cost = BigDecimal("0")
+
+      buys.each do |buy|
+        converted_price = convert_buy_price(buy, currency)
+        return nil if converted_price.nil?
+
+        total_cost += converted_price * buy[:qty]
+      end
+
+      total_cost / total_qty
+    end
+
+    def convert_buy_price(buy, currency)
+      return buy[:price] if buy[:currency] == currency
+
+      rate = fx_rate(from: buy[:currency], to: currency, date: buy[:date])
+      # Match Money#exchange_to: absent or non-positive rates are unusable
+      # (ExchangeRate does not enforce positivity at the DB layer).
+      return nil unless rate&.positive?
+
+      buy[:price] * rate
+    end
+
+    def fx_rate(from:, to:, date:)
+      key = [ from, to, date ]
+      return @fx_rate_memo[key] if @fx_rate_memo.key?(key)
+
+      @fx_rate_memo[key] = ExchangeRate.find_or_fetch_rate(from: from, to: to, date: date)&.rate
     end
 end
