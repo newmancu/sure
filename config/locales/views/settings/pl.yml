@@ -691,7 +691,7 @@ pl:
         mercury: Synchronizuj automatycznie swoje firmowe konta bankowe Mercury.
         monobank: Synchronizuj ukraińskie karty i skarbonki Monobank za pomocą osobistego
           tokenu API.
-        onchain_wallet: Śledź portfele Bitcoin, EVM, Solana, Cosmos i Polkadot z samodzielną kontrolą
+        onchain_wallet: Śledź portfele Bitcoin, EVM i Solana z samodzielną kontrolą
           kluczy na podstawie ich publicznych adresów.
         plaid: Połącz tysiące amerykańskich instytucji finansowych przez Plaid.
         plaid_eu: Połącz europejskie instytucje finansowe przez Plaid (PSD2 / otwarta
@@ -846,6 +846,7 @@ pl:
       accounts_label: Konta
       advanced_section_title: Zaawansowane
       ai_prompts_label: Prompty AI
+      auto_matches_label: Automatyczne dopasowywanie
       api_key_label: Klucz API
       api_keys_label: Klucz API
       appearance_label: Wygląd
