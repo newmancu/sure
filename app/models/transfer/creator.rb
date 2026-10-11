@@ -25,7 +25,7 @@ class Transfer::Creator
     end
   end
 
-  def create
+  def create(sync: true)
     raise ArgumentError, "source_fee_amount must be non-negative" if source_fee_amount.negative?
     raise ArgumentError, "destination_fee_amount must be non-negative" if destination_fee_amount.negative?
 
@@ -63,8 +63,10 @@ class Transfer::Creator
       apply_tags!(transfer) if tag_ids.any?
     end
 
-    source_account.sync_later
-    destination_account.sync_later
+    if sync
+      source_account.sync_later
+      destination_account.sync_later
+    end
 
     transfer
   rescue ActiveRecord::RecordNotUnique
@@ -244,7 +246,23 @@ class Transfer::Creator
     end
 
     def outflow_transaction_kind
-      Transfer.kind_for_account(destination_account, from_account: source_account)
+      if destination_account.loan?
+        "loan_payment"
+      elsif destination_account.liability?
+        "cc_payment"
+      elsif destination_is_investment? && !source_is_investment?
+        "investment_contribution"
+      else
+        "funds_movement"
+      end
+    end
+
+    def destination_is_investment?
+      destination_account.investment? || destination_account.crypto?
+    end
+
+    def source_is_investment?
+      source_account.investment? || source_account.crypto?
     end
 
     def name_prefix
