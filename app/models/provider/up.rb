@@ -166,7 +166,7 @@ class Provider::Up
             "Up API: #{operation_name} failed (attempt #{retries}/#{max_retries}): " \
             "#{e.class}: #{e.message}. Retrying in #{delay}s..."
           )
-          sleep(delay)
+          Kernel.sleep(delay)
           retry
         end
 

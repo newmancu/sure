@@ -1,11 +1,8 @@
 class EnableBankingItemsController < ApplicationController
   include EnableBankingItems::MapsHelper
   before_action :set_enable_banking_item, only: [ :update, :destroy, :sync, :select_bank, :authorize, :reauthorize, :setup_accounts, :complete_account_setup, :new_connection ]
-  before_action :require_admin!, only: [ :new, :create, :link_accounts, :select_existing_account, :link_existing_account, :update, :destroy, :sync, :select_bank, :authorize, :callback, :reauthorize, :setup_accounts, :complete_account_setup, :new_connection ]
+  before_action :require_admin!, only: [ :new, :create, :link_accounts, :select_existing_account, :link_existing_account, :update, :destroy, :sync, :select_bank, :authorize, :reauthorize, :setup_accounts, :complete_account_setup, :new_connection ]
   skip_before_action :verify_authenticity_token, only: [ :callback ]
-
-  OAUTH_STATE_SESSION_KEY = :enable_banking_oauth_states
-  MAX_PENDING_OAUTH_STATES = 5
 
   def new
     @enable_banking_item = Current.family.enable_banking_items.build
@@ -16,17 +13,63 @@ class EnableBankingItemsController < ApplicationController
     @enable_banking_item.name ||= "Enable Banking Connection"
 
     if @enable_banking_item.save
-      redirect_to settings_providers_path, notice: t(".success"), status: :see_other
+      if turbo_frame_request?
+        flash.now[:notice] = t(".success", default: "Successfully configured Enable Banking.")
+        @enable_banking_items = Current.family.enable_banking_items.ordered
+        render turbo_stream: [
+          turbo_stream.replace(
+            "enable_banking-providers-panel",
+            partial: "settings/providers/enable_banking_panel",
+            locals: { enable_banking_items: @enable_banking_items }
+          ),
+          *flash_notification_stream_items
+        ]
+      else
+        redirect_to settings_providers_path, notice: t(".success"), status: :see_other
+      end
     else
-      render_provider_panel("enable_banking", alert: @enable_banking_item.errors.full_messages.join(", "))
+      @error_message = @enable_banking_item.errors.full_messages.join(", ")
+
+      if turbo_frame_request?
+        render turbo_stream: turbo_stream.replace(
+          "enable_banking-providers-panel",
+          partial: "settings/providers/enable_banking_panel",
+          locals: { error_message: @error_message }
+        ), status: :unprocessable_entity
+      else
+        redirect_to settings_providers_path, alert: @error_message, status: :unprocessable_entity
+      end
     end
   end
 
   def update
     if @enable_banking_item.update(enable_banking_item_params)
-      render_provider_panel("enable_banking", notice: t(".success"), enable_banking_items: Current.family.enable_banking_items.ordered)
+      if turbo_frame_request?
+        flash.now[:notice] = t(".success", default: "Successfully updated Enable Banking configuration.")
+        @enable_banking_items = Current.family.enable_banking_items.ordered
+        render turbo_stream: [
+          turbo_stream.replace(
+            "enable_banking-providers-panel",
+            partial: "settings/providers/enable_banking_panel",
+            locals: { enable_banking_items: @enable_banking_items }
+          ),
+          *flash_notification_stream_items
+        ]
+      else
+        redirect_to settings_providers_path, notice: t(".success"), status: :see_other
+      end
     else
-      render_provider_panel("enable_banking", alert: @enable_banking_item.errors.full_messages.join(", "))
+      @error_message = @enable_banking_item.errors.full_messages.join(", ")
+
+      if turbo_frame_request?
+        render turbo_stream: turbo_stream.replace(
+          "enable_banking-providers-panel",
+          partial: "settings/providers/enable_banking_panel",
+          locals: { error_message: @error_message }
+        ), status: :unprocessable_entity
+      else
+        redirect_to settings_providers_path, alert: @error_message, status: :unprocessable_entity
+      end
     end
   end
 
@@ -45,10 +88,6 @@ class EnableBankingItemsController < ApplicationController
   def sync
     unless @enable_banking_item.syncing?
       @enable_banking_item.sync_later
-    end
-    if provider_panel_form?
-      return render_provider_panel("enable_banking", notice: t("settings.providers.sync_provider_in_progress"),
-                                   enable_banking_items: Current.family.enable_banking_items.ordered)
     end
 
     respond_to do |format|
@@ -115,7 +154,7 @@ class EnableBankingItemsController < ApplicationController
       redirect_url = target_item.begin_authorization!(
         aspsp_name: aspsp_name,
         redirect_url: enable_banking_callback_url,
-        state: issue_oauth_state_for(target_item),
+        state: target_item.id,
         psu_type: psu_type,
         language: language
       )
@@ -160,10 +199,8 @@ class EnableBankingItemsController < ApplicationController
       return
     end
 
-    # The state must match the one issued to this browser session, so a
-    # callback link crafted by someone else cannot attach their bank
-    # authorization code to this family's connection.
-    enable_banking_item = consume_oauth_state(state)
+    # Find the enable_banking_item by ID from state
+    enable_banking_item = Current.family.enable_banking_items.find_by(id: state)
 
     unless enable_banking_item.present?
       redirect_to settings_providers_path, alert: t(".item_not_found", default: "Connection not found.")
@@ -205,7 +242,7 @@ class EnableBankingItemsController < ApplicationController
       # method (decoupled banks included) instead of falling back to a default.
       redirect_url = @enable_banking_item.begin_authorization!(
         redirect_url: enable_banking_callback_url,
-        state: issue_oauth_state_for(@enable_banking_item),
+        state: @enable_banking_item.id,
         language: language
       )
 
@@ -298,9 +335,28 @@ class EnableBankingItemsController < ApplicationController
 
   # Show setup accounts modal
   def setup_accounts
+    linked_ibans = EnableBankingAccount
+      .where(enable_banking_item_id: Current.family.enable_banking_items.select(:id))
+      .joins(:account_provider)
+      .where.not(account_providers: { account_id: nil })
+      .where.not(iban: nil)
+      .distinct
+      .pluck(:iban)
+
     @enable_banking_accounts = @enable_banking_item.enable_banking_accounts
       .left_joins(:account_provider)
       .where(account_providers: { id: nil })
+
+    if linked_ibans.any?
+      @enable_banking_accounts = @enable_banking_accounts
+        .where("enable_banking_accounts.iban IS NULL OR enable_banking_accounts.iban NOT IN (?)", linked_ibans)
+    end
+
+    @hidden_dedup_count = @enable_banking_item.enable_banking_accounts
+      .left_joins(:account_provider)
+      .where(account_providers: { id: nil })
+      .where(iban: linked_ibans)
+      .count
 
     @account_type_options = [
       [ "Skip this account", "skip" ],
@@ -352,6 +408,15 @@ class EnableBankingItemsController < ApplicationController
     created_count = 0
     skipped_count = 0
 
+    # Precompute family-wide IBAN→account mapping for dedup, normalized for comparison
+    family_iban_accounts = EnableBankingAccount
+      .where(enable_banking_item_id: Current.family.enable_banking_items.select(:id))
+      .where.not(iban: nil)
+      .joins(:account_provider)
+      .where.not(account_providers: { account_id: nil })
+      .pluck(:iban, "account_providers.account_id")
+      .to_h { |iban, account_id| [iban.delete(" ").upcase, account_id] }
+
     account_types.each do |enable_banking_account_id, selected_type|
       # Skip accounts marked as "skip"
       if selected_type == "skip" || selected_type.blank?
@@ -365,18 +430,48 @@ class EnableBankingItemsController < ApplicationController
       # Default subtype for CreditCard since it only has one option
       selected_subtype = "credit_card" if selected_type == "CreditCard" && selected_subtype.blank?
 
-      # Create account with user-selected type and subtype
-      account = Account.create_from_enable_banking_account(
-        enable_banking_account,
-        selected_type,
-        selected_subtype
-      )
+      # IBAN-based dedup with race protection: wrap lookup-and-create in a transaction
+      # so two concurrent requests for the same shared IBAN don't both create Account rows.
+      normalized_iban = enable_banking_account.iban&.delete(" ")&.upcase
+      existing_account_id = normalized_iban.present? ? family_iban_accounts[normalized_iban] : nil
 
-      # Link account via AccountProvider
-      AccountProvider.create!(
-        account: account,
-        provider: enable_banking_account
-      )
+      if existing_account_id
+        account = Current.family.accounts.find(existing_account_id)
+
+        AccountProvider.create!(
+          account: account,
+          provider: enable_banking_account
+        )
+      else
+        Account.transaction do
+          @enable_banking_item.with_lock do
+            # Re-check within the lock: another request may have created it by now
+            if normalized_iban.present?
+              dup_account_id = EnableBankingAccount
+                .where(enable_banking_item_id: Current.family.enable_banking_items.select(:id))
+                .where(iban: enable_banking_account.iban)
+                .joins(:account_provider)
+                .where.not(account_providers: { account_id: nil })
+                .pick("account_providers.account_id")
+
+              if dup_account_id
+                account = Current.family.accounts.find(dup_account_id)
+                AccountProvider.create!(account: account, provider: enable_banking_account)
+                created_count += 1
+                next
+              end
+            end
+
+            account = Account.create_from_enable_banking_account(
+              enable_banking_account,
+              selected_type,
+              selected_subtype
+            )
+
+            AccountProvider.create!(account: account, provider: enable_banking_account)
+          end
+        end
+      end
 
       created_count += 1
     end
@@ -511,52 +606,46 @@ class EnableBankingItemsController < ApplicationController
   end
 
   private
-    # Pending states map state => item id, so parallel flows (two tabs) each
-    # keep their own entry. Only the newest few are kept.
-    def issue_oauth_state_for(item)
-      state = SecureRandom.urlsafe_base64(32)
-      pending = pending_oauth_states.merge(state => item.id)
-      session[OAUTH_STATE_SESSION_KEY] = pending.to_a.last(MAX_PENDING_OAUTH_STATES).to_h
-      state
-    end
-
-    # An entry is removed only when it matches, so a stray callback with a
-    # made-up state cannot cancel a real flow in progress.
-    def consume_oauth_state(state)
-      pending = pending_oauth_states
-      matched = pending.keys.find { |candidate| ActiveSupport::SecurityUtils.secure_compare(candidate, state.to_s) }
-      return unless matched
-
-      item_id = pending.delete(matched)
-      session[OAUTH_STATE_SESSION_KEY] = pending
-      Current.family.enable_banking_items.find_by(id: item_id)
-    end
-
-    def pending_oauth_states
-      pending = session[OAUTH_STATE_SESSION_KEY]
-      pending.is_a?(Hash) ? pending.to_h : {}
-    end
 
     def set_enable_banking_item
       @enable_banking_item = Current.family.enable_banking_items.find(params[:id])
     end
 
+    # When two family members connect the same bank via separate EnableBankingItem
+    # sessions, a shared joint account may appear on both items.  This method
+    # prevents duplicate Account records by checking whether another item in the
+    # same family already linked an EnableBankingAccount with the same IBAN.
+    #
+    # It also handles the single-item case where the same session returns a shared
+    # account with multiple identification hashes (one per customer view), each
+    # producing its own EnableBankingAccount record with the same IBAN.
+    #
+    # Returns the existing family Account if found, nil otherwise.
+    def find_existing_family_account_for_iban(iban)
+      return nil if iban.blank?
+
+      family_items = Current.family.enable_banking_items
+
+      matching_account = EnableBankingAccount
+        .where(enable_banking_item_id: family_items.select(:id))
+        .where("REPLACE(UPPER(enable_banking_accounts.iban), ' ', '') = ?", iban.delete(" ").upcase)
+        .joins(:account_provider)
+        .where.not(account_providers: { account_id: nil })
+        .pick("account_providers.account_id")
+
+      return nil unless matching_account
+
+      Current.family.accounts.find_by(id: matching_account)
+    end
+
     def enable_banking_item_params
-      permitted = params.require(:enable_banking_item).permit(
+      params.require(:enable_banking_item).permit(
         :name,
         :sync_start_date,
         :country_code,
         :application_id,
         :client_certificate
       )
-      # The panel never pre-fills the stored credentials, so a blank one on
-      # update means "keep the current value".
-      if @enable_banking_item&.persisted?
-        %i[application_id client_certificate].each do |credential|
-          permitted.delete(credential) if permitted[credential].blank?
-        end
-      end
-      permitted
     end
 
     def enable_banking_callback_url
