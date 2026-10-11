@@ -1,5 +1,5 @@
 class LunchflowItem < ApplicationRecord
-  include Syncable, Provided, Unlinking, Encryptable, DestroyableLater
+  include Syncable, Provided, Unlinking, Encryptable
 
   DEFAULT_BASE_URL = "https://lunchflow.app/api/v1".freeze
 
@@ -25,6 +25,11 @@ class LunchflowItem < ApplicationRecord
   scope :syncable, -> { active }
   scope :ordered, -> { order(created_at: :desc) }
   scope :needs_update, -> { where(status: :requires_update) }
+
+  def destroy_later
+    update!(scheduled_for_deletion: true)
+    DestroyJob.perform_later(self)
+  end
 
   def import_latest_lunchflow_data
     provider = lunchflow_provider
@@ -101,16 +106,11 @@ class LunchflowItem < ApplicationRecord
     unlinked_count = unlinked_accounts_count
 
     if total_accounts == 0
-      I18n.t("lunchflow_items.lunchflow_item.sync_status.no_accounts")
+      "No accounts found"
     elsif unlinked_count == 0
-      I18n.t("lunchflow_items.lunchflow_item.sync_status.synced", count: linked_count)
+      "#{linked_count} #{'account'.pluralize(linked_count)} synced"
     else
-      I18n.t(
-        "lunchflow_items.lunchflow_item.sync_status.partial_setup",
-        count: unlinked_count,
-        linked: linked_count,
-        unlinked: unlinked_count
-      )
+      "#{linked_count} synced, #{unlinked_count} need setup"
     end
   end
 

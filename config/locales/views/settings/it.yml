@@ -67,7 +67,7 @@ it:
         failed: "Fallita"
         no_usage_data: "Nessun dato di utilizzo trovato per il periodo selezionato"
         cost_estimates_title: "Informazioni sulle stime dei costi"
-        cost_estimates_description: "I costi sono stimati in base ai prezzi pubblicati dai fornitori, verificati l’ultima volta il %{date}. I costi effettivi possono variare. I prezzi sono per 1 milione di token e variano per modello. I modelli personalizzati o self-hosted mostreranno \"N/A\" e non sono inclusi nei totali dei costi."
+        cost_estimates_description: "I costi sono stimati in base ai prezzi di OpenAI del 2025. I costi effettivi possono variare. I prezzi sono per 1 milione di token e variano per modello. I modelli personalizzati o self-hosted mostreranno \"N/A\" e non sono inclusi nei totali dei costi."
     ai_prompts:
       show:
         page_title: Prompt AI
@@ -391,7 +391,6 @@ it:
         connect_button: Connetti Coinbase
         syncing: Sincronizzazione...
         sync: Sincronizza
-        disconnect: Disconnetti
         disconnect_confirm: Sei sicuro di voler disconnettere questa connessione Coinbase? I tuoi conti sincronizzati diventeranno conti manuali.
       binance_panel:
         setup_instructions: "Per connettere Binance, crea una chiave API in sola lettura:"
@@ -413,7 +412,6 @@ it:
         historical_import: "Impostazioni importazione storica"
         sync_start_date_label: "Importa dati da"
         sync_start_date_help: "Seleziona fino a quando indietro recuperare le operazioni storiche."
-        disconnect: Disconnetti
         disconnect_confirm: "Sei sicuro di voler disconnettere Binance?"
       kraken_panel:
         step1_html: 'Vai alle <a href="https://pro.kraken.com/app/settings/api" target="_blank" rel="noopener noreferrer" class="underline">impostazioni API Kraken</a>'
@@ -449,7 +447,6 @@ it:
         application_id_placeholder_new: "Inserisci ID applicazione"
         application_id_placeholder_update: "Inserisci nuovo ID per aggiornare"
         client_certificate_label: "Certificato client (con chiave privata)"
-        keep_client_certificate_hint: "Lascia vuoto per mantenere il certificato attuale"
         save_and_connect: "Salva e connetti"
         update_connection: "Aggiorna connessione"
         connected_bank: "Banca collegata"
@@ -544,6 +541,13 @@ it:
           all_other_options: 'Tutte le altre opzioni: "No"'
         report_window_note: "I rapporti IBKR Flex sono limitati alla finestra di query configurata in IBKR. Sure importerà le posizioni attuali complete più fino agli ultimi 365 giorni di attività da questo rapporto."
         sync: Sincronizza
+        syncing: Sincronizzazione
+        remove: Rimuovi
+        setup_accounts: Configura conti
+        add_connection: Aggiungi connessione
+        new_connection_title: Nuova connessione
+        connection_name_label: Nome della connessione
+        connection_name_placeholder: Interactive Brokers
         disconnect_confirm: Disconnettere Interactive Brokers?
         query_id_label: Query ID
         query_id_placeholder_new: Inserisci il tuo IBKR Flex Query ID
@@ -553,7 +557,4 @@ it:
         token_placeholder_existing: Lascia vuoto per mantenere il Token attuale
         save_configuration: Salva configurazione
         update_configuration: Aggiorna configurazione
-        status_configured_prefix: "%{summary}. Visita la scheda"
-        accounts_tab: Conti
-        status_configured_suffix: per gestire i conti scoperti.
         not_configured: Non configurato.

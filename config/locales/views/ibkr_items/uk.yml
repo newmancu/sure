@@ -31,7 +31,7 @@ uk:
         items:
           item_1: "Активи з поточними цінами та кількістю"
           item_2: "Базова вартість за позицією"
-          item_3: "Угоди, дивіденди, комісії та внесення або зняття коштів"
+          item_3: "Угоди, дивіденди, комісії та готівкові депозити або зняття"
         warning: "Історична активність обмежена вікном звіту запиту Flex"
       status:
         fetching_accounts: "Отримання рахунків з Interactive Brokers..."
@@ -59,10 +59,8 @@ uk:
     sync_status:
       no_accounts: "Рахунків IBKR ще не знайдено"
       all_linked:
-        one: "%{count} рахунок прив'язано"
+        one: "1 рахунок прив'язано"
         other: "%{count} рахунків прив'язано"
-        few: '%{count} рахунки прив''язано'
-        many: '%{count} рахунків прив''язано'
       partial: "%{linked} прив'язано, %{unlinked} потребують налаштування"
     select_existing_account:
       title: "Прив'язати рахунок Interactive Brokers"
@@ -90,7 +88,19 @@ uk:
       success:
         one: "Успішно створено %{count} рахунок Interactive Brokers."
         other: "Успішно створено %{count} рахунків Interactive Brokers."
-        few: Успішно створено %{count} рахунки Interactive Brokers.
-        many: Успішно створено %{count} рахунків Interactive Brokers.
       none_selected: "Не вибрано жодного рахунку."
       none_created: "Не створено жодного рахунку."
+    new:
+      link_ibkr_title: Підключити Interactive Brokers
+      syncing: Синхронізація...
+      sync_error: Помилка синхронізації
+      not_configured_status: Не налаштовано
+      setup_accounts: Налаштувати рахунки
+      not_configured: Interactive Brokers не налаштовано
+      not_configured_description: Перед тим, як підключати рахунки Interactive Brokers, вам потрібно налаштувати з'єднання IBKR.
+      setup_steps_title: "Кроки налаштування:"
+      setup_step_1_html: "Перейдіть до <strong>Налаштування → Провайдери</strong>"
+      setup_step_2_html: "Знайдіть розділ <strong>Interactive Brokers</strong>"
+      setup_step_3: Введіть ваші облікові дані Flex Query (Query ID та Token)
+      setup_step_4: Поверніться сюди, щоб підключити ваші рахунки
+      go_to_provider_settings: Перейти до налаштувань провайдера
