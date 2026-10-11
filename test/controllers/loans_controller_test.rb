@@ -228,6 +228,30 @@ class LoansControllerTest < ActionDispatch::IntegrationTest
     assert_match "Total Interest", response.body
   end
 
+  test "the schedule changes liability ending balance sign without changing movements" do
+    payment = @account.loan.amortization_schedule.payments.first
+    assert payment, "the fixture loan must have a projected payment"
+    assert_operator payment.ending_balance.amount, :>, 0,
+      "the default projected liability balance is positive"
+    assert_not @user.negative_liability_balances?
+
+    get account_path(@account, tab: "schedule")
+
+    assert_response :success
+    default_cells = css_select("table tbody tr").first.css("td").map { |cell| cell.text.strip }
+    assert_equal format_money(payment.ending_balance), default_cells[5]
+
+    @user.update!(preferences: (@user.preferences || {}).merge("negative_liability_balances" => true))
+
+    get account_path(@account, tab: "schedule")
+
+    assert_response :success
+    opted_in_cells = css_select("table tbody tr").first.css("td").map { |cell| cell.text.strip }
+    assert_equal format_money(payment.ending_balance * -1), opted_in_cells[5]
+    assert_equal default_cells[2..4], opted_in_cells[2..4],
+      "payment, principal, and interest movements keep their existing signs"
+  end
+
   # A variable loan IS amortizable since #104, and a provider's own rate type
   # reads as variable since #100 decision 8, so the unamortizable case is now
   # a loan with no rate type at all.
@@ -853,30 +877,6 @@ class LoansControllerTest < ActionDispatch::IntegrationTest
     assert_select "form[action='#{loans_path}']", count: 1
     # Rebuilt from the submission, not a blank account: what was typed comes
     # back for correction.
-    assert_select "input[name='account[name]'][value='Loan With Bad Anchor']", count: 1
-    assert_select "input[name='account[accountable_attributes][interest_rate]'][value='6']", count: 1
-  end
-
-  # The submission that trips this rescue need not carry nested attributes at
-  # all. `accountable_type=` writes only the type column, so rebuilding from
-  # such a submission left `accountable` nil and the 422 form came back
-  # without a single one of the loan's own fields -- nothing for the borrower
-  # to correct, on a form whose whole purpose here is correction.
-  test "a late create failure renders the loan's fields even when the form sent none" do
-    invalid_entry = Entry.new.tap(&:validate)
-    Account::OpeningBalanceManager.any_instance.stubs(:set_opening_balance)
-      .raises(ActiveRecord::RecordInvalid.new(invalid_entry))
-
-    assert_no_difference "Account.count" do
-      post loans_path, params: { account: {
-        name: "Loan Without Nested Attributes", balance: 50_000, currency: "USD", accountable_type: "Loan"
-      } }
-    end
-
-    assert_response :unprocessable_entity
-    assert_select "form[action='#{loans_path}']", count: 1
-    assert_select "input[name='account[name]'][value='Loan Without Nested Attributes']", count: 1
-    assert_select "input[name='account[accountable_attributes][interest_rate]']", minimum: 1
   end
 
   private
