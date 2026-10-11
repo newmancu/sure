@@ -2,19 +2,12 @@
 
 <% transaction = entry.entryable %>
 <% transaction_security_logo_url = transaction.activity_security&.display_logo_url %>
-<% open_path = if transaction.transfer?
-     transaction.transfer.present? ? transfer_path(transaction.transfer) : entry_path(entry)
-   else
-     in_split_group ? entry_path(entry, grouped: true) : entry_path(entry)
-   end %>
 
 <%= turbo_frame_tag dom_id(entry) do %>
   <%= turbo_frame_tag dom_id(transaction) do %>
-    <div class="group flex lg:grid lg:grid-cols-12 items-center text-primary text-sm font-medium p-3 lg:p-4 <%= "pl-8 lg:pl-12" if in_split_group %>"
-         data-controller="clickable-row"
-         data-action="click->clickable-row#open">
+    <div class="group flex lg:grid lg:grid-cols-12 items-center text-primary text-sm font-medium p-3 lg:p-4 <%= "pl-8 lg:pl-12" if in_split_group %>">
 
-      <div class="pr-4 lg:pr-10 flex items-center gap-3 lg:gap-4 col-span-5 min-w-0 max-md:flex-1">
+      <div class="pr-4 lg:pr-10 flex items-center gap-3 lg:gap-4 col-span-7 min-w-0">
         <%= check_box_tag dom_id(entry, "selection"),
             disabled: transaction.transfer.present?,
             class: "checkbox checkbox--light hidden lg:block",
@@ -39,9 +32,9 @@
           <% end %>
         </div>
 
-        <div class="flex-1 max-w-full min-w-0 <%= "opacity-50 text-secondary" if entry.excluded %>">
+        <div class="max-w-full min-w-0 <%= "opacity-50 text-secondary" if entry.excluded %>">
           <%= content_tag :div, class: ["flex items-center gap-3 lg:gap-4"] do %>
-            <div class="hidden lg:flex shrink-0">
+            <div class="hidden lg:flex">
               <% if transaction.transfer? %>
                 <%= render DS::FilledIcon.new(
                   icon: "arrow-right-left",
@@ -69,20 +62,31 @@
               <% end %>
             </div>
 
-            <div class="truncate flex-1 min-w-0">
+            <div class="truncate">
               <div class="space-y-0.5">
-                <div class="flex items-center gap-1 min-w-0" data-tag-fit-bounds="0.5">
+                <div class="flex items-center gap-1 min-w-0">
                   <div class="truncate flex-shrink">
-                    <%= link_to(
-                          entry.name,
-                          open_path,
-                          data: {
-                            turbo_frame: "drawer",
-                            turbo_prefetch: false,
-                            clickable_row_target: "link"
-                          },
-                          class: "hover:underline"
-                        ) %>
+                    <% if transaction.transfer? %>
+                      <%= link_to(
+                            entry.name,
+                            transaction.transfer.present? ? transfer_path(transaction.transfer) : entry_path(entry),
+                            data: {
+                              turbo_frame: "drawer",
+                              turbo_prefetch: false
+                            },
+                            class: "hover:underline"
+                          ) %>
+                    <% else %>
+                      <%= link_to(
+                            entry.name,
+                            in_split_group ? entry_path(entry, grouped: true) : entry_path(entry),
+                            data: {
+                              turbo_frame: "drawer",
+                              turbo_prefetch: false
+                            },
+                            class: "hover:underline"
+                          ) %>
+                    <% end %>
                   </div>
 
                   <div class="flex items-center gap-1 flex-shrink-0">
@@ -100,6 +104,17 @@
                         marker: false,
                         icon: "clock",
                         title: t("transactions.transaction.pending_tooltip")
+                      ) %>
+                    <% end %>
+
+                    <%# Reconciled only — cleared would badge nearly every synced row (#3119) %>
+                    <% if entry.reconciled? %>
+                      <%= render DS::Pill.new(
+                        label: t("transactions.transaction.reconciled"),
+                        tone: :success,
+                        marker: false,
+                        icon: "circle-check",
+                        title: t("transactions.transaction.reconciled_tooltip")
                       ) %>
                     <% end %>
 
@@ -144,10 +159,6 @@
                       <%= render "transactions/transfer_match", transaction: transaction %>
                     <% end %>
                   </div>
-
-                  <div class="md:hidden flex shrink-0 min-w-0 max-w-1/2 has-[[data-tag-empty]]:hidden">
-                    <%= render "tags/menu", entry: entry, transaction: transaction, variant: :mobile %>
-                  </div>
                 </div>
 
                 <div class="text-secondary text-xs font-normal">
@@ -181,7 +192,7 @@
                     </span>
                     <div class="flex min-w-0 items-center gap-1">
                       <%= render "categories/category_name_mobile", transaction: transaction %>
-                        <% if transaction.merchant&.present? %>
+                      <% if transaction.merchant&.present? %>
                         <span class="lg:hidden min-w-0 truncate">• <%= transaction.merchant.name %></span>
                       <% end %>
                     </div>
@@ -193,17 +204,13 @@
         </div>
       </div>
 
-      <div class="hidden md:flex min-w-0 items-center gap-1 col-span-3 pr-2">
+      <div class="hidden md:flex min-w-0 items-center gap-1 col-span-3">
         <% if entry.account.supports_trades? && !transaction.transfer? %>
           <%# For investment/crypto accounts, show activity label instead of category %>
           <%= render "investment_activity/quick_edit_badge", entry: entry, entryable: transaction %>
         <% else %>
           <%= render "transactions/transaction_category", transaction: transaction, variant: "desktop", in_split_group: in_split_group %>
         <% end %>
-      </div>
-
-      <div class="hidden md:flex md:w-1/5 md:shrink-0 lg:w-auto min-w-0 items-center col-span-2 pr-2" data-tag-fit-bounds="1">
-        <%= render "tags/menu", entry: entry, transaction: transaction, variant: :desktop %>
       </div>
 
       <div class="shrink-0 col-span-4 lg:col-span-2 ml-auto flex items-center justify-end gap-2 <%= "opacity-50" if entry.excluded %>">
