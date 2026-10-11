@@ -40,7 +40,7 @@ class Family::FinancialDataReset
   ].freeze
   STATUS_COUNT_KEYS = (COUNT_KEYS - %i[syncs]) + %i[plaid_items]
   PROVIDER_ITEM_ASSOCIATIONS = %i[
-    financekit_items
+    akahu_items
     binance_items
     brex_items
     coinbase_items
@@ -54,13 +54,15 @@ class Family::FinancialDataReset
     redbark_items
     mercury_items
     onchain_wallet_items
+    open_banking_io_items
     plaid_items
     simplefin_items
     snaptrade_items
     sophtron_items
+    trading212_items
     up_items
+    wise_items
     monobank_items
-    fio_items
   ].freeze
 
   Result = Struct.new(:user, :family, :dry_run, :before_counts, :deleted_counts, :after_counts, keyword_init: true)
@@ -161,7 +163,6 @@ class Family::FinancialDataReset
       scope(:tags).destroy_all
       scope(:merchants).destroy_all
       delete_provider_items!
-      family.financekit_account_lineages.destroy_all
       scope(:accounts).destroy_all
     end
 

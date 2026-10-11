@@ -67,7 +67,7 @@ zh-CN:
         failed: 失败
         no_usage_data: 所选时间段内未找到用量数据
         cost_estimates_title: 关于费用预估
-        cost_estimates_description: "费用根据各提供商公布的定价估算，最近核实日期为 %{date}。实际费用可能不同。定价按每 100 万 token 计算，并随模型而异。自定义或自托管模型将显示为“N/A”，且不计入总费用。"
+        cost_estimates_description: "费用根据各提供商公布的定价估算，包括截至 2026 年 7 月的 OpenAI 定价。实际费用可能不同。定价按每 100 万 token 计算，并随模型而异。自定义或自托管模型将显示为“N/A”，且不计入总费用。"
     ai_prompts:
       show:
         page_title: AI 提示词
@@ -316,6 +316,7 @@ zh-CN:
       sync_provider_in_progress: 同步已开始。
       recently_synced: 刚刚已同步，请稍后再试。
       taglines:
+        open_banking_io: "通过 open-banking.io 同步欧洲银行账户。"
         simplefin: 通过开放的 SimpleFIN 协议连接美国银行账户。
         lunchflow: 连接来自 40 多个国家/地区的 2 万多家银行（英国、欧盟、美国等）！
         enable_banking: 通过 PSD2 开放银行连接欧洲银行账户。
@@ -359,7 +360,6 @@ zh-CN:
         connect_button: 连接 Coinbase
         syncing: 正在同步...
         sync: 同步
-        disconnect: 断开连接
         disconnect_confirm: 确定要断开此 Coinbase 连接吗？同步的账户会变为手动账户。
       binance_panel:
         setup_instructions: 连接 Binance，请创建一个只读 API key：
@@ -378,7 +378,6 @@ zh-CN:
         connect_button: 连接 Binance
         syncing: 正在同步...
         sync: 同步
-        disconnect: 断开连接
         disconnect_confirm: 确定要断开 Binance 吗？
         historical_import: 历史导入设置
         sync_start_date_label: 导入起始日期
@@ -417,7 +416,6 @@ zh-CN:
         application_id_placeholder_new: 输入 application ID
         application_id_placeholder_update: 输入新 ID 以更新
         client_certificate_label: Client Certificate（包含 Private Key）
-        keep_client_certificate_hint: "留空以保留当前证书"
         save_and_connect: 保存并连接
         update_connection: 更新连接
         connected_bank: 已连接的银行
@@ -447,6 +445,10 @@ zh-CN:
         base_url_placeholder: https://lunchflow.app/api/v1（默认）
         save_and_connect: 保存并连接
         update_connection: 更新连接
+      open_banking_io_panel:
+        step_1_html: "前往 %{link}，连接您的银行并导出凭据。"
+        step_2: "打开下载的 credentials.json 文件。"
+        step_3: "将其全部内容粘贴到下方，保存后再关联已同步的账户。"
       simplefin_panel:
         step_1_html: 前往 %{link} 获取一次性设置令牌。
         step_2: 将令牌粘贴到下方并连接。

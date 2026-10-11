@@ -65,7 +65,6 @@ module Assistant
         Function::ImportBankStatement,
         Function::SearchFamilyFiles,
         Function::CreateGoal,
-        Function::SetOpeningBalance,
         Function::GetTags,
         Function::CreateTag,
         Function::UpdateTag,
@@ -74,8 +73,6 @@ module Assistant
         Function::UpdateCategory,
         Function::GetMerchants,
         Function::UpdateTransaction,
-        Function::CreateTransaction,
-        Function::DeleteTransaction,
         Function::UpdateBudget
       ]
 

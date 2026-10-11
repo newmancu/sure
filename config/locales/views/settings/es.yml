@@ -67,7 +67,7 @@ es:
         failed: Fallida
         no_usage_data: No se han encontrado datos de uso para el periodo seleccionado
         cost_estimates_title: Acerca de las estimaciones de coste
-        cost_estimates_description: Los costes se estiman según las tarifas publicadas por los proveedores, verificadas por última vez el %{date}. Los costes reales pueden variar. Las tarifas son por millón de tokens y varían según el modelo. Los modelos personalizados o autoalojados mostrarán "N/D" y no se incluyen en los totales de coste.
+        cost_estimates_description: Los costes se estiman según las tarifas de OpenAI a fecha de 2025. Los costes reales pueden variar. Las tarifas son por millón de tokens y varían según el modelo. Los modelos personalizados o autoalojados mostrarán "N/D" y no se incluyen en los totales de coste.
     ai_prompts:
       show:
         page_title: Indicaciones de IA
@@ -353,6 +353,7 @@ es:
       sync_provider_in_progress: Sincronización iniciada.
       recently_synced: Sincronizado hace poco. Inténtalo de nuevo en un momento.
       taglines:
+        open_banking_io: "Sincroniza cuentas bancarias europeas mediante open-banking.io."
         akahu: Sincroniza instituciones financieras de Nueva Zelanda a través de Akahu.
         simplefin: Conecta cuentas bancarias de EE. UU. mediante el protocolo abierto SimpleFIN.
         lunchflow: Conecta más de 20 000 bancos de más de 40 países (Reino Unido, UE, EE. UU. y más).
@@ -397,7 +398,6 @@ es:
         connect_button: Conectar Coinbase
         syncing: Sincronizando...
         sync: Sincronizar
-        disconnect: Desconectar
         disconnect_confirm: ¿Estás seguro de que deseas desconectar esta conexión de Coinbase? Tus cuentas sincronizadas pasarán a ser cuentas manuales.
       binance_panel:
         setup_instructions: 'Para conectar Binance, crea una clave API de solo lectura:'
@@ -419,7 +419,6 @@ es:
         historical_import: Ajustes de importación histórica
         sync_start_date_label: Importar datos desde
         sync_start_date_help: Selecciona hasta cuándo retroceder para obtener operaciones históricas.
-        disconnect: Desconectar
         disconnect_confirm: ¿Seguro que quieres desconectar Binance?
       kraken_panel:
         step1_html: Ve a los <a href="https://pro.kraken.com/app/settings/api" target="_blank" rel="noopener noreferrer" class="underline">ajustes de API de Kraken</a>
@@ -455,7 +454,6 @@ es:
         application_id_placeholder_new: Introduce el Application ID
         application_id_placeholder_update: Introduce un nuevo ID para actualizarlo
         client_certificate_label: Certificado de cliente (con clave privada)
-        keep_client_certificate_hint: "Déjalo en blanco para conservar el certificado actual"
         save_and_connect: Guardar y conectar
         update_connection: Actualizar conexión
         connected_bank: Banco conectado
@@ -489,6 +487,10 @@ es:
         step_1_html: Ve a %{link} y crea una aplicación personal.
         step_2: Copia tu token de aplicación y tu token de usuario.
         step_3: Pega los tokens abajo, guarda y luego vincula tus cuentas sincronizadas.
+      open_banking_io_panel:
+        step_1_html: "Ve a %{link}, conecta tu banco y exporta tus credenciales."
+        step_2: "Abre el archivo credentials.json descargado."
+        step_3: "Pega todo su contenido abajo, guarda y luego vincula tus cuentas sincronizadas."
       up_panel:
         step_1_html: Ve a %{link} y genera un token de acceso personal.
         step_2: Copia tu token de acceso personal.
