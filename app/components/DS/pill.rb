@@ -17,7 +17,7 @@ class DS::Pill < DesignSystemComponent
   }.freeze
 
   attr_reader :label, :tone, :style, :size, :show_dot, :dot_only, :title, :icon, :marker, :custom_color,
-              :truncate, :label_testid, :icon_size, :mono
+              :truncate, :label_testid, :icon_size
 
   # Generic inline pill primitive. Two modes:
   #
@@ -60,10 +60,8 @@ class DS::Pill < DesignSystemComponent
   #   controller tests that need to target the text node.
   # - `icon_size:` passes through to the icon helper (default "xs"; the
   #   category badge uses "sm" to keep its established glyph size).
-  # - `mono: true` applies `font-mono` for technical labels (queue names,
-  #   IDs, latencies) where tabular alignment aids scanning.
   def initialize(label: nil, tone: :violet, style: :soft, size: :sm, show_dot: nil, dot_only: false, title: nil, icon: nil, marker: true, custom_color: nil,
-                 truncate: false, label_testid: nil, icon_size: "xs", mono: false)
+                 truncate: false, label_testid: nil, icon_size: "xs")
     resolved_tone = SEMANTIC_TONE_ALIASES.fetch(tone.to_sym, tone.to_sym)
     @label = label || I18n.t("ds.pill.default_label", default: "Beta")
     @tone = TONES.include?(resolved_tone) ? resolved_tone : :violet
@@ -80,7 +78,6 @@ class DS::Pill < DesignSystemComponent
     @truncate = truncate
     @label_testid = label_testid
     @icon_size = icon_size
-    @mono = mono
   end
 
   def palette
@@ -171,7 +168,6 @@ class DS::Pill < DesignSystemComponent
       truncate ? "max-w-full min-w-0" : "whitespace-nowrap shrink-0",
       "border leading-none"
     ]
-    base << "font-mono" if mono
 
     if marker
       # Marker mode (Beta / Canary / NEW): rounded-md (slight chip
