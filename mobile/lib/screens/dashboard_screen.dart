@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/account.dart';
@@ -6,48 +5,31 @@ import '../providers/auth_provider.dart';
 import '../providers/accounts_provider.dart';
 import '../providers/transactions_provider.dart';
 import '../services/log_service.dart';
-import '../services/preferences_service.dart';
 import '../widgets/account_card.dart';
 import '../widgets/connectivity_banner.dart';
-import '../widgets/net_worth_card.dart';
-import '../widgets/currency_filter.dart';
-import '../widgets/sure_button.dart';
-import '../widgets/sure_icon.dart';
-import '../theme/sure_colors.dart';
-import '../theme/sure_spacing.dart';
-import '../theme/sure_tokens.dart';
-import '../theme/sure_typography.dart';
 import 'transaction_form_screen.dart';
 import 'transactions_list_screen.dart';
-import '../l10n/app_localizations.dart';
+import 'log_viewer_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
 
   @override
-  DashboardScreenState createState() => DashboardScreenState();
+  State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
-class DashboardScreenState extends State<DashboardScreen> {
+class _DashboardScreenState extends State<DashboardScreen> {
   final LogService _log = LogService.instance;
+  bool _assetsExpanded = true;
+  bool _liabilitiesExpanded = true;
   bool _showSyncSuccess = false;
   int _previousPendingCount = 0;
-  Timer? _syncSuccessTimer;
   TransactionsProvider? _transactionsProvider;
-
-  // Filter state
-  AccountFilter _accountFilter = AccountFilter.all;
-  Set<String> _selectedCurrencies = {};
-
-  // Group by type state
-  bool _groupByType = false;
-  final Set<String> _collapsedGroups = {};
 
   @override
   void initState() {
     super.initState();
     _loadAccounts();
-    _loadPreferences();
 
     // Listen for sync completion to show success indicator
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -60,7 +42,6 @@ class DashboardScreenState extends State<DashboardScreen> {
 
   @override
   void dispose() {
-    _syncSuccessTimer?.cancel();
     _transactionsProvider?.removeListener(_onTransactionsChanged);
     super.dispose();
   }
@@ -70,31 +51,26 @@ class DashboardScreenState extends State<DashboardScreen> {
     if (transactionsProvider == null || !mounted) {
       return;
     }
-
+    
     final currentPendingCount = transactionsProvider.pendingCount;
 
-    // Show sync success when pending count decreased (local transactions uploaded)
+    // If pending count decreased, it means transactions were synced
     if (_previousPendingCount > 0 && currentPendingCount < _previousPendingCount) {
-      _showSyncSuccessIndicator();
+      setState(() {
+        _showSyncSuccess = true;
+      });
+
+      // Hide the success indicator after 3 seconds
+      Future.delayed(const Duration(seconds: 3), () {
+        if (mounted) {
+          setState(() {
+            _showSyncSuccess = false;
+          });
+        }
+      });
     }
 
     _previousPendingCount = currentPendingCount;
-  }
-
-  void _showSyncSuccessIndicator() {
-    _syncSuccessTimer?.cancel();
-
-    setState(() {
-      _showSyncSuccess = true;
-    });
-
-    _syncSuccessTimer = Timer(const Duration(seconds: 3), () {
-      if (mounted) {
-        setState(() {
-          _showSyncSuccess = false;
-        });
-      }
-    });
   }
 
   Future<void> _loadAccounts() async {
@@ -116,19 +92,6 @@ class DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  Future<void> _loadPreferences() async {
-    final groupByType = await PreferencesService.instance.getGroupByType();
-    if (mounted) {
-      setState(() {
-        _groupByType = groupByType;
-      });
-    }
-  }
-
-  void reloadPreferences() {
-    _loadPreferences();
-  }
-
   Future<void> _handleRefresh() async {
     await _performManualSync();
   }
@@ -136,8 +99,6 @@ class DashboardScreenState extends State<DashboardScreen> {
   Future<void> _performManualSync() async {
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     final transactionsProvider = Provider.of<TransactionsProvider>(context, listen: false);
-    final l = AppLocalizations.of(context);
-    final palette = SureColors.of(context).palette;
 
     final accessToken = await authProvider.getValidAccessToken();
     if (accessToken == null) {
@@ -148,10 +109,10 @@ class DashboardScreenState extends State<DashboardScreen> {
     // Show syncing indicator
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
+        const SnackBar(
           content: Row(
             children: [
-              const SizedBox(
+              SizedBox(
                 width: 16,
                 height: 16,
                 child: CircularProgressIndicator(
@@ -159,11 +120,11 @@ class DashboardScreenState extends State<DashboardScreen> {
                   valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                 ),
               ),
-              const SizedBox(width: 12),
-              Expanded(child: Text(l.dashboardSyncing)),
+              SizedBox(width: 12),
+              Text('Syncing data from server...'),
             ],
           ),
-          duration: const Duration(seconds: 30),
+          duration: Duration(seconds: 30),
         ),
       );
     }
@@ -177,56 +138,42 @@ class DashboardScreenState extends State<DashboardScreen> {
 
       if (mounted) {
         ScaffoldMessenger.of(context).clearSnackBars();
-        if (transactionsProvider.error != null) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Row(
-                children: [
-                  SureIcon(SureIcons.circleAlert, color: palette.textInverse),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      l.dashboardSyncFailed,
-                      style: TextStyle(color: palette.textInverse),
-                    ),
-                  ),
-                ],
-              ),
-              backgroundColor: palette.destructive,
-              duration: const Duration(seconds: 3),
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.check_circle, color: Colors.white),
+                SizedBox(width: 12),
+                Text('Sync completed successfully'),
+              ],
             ),
-          );
-        } else {
-          _showSyncSuccessIndicator();
-        }
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
+          ),
+        );
       }
     } catch (e) {
       _log.error('DashboardScreen', 'Error in _performManualSync: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).clearSnackBars();
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
+          const SnackBar(
             content: Row(
               children: [
-                SureIcon(SureIcons.circleAlert, color: palette.textInverse),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    l.dashboardSyncError,
-                    style: TextStyle(color: palette.textInverse),
-                  ),
-                ),
+                Icon(Icons.error, color: Colors.white),
+                SizedBox(width: 12),
+                Expanded(child: Text('Sync failed. Please try again.')),
               ],
             ),
-            backgroundColor: palette.destructive,
-            duration: const Duration(seconds: 3),
+            backgroundColor: Colors.red,
+            duration: Duration(seconds: 3),
           ),
         );
       }
     }
   }
 
-  String _formatAmount(String currency, double amount) {
+  List<String> _formatCurrencyItem(String currency, double amount) {
     final symbol = _getCurrencySymbol(currency);
     final isSmallAmount = amount.abs() < 1 && amount != 0;
     final formattedAmount = amount.toStringAsFixed(isSmallAmount ? 4 : 0);
@@ -239,40 +186,7 @@ class DashboardScreenState extends State<DashboardScreen> {
     );
 
     final finalAmount = parts.length > 1 ? '$integerPart.${parts[1]}' : integerPart;
-    return '$symbol$finalAmount $currency';
-  }
-
-  Set<String> _getAllCurrencies(AccountsProvider accountsProvider) {
-    final currencies = <String>{};
-    for (var account in accountsProvider.accounts) {
-      currencies.add(account.currency);
-    }
-    return currencies;
-  }
-
-  List<Account> _getFilteredAccounts(AccountsProvider accountsProvider) {
-    var accounts = accountsProvider.accounts.toList();
-
-    // Filter by account type
-    switch (_accountFilter) {
-      case AccountFilter.assets:
-        accounts = accounts.where((a) => a.isAsset).toList();
-        break;
-      case AccountFilter.liabilities:
-        accounts = accounts.where((a) => a.isLiability).toList();
-        break;
-      case AccountFilter.all:
-        // Show all accounts (assets and liabilities)
-        accounts = accounts.where((a) => a.isAsset || a.isLiability).toList();
-        break;
-    }
-
-    // Filter by currency if any selected
-    if (_selectedCurrencies.isNotEmpty) {
-      accounts = accounts.where((a) => _selectedCurrencies.contains(a.currency)).toList();
-    }
-
-    return accounts;
+    return [currency, '$symbol$finalAmount'];
   }
 
   String _getCurrencySymbol(String currency) {
@@ -299,8 +213,6 @@ class DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _handleAccountTap(Account account) async {
-    final l = AppLocalizations.of(context);
-    final palette = SureColors.of(context).palette;
     final result = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
@@ -312,10 +224,10 @@ class DashboardScreenState extends State<DashboardScreen> {
     if (result == true && mounted) {
       // Show loading indicator
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
+        const SnackBar(
           content: Row(
             children: [
-              const SizedBox(
+              SizedBox(
                 width: 16,
                 height: 16,
                 child: CircularProgressIndicator(
@@ -323,11 +235,11 @@ class DashboardScreenState extends State<DashboardScreen> {
                   valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                 ),
               ),
-              const SizedBox(width: 12),
-              Expanded(child: Text(l.dashboardRefreshing)),
+              SizedBox(width: 12),
+              Text('Refreshing accounts...'),
             ],
           ),
-          duration: const Duration(seconds: 2),
+          duration: Duration(seconds: 2),
         ),
       );
 
@@ -341,19 +253,16 @@ class DashboardScreenState extends State<DashboardScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).clearSnackBars();
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
+          const SnackBar(
             content: Row(
               children: [
-                SureIcon(SureIcons.circleCheck, color: palette.textInverse),
-                const SizedBox(width: 12),
-                Text(
-                  l.dashboardAccountsUpdated,
-                  style: TextStyle(color: palette.textInverse),
-                ),
+                Icon(Icons.check_circle, color: Colors.white),
+                SizedBox(width: 12),
+                Text('Accounts updated'),
               ],
             ),
-            backgroundColor: palette.success,
-            duration: const Duration(seconds: 1),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 1),
           ),
         );
       }
@@ -374,41 +283,84 @@ class DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  Future<void> _handleLogout() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Sign Out'),
+        content: const Text('Are you sure you want to sign out?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Sign Out'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true && mounted) {
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      final accountsProvider = Provider.of<AccountsProvider>(context, listen: false);
+
+      accountsProvider.clearAccounts();
+      await authProvider.logout();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final l = AppLocalizations.of(context);
-    final palette = SureColors.of(context).palette;
+    final colorScheme = Theme.of(context).colorScheme;
 
     return Scaffold(
-      body: Column(
-        children: [
-          const ConnectivityBanner(),
+      appBar: AppBar(
+        title: const Text('Dashboard'),
+        actions: [
           if (_showSyncSuccess)
-            AnimatedOpacity(
-              opacity: _showSyncSuccess ? 1.0 : 0.0,
-              duration: const Duration(milliseconds: 300),
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: SureSpacing.xl, vertical: SureSpacing.sm),
-                color: palette.success.withValues(alpha: 0.1),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    SureIcon(
-                      SureIcons.cloudCheck,
-                      color: palette.success,
-                      size: 18,
-                    ),
-                    const SizedBox(width: SureSpacing.md),
-                    Text(
-                      l.dashboardSynced,
-                      style: TextStyle(
-                          color: palette.success, fontSize: SureTypography.sm),
-                    ),
-                  ],
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: AnimatedOpacity(
+                opacity: _showSyncSuccess ? 1.0 : 0.0,
+                duration: const Duration(milliseconds: 300),
+                child: const Icon(
+                  Icons.cloud_done,
+                  color: Colors.green,
+                  size: 28,
                 ),
               ),
             ),
+          Semantics(
+            label: 'Open debug logs',
+            button: true,
+            child: IconButton(
+              icon: const Icon(Icons.bug_report),
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const LogViewerScreen()),
+                );
+              },
+              tooltip: 'Debug Logs',
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _handleRefresh,
+            tooltip: 'Refresh',
+          ),
+          IconButton(
+            icon: const Icon(Icons.logout),
+            onPressed: _handleLogout,
+            tooltip: 'Sign Out',
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          const ConnectivityBanner(),
           Expanded(
             child: Consumer2<AuthProvider, AccountsProvider>(
               builder: (context, authProvider, accountsProvider, _) {
@@ -428,27 +380,27 @@ class DashboardScreenState extends State<DashboardScreen> {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    SureIcon(
-                      SureIcons.circleAlert,
+                    Icon(
+                      Icons.error_outline,
                       size: 64,
-                      color: palette.destructive,
+                      color: colorScheme.error,
                     ),
-                    const SizedBox(height: SureSpacing.xl),
+                    const SizedBox(height: 16),
                     Text(
-                      l.dashboardErrorLoadingAccounts,
+                      'Failed to load accounts',
                       style: Theme.of(context).textTheme.titleLarge,
                     ),
-                    const SizedBox(height: SureSpacing.md),
+                    const SizedBox(height: 8),
                     Text(
                       accountsProvider.errorMessage!,
-                      style: TextStyle(color: palette.textSecondary),
+                      style: TextStyle(color: colorScheme.onSurfaceVariant),
                       textAlign: TextAlign.center,
                     ),
-                    const SizedBox(height: SureSpacing.xxxl),
-                    SureButton(
-                      label: l.commonTryAgain,
+                    const SizedBox(height: 24),
+                    ElevatedButton.icon(
                       onPressed: _handleRefresh,
-                      leading: const SureIcon(SureIcons.refresh, size: 18),
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Try Again'),
                     ),
                   ],
                 ),
@@ -464,27 +416,27 @@ class DashboardScreenState extends State<DashboardScreen> {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    SureIcon(
-                      SureIcons.wallet,
+                    Icon(
+                      Icons.account_balance_wallet_outlined,
                       size: 64,
-                      color: palette.textSubdued,
+                      color: colorScheme.onSurfaceVariant,
                     ),
-                    const SizedBox(height: SureSpacing.xl),
+                    const SizedBox(height: 16),
                     Text(
-                      l.dashboardNoAccounts,
+                      'No accounts yet',
                       style: Theme.of(context).textTheme.titleLarge,
                     ),
-                    const SizedBox(height: SureSpacing.md),
+                    const SizedBox(height: 8),
                     Text(
-                      l.dashboardNoAccountsSubtitle,
-                      style: TextStyle(color: palette.textSecondary),
+                      'Add accounts in the web app to see them here.',
+                      style: TextStyle(color: colorScheme.onSurfaceVariant),
                       textAlign: TextAlign.center,
                     ),
-                    const SizedBox(height: SureSpacing.xxxl),
-                    SureButton(
-                      label: l.commonRefresh,
+                    const SizedBox(height: 24),
+                    ElevatedButton.icon(
                       onPressed: _handleRefresh,
-                      leading: const SureIcon(SureIcons.refresh, size: 18),
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Refresh'),
                     ),
                   ],
                 ),
@@ -497,43 +449,124 @@ class DashboardScreenState extends State<DashboardScreen> {
             onRefresh: _handleRefresh,
             child: CustomScrollView(
               slivers: [
-                // Net Worth Card with Asset/Liability filter
+                // Welcome header
                 SliverToBoxAdapter(
-                  child: NetWorthCard(
-                    assetTotalsByCurrency: accountsProvider.assetTotalsByCurrency,
-                    liabilityTotalsByCurrency: accountsProvider.liabilityTotalsByCurrency,
-                    currentFilter: _accountFilter,
-                    onFilterChanged: (filter) {
-                      setState(() {
-                        _accountFilter = filter;
-                      });
-                    },
-                    formatAmount: _formatAmount,
-                    netWorthFormatted: accountsProvider.netWorthFormatted,
-                    isStale: accountsProvider.isBalanceSheetStale,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Welcome${authProvider.user != null ? ', ${authProvider.user!.displayName}' : ''}',
+                          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Here\'s your financial overview',
+                          style: TextStyle(color: colorScheme.onSurfaceVariant),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
 
-                // Currency filter
+                // Summary cards
                 SliverToBoxAdapter(
-                  child: CurrencyFilter(
-                    availableCurrencies: _getAllCurrencies(accountsProvider),
-                    selectedCurrencies: _selectedCurrencies,
-                    onSelectionChanged: (currencies) {
-                      setState(() {
-                        _selectedCurrencies = currencies;
-                      });
-                    },
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Column(
+                      children: [
+                        if (accountsProvider.assetAccounts.isNotEmpty)
+                          _SummaryCard(
+                            title: 'Assets Total',
+                            totals: accountsProvider.assetTotalsByCurrency,
+                            color: Colors.green,
+                            formatCurrencyItem: _formatCurrencyItem,
+                          ),
+                        if (accountsProvider.liabilityAccounts.isNotEmpty)
+                          _SummaryCard(
+                            title: 'Liabilities Total',
+                            totals: accountsProvider.liabilityTotalsByCurrency,
+                            color: Colors.red,
+                            formatCurrencyItem: _formatCurrencyItem,
+                          ),
+                      ],
+                    ),
                   ),
                 ),
 
-                // Spacing
-                const SliverToBoxAdapter(
-                  child: SizedBox(height: 8),
-                ),
+                // Assets section
+                if (accountsProvider.assetAccounts.isNotEmpty) ...[
+                  SliverToBoxAdapter(
+                    child: _CollapsibleSectionHeader(
+                      title: 'Assets',
+                      count: accountsProvider.assetAccounts.length,
+                      color: Colors.green,
+                      isExpanded: _assetsExpanded,
+                      onToggle: () {
+                        setState(() {
+                          _assetsExpanded = !_assetsExpanded;
+                        });
+                      },
+                    ),
+                  ),
+                  if (_assetsExpanded)
+                    SliverPadding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      sliver: SliverList(
+                        delegate: SliverChildBuilderDelegate(
+                          (context, index) {
+                            final account = accountsProvider.assetAccounts[index];
+                            return AccountCard(
+                              account: account,
+                              onTap: () => _handleAccountTap(account),
+                              onSwipe: () => _handleAccountSwipe(account),
+                            );
+                          },
+                          childCount: accountsProvider.assetAccounts.length,
+                        ),
+                      ),
+                    ),
+                ],
 
-                // Filtered accounts section
-                ..._buildFilteredAccountsSection(accountsProvider),
+                // Liabilities section
+                if (accountsProvider.liabilityAccounts.isNotEmpty) ...[
+                  SliverToBoxAdapter(
+                    child: _CollapsibleSectionHeader(
+                      title: 'Liabilities',
+                      count: accountsProvider.liabilityAccounts.length,
+                      color: Colors.red,
+                      isExpanded: _liabilitiesExpanded,
+                      onToggle: () {
+                        setState(() {
+                          _liabilitiesExpanded = !_liabilitiesExpanded;
+                        });
+                      },
+                    ),
+                  ),
+                  if (_liabilitiesExpanded)
+                    SliverPadding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      sliver: SliverList(
+                        delegate: SliverChildBuilderDelegate(
+                          (context, index) {
+                            final account = accountsProvider.liabilityAccounts[index];
+                            return AccountCard(
+                              account: account,
+                              onTap: () => _handleAccountTap(account),
+                              onSwipe: () => _handleAccountSwipe(account),
+                            );
+                          },
+                          childCount: accountsProvider.liabilityAccounts.length,
+                        ),
+                      ),
+                    ),
+                ],
+
+                // Uncategorized accounts
+                ..._buildUncategorizedSection(accountsProvider),
 
                 // Bottom padding
                 const SliverToBoxAdapter(
@@ -550,228 +583,310 @@ class DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  List<Widget> _buildFilteredAccountsSection(AccountsProvider accountsProvider) {
-    final filteredAccounts = _getFilteredAccounts(accountsProvider);
-    final l = AppLocalizations.of(context);
+  List<Widget> _buildUncategorizedSection(AccountsProvider accountsProvider) {
+    final uncategorized = accountsProvider.accounts
+        .where((a) => !a.isAsset && !a.isLiability)
+        .toList();
 
-    final palette = SureColors.of(context).palette;
-
-    if (filteredAccounts.isEmpty) {
-      return [
-        SliverToBoxAdapter(
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(SureSpacing.huge),
-              child: Column(
-                children: [
-                  SureIcon(
-                    SureIcons.wallet,
-                    size: 48,
-                    color: palette.textSubdued,
-                  ),
-                  const SizedBox(height: SureSpacing.xl),
-                  Text(
-                    l.dashboardFilterEmpty,
-                    style: TextStyle(
-                      color: palette.textSecondary,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ];
+    if (uncategorized.isEmpty) {
+      return [];
     }
 
-    // Sort accounts: by type, then currency, then balance
-    filteredAccounts.sort((a, b) {
-      if (a.isAsset && !b.isAsset) return -1;
-      if (!a.isAsset && b.isAsset) return 1;
-      int typeComparison = a.accountType.compareTo(b.accountType);
-      if (typeComparison != 0) return typeComparison;
-      int currencyComparison = a.currency.compareTo(b.currency);
-      if (currencyComparison != 0) return currencyComparison;
-      return b.balanceAsDouble.compareTo(a.balanceAsDouble);
-    });
-
-    if (_groupByType) {
-      return _buildGroupedAccountsList(filteredAccounts);
-    }
-
-    return _buildFlatAccountsList(filteredAccounts);
-  }
-
-  List<Widget> _buildFlatAccountsList(List<Account> accounts) {
     return [
+      SliverToBoxAdapter(
+        child: _SimpleSectionHeader(
+          title: 'Other Accounts',
+          count: uncategorized.length,
+          color: Colors.grey,
+        ),
+      ),
       SliverPadding(
         padding: const EdgeInsets.symmetric(horizontal: 16),
         sliver: SliverList(
           delegate: SliverChildBuilderDelegate(
             (context, index) {
-              final account = accounts[index];
+              final account = uncategorized[index];
               return AccountCard(
                 account: account,
                 onTap: () => _handleAccountTap(account),
                 onSwipe: () => _handleAccountSwipe(account),
               );
             },
-            childCount: accounts.length,
+            childCount: uncategorized.length,
           ),
         ),
       ),
     ];
   }
-
-  List<Widget> _buildGroupedAccountsList(List<Account> accounts) {
-    // Group accounts by accountType
-    final groups = <String, List<Account>>{};
-    for (final account in accounts) {
-      groups.putIfAbsent(account.accountType, () => []).add(account);
-    }
-
-    final slivers = <Widget>[];
-    for (final entry in groups.entries) {
-      final accountType = entry.key;
-      final groupAccounts = entry.value;
-      final isCollapsed = _collapsedGroups.contains(accountType);
-
-      // Use first account to get display name and icon
-      final displayName = groupAccounts.first.displayAccountType;
-
-      slivers.add(
-        SliverToBoxAdapter(
-          child: _CollapsibleTypeHeader(
-            title: displayName,
-            count: groupAccounts.length,
-            accountType: accountType,
-            isCollapsed: isCollapsed,
-            onToggle: () {
-              setState(() {
-                if (isCollapsed) {
-                  _collapsedGroups.remove(accountType);
-                } else {
-                  _collapsedGroups.add(accountType);
-                }
-              });
-            },
-          ),
-        ),
-      );
-
-      if (!isCollapsed) {
-        slivers.add(
-          SliverPadding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            sliver: SliverList(
-              delegate: SliverChildBuilderDelegate(
-                (context, index) {
-                  final account = groupAccounts[index];
-                  return AccountCard(
-                    account: account,
-                    onTap: () => _handleAccountTap(account),
-                    onSwipe: () => _handleAccountSwipe(account),
-                  );
-                },
-                childCount: groupAccounts.length,
-              ),
-            ),
-          ),
-        );
-      }
-    }
-
-    return slivers;
-  }
 }
 
-class _CollapsibleTypeHeader extends StatelessWidget {
+class _SummaryCard extends StatelessWidget {
   final String title;
-  final int count;
-  final String accountType;
-  final bool isCollapsed;
-  final VoidCallback onToggle;
+  final Map<String, double> totals;
+  final Color color;
+  final List<String> Function(String currency, double amount) formatCurrencyItem;
 
-  const _CollapsibleTypeHeader({
+  const _SummaryCard({
     required this.title,
-    required this.count,
-    required this.accountType,
-    required this.isCollapsed,
-    required this.onToggle,
+    required this.totals,
+    required this.color,
+    required this.formatCurrencyItem,
   });
-
-  String _getTypeIconName() {
-    switch (accountType) {
-      case 'depository':
-        return SureIcons.landmark;
-      case 'credit_card':
-        return SureIcons.creditCard;
-      case 'investment':
-        return SureIcons.trendingUp;
-      case 'loan':
-        return SureIcons.receipt;
-      case 'property':
-        return SureIcons.house;
-      case 'vehicle':
-        return SureIcons.car;
-      case 'crypto':
-        return SureIcons.bitcoin;
-      case 'other_asset':
-        return SureIcons.shapes;
-      case 'other_liability':
-        return SureIcons.handCoins;
-      default:
-        return SureIcons.wallet;
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
-    final palette = SureColors.of(context).palette;
+    final entries = totals.entries.toList();
+    final rows = <Widget>[];
 
+    // Group currencies into pairs (2 per row)
+    for (int i = 0; i < entries.length; i += 2) {
+      final first = entries[i];
+      final firstFormatted = formatCurrencyItem(first.key, first.value);
+
+      if (i + 1 < entries.length) {
+        // Two items in this row
+        final second = entries[i + 1];
+        final secondFormatted = formatCurrencyItem(second.key, second.value);
+
+        rows.add(
+          Row(
+            children: [
+              Expanded(
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      firstFormatted[0],
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    Text(
+                      firstFormatted[1],
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Text(
+                ' | ',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w300,
+                  color: color.withValues(alpha: 0.5),
+                ),
+              ),
+              Expanded(
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      secondFormatted[0],
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    Text(
+                      secondFormatted[1],
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      } else {
+        // Only one item in this row
+        rows.add(
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                firstFormatted[0],
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              Text(
+                firstFormatted[1],
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        );
+      }
+
+      if (i + 2 < entries.length) {
+        rows.add(const SizedBox(height: 4));
+      }
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: color.withValues(alpha: 0.3),
+          width: 1,
+        ),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 4,
+            height: 40,
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: color,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                ...rows,
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CollapsibleSectionHeader extends StatelessWidget {
+  final String title;
+  final int count;
+  final Color color;
+  final bool isExpanded;
+  final VoidCallback onToggle;
+
+  const _CollapsibleSectionHeader({
+    required this.title,
+    required this.count,
+    required this.color,
+    required this.isExpanded,
+    required this.onToggle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
     return InkWell(
       onTap: onToggle,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(
-            SureSpacing.xl, SureSpacing.xl, SureSpacing.xl, SureSpacing.md),
+        padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
         child: Row(
           children: [
-            SureIcon(
-              _getTypeIconName(),
-              size: 18,
-              color: palette.textSubdued,
+            Container(
+              width: 4,
+              height: 24,
+              decoration: BoxDecoration(
+                color: color,
+                borderRadius: BorderRadius.circular(2),
+              ),
             ),
-            const SizedBox(width: SureSpacing.lg),
+            const SizedBox(width: 12),
             Text(
               title,
-              style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    fontWeight: SureTokens.weightMedium,
-                  ),
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
             ),
-            const SizedBox(width: SureSpacing.md),
+            const SizedBox(width: 8),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
               decoration: BoxDecoration(
-                color: palette.surfaceInset,
-                borderRadius: BorderRadius.circular(SureTokens.radiusLg),
+                color: color.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
               ),
               child: Text(
                 count.toString(),
                 style: TextStyle(
-                  color: palette.textSecondary,
-                  fontWeight: SureTokens.weightMedium,
-                  fontSize: SureTypography.xs,
+                  color: color,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
                 ),
               ),
             ),
             const Spacer(),
-            SureIcon(
-              isCollapsed ? SureIcons.chevronDown : SureIcons.chevronUp,
-              size: SureIconSize.md,
-              color: palette.textSubdued,
+            Icon(
+              isExpanded ? Icons.expand_less : Icons.expand_more,
+              color: color,
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _SimpleSectionHeader extends StatelessWidget {
+  final String title;
+  final int count;
+  final Color color;
+
+  const _SimpleSectionHeader({
+    required this.title,
+    required this.count,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
+      child: Row(
+        children: [
+          Container(
+            width: 4,
+            height: 24,
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Text(
+            title,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              count.toString(),
+              style: TextStyle(
+                color: color,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

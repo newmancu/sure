@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import '../l10n/app_localizations.dart';
 import '../services/log_service.dart';
 
 class LogViewerScreen extends StatefulWidget {
@@ -75,10 +74,9 @@ class _LogViewerScreenState extends State<LogViewerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final l = AppLocalizations.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: Text(l.logViewerTitle),
+        title: const Text('Debug Logs'),
         actions: [
           PopupMenuButton<String>(
             initialValue: _selectedLevel,
@@ -88,11 +86,11 @@ class _LogViewerScreenState extends State<LogViewerScreen> {
               });
             },
             itemBuilder: (context) => [
-              PopupMenuItem(value: 'ALL', child: Text(l.logViewerFilterAll)),
-              PopupMenuItem(value: 'ERROR', child: Text(l.logViewerFilterError)),
-              PopupMenuItem(value: 'WARNING', child: Text(l.logViewerFilterWarning)),
-              PopupMenuItem(value: 'INFO', child: Text(l.logViewerFilterInfo)),
-              PopupMenuItem(value: 'DEBUG', child: Text(l.logViewerFilterDebug)),
+              const PopupMenuItem(value: 'ALL', child: Text('All Levels')),
+              const PopupMenuItem(value: 'ERROR', child: Text('Errors Only')),
+              const PopupMenuItem(value: 'WARNING', child: Text('Warnings Only')),
+              const PopupMenuItem(value: 'INFO', child: Text('Info Only')),
+              const PopupMenuItem(value: 'DEBUG', child: Text('Debug Only')),
             ],
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -112,7 +110,7 @@ class _LogViewerScreenState extends State<LogViewerScreen> {
                 _autoScroll = !_autoScroll;
               });
             },
-            tooltip: _autoScroll ? l.logViewerAutoScrollDisable : l.logViewerAutoScrollEnable,
+            tooltip: _autoScroll ? 'Disable Auto-scroll' : 'Enable Auto-scroll',
           ),
           IconButton(
             icon: const Icon(Icons.copy),
@@ -120,13 +118,13 @@ class _LogViewerScreenState extends State<LogViewerScreen> {
               final logs = LogService.instance.exportLogs();
               Clipboard.setData(ClipboardData(text: logs));
               ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(l.logViewerLogsCopied),
-                  duration: const Duration(seconds: 2),
+                const SnackBar(
+                  content: Text('Logs copied to clipboard'),
+                  duration: Duration(seconds: 2),
                 ),
               );
             },
-            tooltip: l.logViewerCopyLogs,
+            tooltip: 'Copy Logs',
           ),
           IconButton(
             icon: const Icon(Icons.delete),
@@ -134,12 +132,12 @@ class _LogViewerScreenState extends State<LogViewerScreen> {
               showDialog(
                 context: context,
                 builder: (context) => AlertDialog(
-                  title: Text(l.logViewerClearLogs),
-                  content: Text(l.logViewerClearConfirm),
+                  title: const Text('Clear Logs'),
+                  content: const Text('Are you sure you want to clear all logs?'),
                   actions: [
                     TextButton(
                       onPressed: () => Navigator.pop(context),
-                      child: Text(l.commonCancel),
+                      child: const Text('Cancel'),
                     ),
                     TextButton(
                       onPressed: () {
@@ -147,13 +145,13 @@ class _LogViewerScreenState extends State<LogViewerScreen> {
                         Navigator.pop(context);
                       },
                       style: TextButton.styleFrom(foregroundColor: Colors.red),
-                      child: Text(l.logViewerClear),
+                      child: const Text('Clear'),
                     ),
                   ],
                 ),
               );
             },
-            tooltip: l.logViewerClearLogs,
+            tooltip: 'Clear Logs',
           ),
         ],
       ),
@@ -166,15 +164,15 @@ class _LogViewerScreenState extends State<LogViewerScreen> {
           WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToBottom());
 
           if (logs.isEmpty) {
-            return Center(
+            return const Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Icon(Icons.text_snippet_outlined, size: 64, color: Colors.grey),
-                  const SizedBox(height: 16),
+                  Icon(Icons.text_snippet_outlined, size: 64, color: Colors.grey),
+                  SizedBox(height: 16),
                   Text(
-                    AppLocalizations.of(context).logViewerEmpty,
-                    style: const TextStyle(fontSize: 16, color: Colors.grey),
+                    'No logs yet',
+                    style: TextStyle(fontSize: 16, color: Colors.grey),
                   ),
                 ],
               ),

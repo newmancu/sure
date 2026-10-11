@@ -10,7 +10,7 @@ class Provider::SimplefinTest < ActiveSupport::TestCase
     # First call raises timeout, second call succeeds
     mock_response = OpenStruct.new(code: 200, body: '{"accounts": []}')
 
-    Provider::Simplefin.expects(:get)
+    HTTParty.expects(:get)
       .times(2)
       .raises(Net::ReadTimeout.new("Connection timed out"))
       .then.returns(mock_response)
@@ -25,7 +25,7 @@ class Provider::SimplefinTest < ActiveSupport::TestCase
   test "retries on Net::OpenTimeout and succeeds on retry" do
     mock_response = OpenStruct.new(code: 200, body: '{"accounts": []}')
 
-    Provider::Simplefin.expects(:get)
+    HTTParty.expects(:get)
       .times(2)
       .raises(Net::OpenTimeout.new("Connection timed out"))
       .then.returns(mock_response)
@@ -39,7 +39,7 @@ class Provider::SimplefinTest < ActiveSupport::TestCase
   test "retries on SocketError and succeeds on retry" do
     mock_response = OpenStruct.new(code: 200, body: '{"accounts": []}')
 
-    Provider::Simplefin.expects(:get)
+    HTTParty.expects(:get)
       .times(2)
       .raises(SocketError.new("Failed to open TCP connection"))
       .then.returns(mock_response)
@@ -51,7 +51,7 @@ class Provider::SimplefinTest < ActiveSupport::TestCase
   end
 
   test "raises SimplefinError after max retries exceeded" do
-    Provider::Simplefin.expects(:get)
+    HTTParty.expects(:get)
       .times(4) # Initial + 3 retries
       .raises(Net::ReadTimeout.new("Connection timed out"))
 
@@ -66,7 +66,7 @@ class Provider::SimplefinTest < ActiveSupport::TestCase
   end
 
   test "does not retry on non-retryable errors" do
-    Provider::Simplefin.expects(:get)
+    HTTParty.expects(:get)
       .times(1)
       .raises(ArgumentError.new("Invalid argument"))
 
@@ -80,7 +80,7 @@ class Provider::SimplefinTest < ActiveSupport::TestCase
   test "handles HTTP 429 rate limit response" do
     mock_response = OpenStruct.new(code: 429, body: "Rate limit exceeded")
 
-    Provider::Simplefin.expects(:get).returns(mock_response)
+    HTTParty.expects(:get).returns(mock_response)
 
     error = assert_raises(Provider::Simplefin::SimplefinError) do
       @provider.get_accounts(@access_url)
@@ -93,7 +93,7 @@ class Provider::SimplefinTest < ActiveSupport::TestCase
   test "handles HTTP 500 server error response" do
     mock_response = OpenStruct.new(code: 500, body: "Internal Server Error")
 
-    Provider::Simplefin.expects(:get).returns(mock_response)
+    HTTParty.expects(:get).returns(mock_response)
 
     error = assert_raises(Provider::Simplefin::SimplefinError) do
       @provider.get_accounts(@access_url)
@@ -102,44 +102,11 @@ class Provider::SimplefinTest < ActiveSupport::TestCase
     assert_equal :server_error, error.error_type
   end
 
-  test "get_accounts sends pending=1 when pending is enabled" do
-    mock_response = OpenStruct.new(code: 200, body: '{"accounts": []}')
-
-    Provider::Simplefin.expects(:get)
-      .with { |url| url.include?("pending=1") }
-      .returns(mock_response)
-
-    @provider.get_accounts(@access_url, pending: true)
-  end
-
-  test "get_accounts omits the pending param when pending is disabled" do
-    # The SimpleFIN protocol has no pending=0 — bridges presence-check the
-    # param, so pending=0 behaves like pending=1. Disabling pending must omit
-    # the param entirely.
-    mock_response = OpenStruct.new(code: 200, body: '{"accounts": []}')
-
-    Provider::Simplefin.expects(:get)
-      .with { |url| !url.include?("pending") }
-      .returns(mock_response)
-
-    @provider.get_accounts(@access_url, pending: false)
-  end
-
-  test "get_accounts omits the pending param when pending is nil" do
-    mock_response = OpenStruct.new(code: 200, body: '{"accounts": []}')
-
-    Provider::Simplefin.expects(:get)
-      .with { |url| !url.include?("pending") }
-      .returns(mock_response)
-
-    @provider.get_accounts(@access_url, pending: nil)
-  end
-
   test "claim_access_url retries on network errors" do
     setup_token = Base64.encode64("https://example.com/claim")
     mock_response = OpenStruct.new(code: 200, body: "https://example.com/access")
 
-    Provider::Simplefin.expects(:post)
+    HTTParty.expects(:post)
       .times(2)
       .raises(Net::ReadTimeout.new("Connection timed out"))
       .then.returns(mock_response)

@@ -14,28 +14,10 @@ module ApplicationHelper
     form_with(**options, &block)
   end
 
-  # Locale-aware ordinal label for integers.
-  # English falls through to Ruby's ordinalize ("1st"); Catalan returns "1r"/"2n"/...
-  def localized_ordinal(number)
-    case I18n.locale
-    when :ca
-      n = number.to_i
-      suffix = case n
-      when 1, 3 then "r"
-      when 2 then "n"
-      when 4 then "t"
-      else "è"
-      end
-      "#{n}#{suffix}"
-    else
-      number.to_i.ordinalize
-    end
-  end
-
   def icon(key, size: "md", color: "default", custom: false, as_button: false, **opts)
     extra_classes = opts.delete(:class)
     sizes = { xs: "w-3 h-3", sm: "w-4 h-4", md: "w-5 h-5", lg: "w-6 h-6", xl: "w-7 h-7", "2xl": "w-8 h-8" }
-    colors = { default: "text-secondary", white: "text-inverse", success: "text-success", warning: "text-warning", destructive: "text-destructive", info: "text-info", current: "text-current" }
+    colors = { default: "fg-gray", white: "fg-inverse", success: "text-success", warning: "text-warning", destructive: "text-destructive", current: "text-current" }
 
     icon_classes = class_names(
       "shrink-0",
@@ -44,20 +26,13 @@ module ApplicationHelper
       extra_classes
     )
 
-    resolved_key = normalize_icon_key(key)
-
     if custom
-      inline_svg_tag("#{resolved_key}.svg", class: icon_classes, **opts)
+      inline_svg_tag("#{key}.svg", class: icon_classes, **opts)
     elsif as_button
-      render DS::Button.new(variant: "icon", class: extra_classes, icon: resolved_key, size: size, type: "button", **opts)
+      render DS::Button.new(variant: "icon", class: extra_classes, icon: key, size: size, type: "button", **opts)
     else
-      safe_lucide_icon(resolved_key, class: icon_classes, **opts)
+      lucide_icon(key, class: icon_classes, **opts)
     end
-  end
-
-  # The chevron for a DS::Disclosure summary_content slot; it turns as the disclosure opens.
-  def disclosure_chevron
-    icon "chevron-right", size: "sm", class: "motion-safe:transition-transform group-open:rotate-90"
   end
 
   # Convert alpha (0-1) to 8-digit hex (00-FF)
@@ -82,62 +57,6 @@ module ApplicationHelper
     current_page?(path) || (request.path.start_with?(path) && path != "/")
   end
 
-  # Wraps a nav-item hash so a single call performs both halves of a
-  # preview-gated entry: returns `nil` for users without the flag (so the
-  # entry never reaches the rendered nav), and stamps `preview: true` on
-  # the hash for users with the flag (so the partial paints the violet
-  # dot on the icon). Use inside an `Array#compact` nav-items list.
-  def preview_gated_nav_item(item)
-    return nil unless preview_features_enabled?
-    item.merge(preview: true)
-  end
-
-  # Bills is only meaningful while recurring detection is on, since a family that has
-  # turned it off has nothing to list. Returns nil so the entry drops out of the
-  # `Array#compact` nav list entirely rather than leading to an empty page. The
-  # subsystem also ships as a preview feature, so the entry is preview-gated on
-  # top: hidden without the flag, violet-dotted with it.
-  def bills_nav_item
-    return nil if Current.family.nil? || Current.family.recurring_transactions_disabled?
-
-    preview_gated_nav_item(
-      {
-        name: t("layouts.application.nav.bills"),
-        path: bills_path,
-        icon: "receipt",
-        icon_custom: false,
-        active: page_active?(bills_path)
-      }
-    )
-  end
-
-  # Budgets and Goals share one nav slot. Preview users get the "Plan" hub
-  # entry fronting both (it stays lit while browsing either subpage, since
-  # page_active? is a path-prefix match and /budgets · /goals don't share
-  # the /plan prefix). Everyone else gets exactly the pre-Plan Budgets
-  # entry — Goals was already hidden without the flag, so their nav is
-  # unchanged.
-  def plan_nav_item
-    if preview_features_enabled?
-      {
-        name: t("layouts.application.nav.plan"),
-        path: plan_path,
-        icon: "compass",
-        icon_custom: false,
-        active: page_active?(plan_path) || page_active?(budgets_path) || page_active?(goals_path),
-        preview: true
-      }
-    else
-      {
-        name: t("layouts.application.nav.budgets"),
-        path: budgets_path,
-        icon: "map",
-        icon_custom: false,
-        active: page_active?(budgets_path)
-      }
-    end
-  end
-
   # Wrapper around I18n.l to support custom date formats
   def format_date(object, format = :default, options = {})
     date = object.to_date
@@ -151,46 +70,17 @@ module ApplicationHelper
     end
   end
 
-
-  def family_moniker
-    Current.family&.moniker_label || I18n.t("shared.family_moniker.singular")
-  end
-
-  def family_moniker_downcase
-    family_moniker.downcase
-  end
-
-  def family_moniker_plural
-    Current.family&.moniker_label_plural || I18n.t("shared.family_moniker.plural")
-  end
-
-  def family_moniker_plural_downcase
-    family_moniker_plural.downcase
-  end
-
   def format_money(number_or_money, options = {})
     return nil unless number_or_money
 
     Money.new(number_or_money).format(options)
   end
 
-  # Format each native-currency total independently, preserving order and transfer exclusions.
   def totals_by_currency(collection:, money_method:, separator: " | ", negate: false)
     collection.group_by(&:currency)
               .transform_values { |item| calculate_total(item, money_method, negate) }
               .map { |_currency, money| format_money(money) }
               .join(separator)
-  end
-
-  def currency_picker_options_for_family(family = Current.family, extra: [])
-    return Money::Currency.as_options.map(&:iso_code) unless family
-
-    family.enabled_currency_codes(extra:)
-  end
-
-  def currency_label(currency_or_code)
-    currency = currency_or_code.is_a?(Money::Currency) ? currency_or_code : Money::Currency.new(currency_or_code)
-    "#{currency.name} (#{currency.iso_code})"
   end
 
   def show_super_admin_bar?
@@ -199,16 +89,6 @@ module ApplicationHelper
     end
 
     cookies[:admin] == "true"
-  end
-
-  def sidekiq_web_available?
-    named_routes = Rails.application.routes.named_routes
-    named_routes.route_defined?(:sidekiq_web_path) || named_routes.route_defined?(:sidekiq_web_url)
-  end
-
-  def assistant_icon
-    type = ENV["ASSISTANT_TYPE"].presence || Current.family&.assistant_type.presence || "builtin"
-    type == "external" ? "claw" : "ai"
   end
 
   def default_ai_model
@@ -242,30 +122,19 @@ module ApplicationHelper
     markdown.render(text).html_safe
   end
 
-  # Generate the callback URL for Enable Banking OAuth (used in views and controller).
-  # In production, uses the standard Rails route.
-  # In development, uses DEV_WEBHOOKS_URL if set (e.g., ngrok URL).
-  def enable_banking_callback_url
-    return callback_enable_banking_items_url if Rails.env.production?
-
-    ENV.fetch("DEV_WEBHOOKS_URL", root_url).chomp("/") + "/enable_banking_items/callback"
-  end
-
-  # Formats a holding quantity with adaptive precision based on the value size.
+  # Formats quantity with adaptive precision based on the value size.
   # Shows more decimal places for small quantities (common with crypto).
   #
   # @param qty [Numeric] The quantity to format
-  # @param exact [Boolean] Show the full stored precision, without rounding
+  # @param max_precision [Integer] Maximum precision for very small numbers
   # @return [String] Formatted quantity with appropriate precision
-  def format_quantity(qty, exact: false)
+  def format_quantity(qty)
     return "0" if qty.nil? || qty.zero?
 
     abs_qty = qty.abs
 
-    precision = if exact
-      18    # Preserve the full stored precision for crypto quantities
-    elsif abs_qty >= 1
-      1     # "10.4"
+    precision = if abs_qty >= 1
+      1     # "10.5"
     elsif abs_qty >= 0.01
       2     # "0.52"
     elsif abs_qty >= 0.0001
@@ -279,21 +148,6 @@ module ApplicationHelper
   end
 
   private
-    def safe_lucide_icon(key, **opts)
-      lucide_icon(key, **opts)
-    rescue StandardError => e
-      Rails.logger.warn("[ApplicationHelper] Falling back to key for unknown icon #{key.inspect}: #{e.message}")
-      lucide_icon("key", **opts)
-    end
-
-    def normalize_icon_key(key)
-      normalized = key.to_s.strip
-      return normalized if normalized.blank?
-
-      normalized.downcase
-    end
-
-    # Exclude transfers while preserving the original group currency even when its total is zero.
     def calculate_total(item, money_method, negate)
       # Filter out transfer-type transactions from entries
       # Only Entry objects have entryable transactions, Account objects don't
@@ -302,8 +156,7 @@ module ApplicationHelper
         i.entryable.is_a?(Transaction) &&
         i.entryable.transfer?
       end
-      # Keep the group's currency when every entry is excluded from the total.
-      total = items.sum(Money.new(0, item.first.currency), &money_method)
+      total = items.sum(&money_method)
       negate ? -total : total
     end
 end

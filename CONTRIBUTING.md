@@ -4,8 +4,8 @@ It means so much that you're interested in contributing to Sure! Seriously. Than
 
 ## House Rules
 
-- Before contributing, read the [repository guidance](AGENTS.md) and [architecture and conventions](docs/llm-guides/architecture.md). Detailed [task guides](docs/llm-guides/README.md) cover testing, UI, APIs and providers.
-- Coding-assistant setup is optional; see the [supported instruction adapters](docs/llm-guides/harness-adapters.md).
+- Before contributing, familiarize yourself with our project conventions. You should read through our [Project Conventions Rule](https://github.com/we-promise/sure/blob/main/.cursor/rules/project-conventions.mdc), which is intended for LLMs, but is also an excellent primer on how we write code for Sure.
+- While totally optional, consider using Cursor + VSCode as it will automatically apply our project conventions to your code via the `.cursor/rules` directory.
 - Before contributing, please check if it already exists in [issues](https://github.com/we-promise/sure/issues) or [PRs](https://github.com/we-promise/sure/pulls)
 - Given the speed at which we're moving on the codebase, we don't assign issues or "give" issues to anyone.
 - When multiple PRs are submitted for the same issue, we take the one that most succinctly & efficiently solves a given problem and stays within the scope of work.
@@ -24,9 +24,6 @@ In general, _full features_ that get us closer to [our 🔜 Vision](https://gith
 To get setup for local development, you have two options:
 
 1. [Dev Containers](https://code.visualstudio.com/docs/devcontainers/containers) with VSCode (see the `.devcontainer` folder)
-   - A `selenium/standalone-chrome` service is included in the Dev Container setup, so **system tests work out of the box** — no local Chrome required.
-   - Run system tests: `DISABLE_PARALLELIZATION=true bin/rails test:system`
-   - Watch the browser live at `http://localhost:7900` or `http://localhost:4444` (password: `secret`)
 2. Local Development
    - [Mac Setup Guide](https://github.com/we-promise/sure/wiki/Mac-Dev-Setup-Guide)
    - [Linux Setup Guide](https://github.com/we-promise/sure/wiki/Linux-Dev-Setup-Guide)
@@ -43,12 +40,3 @@ To get setup for local development, you have two options:
 7. Before requesting a review, please make sure that all [Github Checks](https://docs.github.com/en/rest/checks?apiVersion=2022-11-28) have passed and your branch is up-to-date with the `main` branch. After doing so, request a review and wait for a maintainer's approval.
 
 All PRs should target the `main` branch.
-
-### Automated Security Scanning
-
-Every pull request to the `main` branch automatically runs a Pipelock security scan. This scan analyzes your PR diff for:
-
-- Leaked secrets (API keys, tokens, credentials)
-- Agent security risks (misconfigurations, exposed credentials, missing controls)
-
-The scan runs as part of the CI pipeline and typically completes in ~30 seconds. If security issues are found, the CI check will fail. You don't need to configure anything—the security scanning is automatic and zero-configuration.

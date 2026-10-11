@@ -16,7 +16,10 @@ class AccountsService {
 
       final response = await http.get(
         url,
-        headers: ApiConfig.getAuthHeaders(accessToken),
+        headers: {
+          'Authorization': 'Bearer $accessToken',
+          'Accept': 'application/json',
+        },
       ).timeout(const Duration(seconds: 30));
 
       if (response.statusCode == 200) {

@@ -1,6 +1,5 @@
 class CoinbaseItemsController < ApplicationController
   before_action :set_coinbase_item, only: [ :show, :edit, :update, :destroy, :sync, :setup_accounts, :complete_account_setup ]
-  before_action :require_admin!, only: [ :new, :create, :preload_accounts, :select_accounts, :link_accounts, :select_existing_account, :link_existing_account, :edit, :update, :destroy, :sync, :setup_accounts, :complete_account_setup ]
 
   def index
     @coinbase_items = Current.family.coinbase_items.ordered
@@ -27,18 +26,63 @@ class CoinbaseItemsController < ApplicationController
       # Trigger initial sync to fetch accounts
       @coinbase_item.sync_later
 
-      redirect_to settings_providers_path, notice: t(".success"), status: :see_other
+      if turbo_frame_request?
+        flash.now[:notice] = t(".success")
+        @coinbase_items = Current.family.coinbase_items.ordered
+        render turbo_stream: [
+          turbo_stream.replace(
+            "coinbase-providers-panel",
+            partial: "settings/providers/coinbase_panel",
+            locals: { coinbase_items: @coinbase_items }
+          ),
+          *flash_notification_stream_items
+        ]
+      else
+        redirect_to settings_providers_path, notice: t(".success"), status: :see_other
+      end
     else
-      render_provider_panel("coinbase", alert: @coinbase_item.errors.full_messages.join(", "))
+      @error_message = @coinbase_item.errors.full_messages.join(", ")
+
+      if turbo_frame_request?
+        render turbo_stream: turbo_stream.replace(
+          "coinbase-providers-panel",
+          partial: "settings/providers/coinbase_panel",
+          locals: { error_message: @error_message }
+        ), status: :unprocessable_entity
+      else
+        redirect_to settings_providers_path, alert: @error_message, status: :unprocessable_entity
+      end
     end
   end
 
-  # The panel has no edit form, so an update never re-renders it.
   def update
     if @coinbase_item.update(coinbase_item_params)
-      redirect_to settings_providers_path, notice: t(".success"), status: :see_other
+      if turbo_frame_request?
+        flash.now[:notice] = t(".success")
+        @coinbase_items = Current.family.coinbase_items.ordered
+        render turbo_stream: [
+          turbo_stream.replace(
+            "coinbase-providers-panel",
+            partial: "settings/providers/coinbase_panel",
+            locals: { coinbase_items: @coinbase_items }
+          ),
+          *flash_notification_stream_items
+        ]
+      else
+        redirect_to settings_providers_path, notice: t(".success"), status: :see_other
+      end
     else
-      redirect_to settings_providers_path, alert: @coinbase_item.errors.full_messages.join(", "), status: :see_other
+      @error_message = @coinbase_item.errors.full_messages.join(", ")
+
+      if turbo_frame_request?
+        render turbo_stream: turbo_stream.replace(
+          "coinbase-providers-panel",
+          partial: "settings/providers/coinbase_panel",
+          locals: { error_message: @error_message }
+        ), status: :unprocessable_entity
+      else
+        redirect_to settings_providers_path, alert: @error_message, status: :unprocessable_entity
+      end
     end
   end
 
@@ -51,7 +95,6 @@ class CoinbaseItemsController < ApplicationController
     unless @coinbase_item.syncing?
       @coinbase_item.sync_later
     end
-    return render_provider_panel("coinbase", notice: t("settings.providers.sync_provider_in_progress")) if provider_panel_form?
 
     respond_to do |format|
       format.html { redirect_back_or_to accounts_path }

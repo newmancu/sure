@@ -5,25 +5,13 @@
       <%= link_to new_trade_path(account_id: @account.id),
                   id: dom_id(@account, "new_trade"),
                   data: { turbo_frame: :modal },
-                  class: "flex gap-1 font-medium items-center button-bg-secondary hover:button-bg-secondary-hover text-primary p-2 rounded-lg" do %>
+                  class: "flex gap-1 font-medium items-center bg-gray-50 theme-dark:bg-gray-700 hover:bg-gray-100 theme-dark:hover:bg-gray-600 text-primary p-2 rounded-lg" do %>
         <span class="text-primary">
           <%= icon("plus", color: "current") %>
         </span>
         <%= tag.span t(".new_holding"), class: "text-sm" %>
       <% end %>
     </div>
-
-    <% if @trade_republic_categories.present? %>
-      <div class="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-        <% @trade_republic_categories.each do |category, summary| %>
-          <div class="rounded-lg border border-secondary bg-container-inset px-3 py-2">
-            <p class="text-xs text-secondary"><%= t("trade_republic_items.portfolio_categories.#{category}") %></p>
-            <p class="text-sm font-medium text-primary"><%= t(".positions", count: summary[:count]) %></p>
-            <p class="text-xs text-secondary"><%= format_money Money.new(summary[:value].round(2), @account.currency) %></p>
-          </div>
-        <% end %>
-      </div>
-    <% end %>
 
     <div class="bg-container-inset rounded-xl p-1 overflow-x-auto">
       <div class="w-max lg:w-full">
@@ -41,11 +29,10 @@
             <%= render "shared/ruler" %>
           <% end %>
 
-          <% if @current_holdings.any? %>
-            <% @current_holdings.each_with_index do |holding, index| %>
-              <%= render "holdings/holding", holding: holding, crypto: @account.crypto? %>
-              <%= render "shared/ruler" unless index == @current_holdings.length - 1 %>
-            <% end %>
+          <% if @account.current_holdings.any? %>
+            <%= render partial: "holdings/holding",
+                      collection: @account.current_holdings,
+                      spacer_template: "shared/ruler" %>
           <% end %>
         </div>
       </div>

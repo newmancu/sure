@@ -1,39 +1,37 @@
-<%= content_for :page_title, t(".categories") %>
-<%= content_for :page_actions do %>
-  <%= render DS::Menu.new do |menu| %>
-    <% menu.with_item(
-        variant: "link",
-        text: t(".merge"),
-        href: merge_categories_path,
-        frame: :modal,
-        icon: "combine") %>
-    <% menu.with_item(
-        variant: "button",
-        text: t(".delete_all"),
-        href: destroy_all_categories_path,
-        method: :delete,
-        icon: "trash-2",
-        confirm: CustomConfirm.for_resource_deletion("all categories", high_severity: true)) %>
-  <% end %>
+<header class="flex items-center justify-between">
+  <h1 class="text-primary text-xl font-medium"><%= t(".categories") %></h1>
 
-  <%= render DS::Link.new(
-    text: t(".new"),
-    variant: "primary",
-    icon: "plus",
-    href: new_category_path,
-    frame: :modal
-  ) %>
-<% end %>
+  <div class="flex items-center gap-2">
+    <%= render DS::Menu.new do |menu| %>
+      <% menu.with_item(
+          variant: "button",
+          text: "Delete all",
+          href: destroy_all_categories_path,
+          method: :delete,
+          icon: "trash-2",
+          confirm: CustomConfirm.for_resource_deletion("all categories", high_severity: true)) %>
+    <% end %>
+
+    <%= render DS::Link.new(
+      text: t(".new"),
+      variant: "primary",
+      icon: "plus",
+      href: new_category_path,
+      frame: :modal
+    ) %>
+  </div>
+</header>
 
 <div class="bg-container rounded-xl shadow-border-xs p-4">
   <% if @categories.any? %>
     <div class="space-y-4">
-      <%= render "categories/category_list_group",
-                 title: t(".categories"),
-                 categories: @categories,
-                 family: Current.family,
-                 category_groups: @category_groups,
-                 category_ids_with_transactions: @category_ids_with_transactions %>
+      <% if @categories.incomes.any? %>
+        <%= render "categories/category_list_group", title: t(".categories_incomes"), categories: @categories.incomes %>
+      <% end %>
+
+      <% if @categories.expenses.any? %>
+        <%= render "categories/category_list_group", title: t(".categories_expenses"), categories: @categories.expenses %>
+      <% end %>
     </div>
   <% else %>
     <div class="flex justify-center items-center py-20">

@@ -11,31 +11,12 @@ class Api::V1::AuthControllerTest < ActionDispatch::IntegrationTest
       os_version: "17.0",
       app_version: "1.0.0"
     }
-
-    # Ensure the shared OAuth application exists
-    @shared_app = Doorkeeper::Application.find_or_create_by!(name: "Sure Mobile") do |app|
-      app.redirect_uri = "sureapp://oauth/callback"
-      app.scopes = "read read_write"
-      app.confidential = false
-    end
-    @shared_app.update!(scopes: "read read_write")
-
-    # Clear the memoized class variable so it picks up the test record
-    MobileDevice.instance_variable_set(:@shared_oauth_application, nil)
-
-    # Use a real cache store for SSO linking tests (test env uses :null_store by default)
-    @original_cache = Rails.cache
-    Rails.cache = ActiveSupport::Cache::MemoryStore.new
-  end
-
-  teardown do
-    Rails.cache = @original_cache if @original_cache
   end
 
   test "should signup new user and return OAuth tokens" do
     assert_difference("User.count", 1) do
       assert_difference("MobileDevice.count", 1) do
-        assert_no_difference("Doorkeeper::Application.count") do
+        assert_difference("Doorkeeper::Application.count", 1) do
           assert_difference("Doorkeeper::AccessToken.count", 1) do
             post "/api/v1/auth/signup", params: {
               user: {
@@ -58,9 +39,6 @@ class Api::V1::AuthControllerTest < ActionDispatch::IntegrationTest
     assert_equal "newuser@example.com", response_data["user"]["email"]
     assert_equal "New", response_data["user"]["first_name"]
     assert_equal "User", response_data["user"]["last_name"]
-    new_user = User.find(response_data["user"]["id"])
-    assert_equal new_user.ui_layout, response_data["user"]["ui_layout"]
-    assert_equal new_user.ai_enabled?, response_data["user"]["ai_enabled"]
 
     # OAuth token assertions
     assert response_data["access_token"].present?
@@ -70,8 +48,8 @@ class Api::V1::AuthControllerTest < ActionDispatch::IntegrationTest
     assert response_data["created_at"].present?
 
     # Verify the device was created
-    created_user = User.find(response_data["user"]["id"])
-    device = created_user.mobile_devices.first
+    new_user = User.find(response_data["user"]["id"])
+    device = new_user.mobile_devices.first
     assert_equal @device_info[:device_id], device.device_id
     assert_equal @device_info[:device_name], device.device_name
     assert_equal @device_info[:device_type], device.device_type
@@ -92,25 +70,6 @@ class Api::V1::AuthControllerTest < ActionDispatch::IntegrationTest
     assert_response :bad_request
     response_data = JSON.parse(response.body)
     assert_equal "Device information is required", response_data["error"]
-  end
-
-  test "should reject signup with invalid device_type before committing any state" do
-    # Pre-validation catches bad device_type and returns 400 without creating
-    # user/family/device/token. Guards against a partial-commit state where the
-    # account exists but the mobile session handoff fails.
-    assert_no_difference([ "User.count", "MobileDevice.count", "Doorkeeper::AccessToken.count" ]) do
-      post "/api/v1/auth/signup", params: {
-        user: {
-          email: "newuser@example.com",
-          password: "SecurePass123!",
-          first_name: "New",
-          last_name: "User"
-        },
-        device: @device_info.merge(device_type: "windows") # not in allowlist
-      }
-    end
-
-    assert_response :bad_request
   end
 
   test "should not signup with invalid password" do
@@ -258,8 +217,6 @@ class Api::V1::AuthControllerTest < ActionDispatch::IntegrationTest
 
     assert_equal user.id.to_s, response_data["user"]["id"]
     assert_equal user.email, response_data["user"]["email"]
-    assert_equal user.ui_layout, response_data["user"]["ui_layout"]
-    assert_equal user.ai_enabled?, response_data["user"]["ai_enabled"]
 
     # OAuth token assertions
     assert response_data["access_token"].present?
@@ -322,10 +279,10 @@ class Api::V1::AuthControllerTest < ActionDispatch::IntegrationTest
 
     # Create an existing device and token
     device = user.mobile_devices.create!(@device_info)
+    oauth_app = device.create_oauth_application!
     existing_token = Doorkeeper::AccessToken.create!(
-      application: @shared_app,
+      application: oauth_app,
       resource_owner_id: user.id,
-      mobile_device_id: device.id,
       expires_in: 30.days.to_i,
       scopes: "read_write"
     )
@@ -343,72 +300,6 @@ class Api::V1::AuthControllerTest < ActionDispatch::IntegrationTest
     # Check that old token was revoked
     existing_token.reload
     assert existing_token.revoked?
-  end
-
-  test "should not login a deactivated user even with correct password" do
-    user = users(:family_admin)
-    user.update_column(:active, false)
-
-    assert_no_difference([ "MobileDevice.count", "Doorkeeper::AccessToken.count" ]) do
-      post "/api/v1/auth/login", params: {
-        email: user.email,
-        password: user_password_test,
-        device: @device_info
-      }
-    end
-
-    assert_response :unauthorized
-    response_data = JSON.parse(response.body)
-    assert_equal "This account has been deactivated. Please contact an administrator.", response_data["error"]
-  end
-
-  test "should not login a user deactivated between the initial check and token issuance" do
-    user = users(:family_admin)
-
-    # Simulate deactivation landing after the early active? check but before
-    # the token is actually minted — device validation runs in that window
-    # in the real flow, so hook the deactivation there.
-    Api::V1::AuthController.any_instance.stubs(:valid_device_info?).with do
-      user.update_column(:active, false)
-      true
-    end.returns(true)
-
-    assert_no_difference([ "MobileDevice.count", "Doorkeeper::AccessToken.count" ]) do
-      post "/api/v1/auth/login", params: {
-        email: user.email,
-        password: user_password_test,
-        device: @device_info
-      }
-    end
-
-    assert_response :unauthorized
-    response_data = JSON.parse(response.body)
-    assert_equal "This account has been deactivated. Please contact an administrator.", response_data["error"]
-  end
-
-  test "should not login a user deactivated between device upsert and token issuance" do
-    user = users(:family_admin)
-    # Pre-create the real device so the stub below can return it as-is —
-    # this isolates the test to the gap between upsert_device! and
-    # issue_token!, not the earlier device-creation step.
-    device = MobileDevice.upsert_device!(user, @device_info)
-
-    MobileDevice.stubs(:upsert_device!).with do |*_args|
-      user.update_column(:active, false)
-      true
-    end.returns(device)
-
-    assert_no_difference("Doorkeeper::AccessToken.count") do
-      post "/api/v1/auth/login", params: {
-        email: user.email,
-        password: user_password_test,
-        device: @device_info
-      }
-    end
-
-    assert_response :unauthorized
-    response_data = JSON.parse(response.body)
-    assert_equal "This account has been deactivated. Please contact an administrator.", response_data["error"]
   end
 
   test "should not login with invalid password" do
@@ -441,28 +332,6 @@ class Api::V1::AuthControllerTest < ActionDispatch::IntegrationTest
     assert_equal "Invalid email or password", response_data["error"]
   end
 
-  test "should login even when OAuth application is missing" do
-    user = users(:family_admin)
-    password = user_password_test
-
-    # Simulate a fresh instance where seeds were never run
-    Doorkeeper::Application.where(name: "Sure Mobile").destroy_all
-    MobileDevice.instance_variable_set(:@shared_oauth_application, nil)
-
-    assert_difference("Doorkeeper::Application.count", 1) do
-      post "/api/v1/auth/login", params: {
-        email: user.email,
-        password: password,
-        device: @device_info
-      }
-    end
-
-    assert_response :success
-    response_data = JSON.parse(response.body)
-    assert response_data["access_token"].present?
-    assert response_data["refresh_token"].present?
-  end
-
   test "should not login without device info" do
     user = users(:family_admin)
 
@@ -481,12 +350,12 @@ class Api::V1::AuthControllerTest < ActionDispatch::IntegrationTest
   test "should refresh access token with valid refresh token" do
     user = users(:family_admin)
     device = user.mobile_devices.create!(@device_info)
+    oauth_app = device.create_oauth_application!
 
     # Create initial token
     initial_token = Doorkeeper::AccessToken.create!(
-      application: @shared_app,
+      application: oauth_app,
       resource_owner_id: user.id,
-      mobile_device_id: device.id,
       expires_in: 30.days.to_i,
       scopes: "read_write",
       use_refresh_token: true
@@ -516,34 +385,6 @@ class Api::V1::AuthControllerTest < ActionDispatch::IntegrationTest
     assert initial_token.revoked?
   end
 
-  test "should not refresh for a deactivated user" do
-    user = users(:family_admin)
-    device = user.mobile_devices.create!(@device_info)
-
-    initial_token = Doorkeeper::AccessToken.create!(
-      application: @shared_app,
-      resource_owner_id: user.id,
-      mobile_device_id: device.id,
-      expires_in: 30.days.to_i,
-      scopes: "read_write",
-      use_refresh_token: true
-    )
-
-    user.update_column(:active, false)
-
-    assert_no_difference("Doorkeeper::AccessToken.count") do
-      post "/api/v1/auth/refresh", params: {
-        refresh_token: initial_token.refresh_token,
-        device: @device_info
-      }
-    end
-
-    assert_response :unauthorized
-    response_data = JSON.parse(response.body)
-    assert_equal "Invalid refresh token", response_data["error"]
-    assert_not initial_token.reload.revoked?, "the still-valid old token should be left alone, not silently revoked"
-  end
-
   test "should not refresh with invalid refresh token" do
     assert_no_difference("Doorkeeper::AccessToken.count") do
       post "/api/v1/auth/refresh", params: {
@@ -565,676 +406,5 @@ class Api::V1::AuthControllerTest < ActionDispatch::IntegrationTest
     assert_response :bad_request
     response_data = JSON.parse(response.body)
     assert_equal "Refresh token is required", response_data["error"]
-  end
-
-  test "should enable ai for authenticated user" do
-    user = users(:family_admin)
-    user.update!(ai_enabled: false)
-    device = user.mobile_devices.create!(@device_info)
-    token = Doorkeeper::AccessToken.create!(application: @shared_app, resource_owner_id: user.id, mobile_device_id: device.id, scopes: "read_write")
-
-    patch "/api/v1/auth/enable_ai", headers: {
-      "Authorization" => "Bearer #{token.token}",
-      "Content-Type" => "application/json"
-    }
-
-    assert_response :success
-    response_data = JSON.parse(response.body)
-    assert_equal true, response_data.dig("user", "ai_enabled")
-    assert_equal user.ui_layout, response_data.dig("user", "ui_layout")
-    assert_equal true, user.reload.ai_enabled
-  end
-
-  test "should require read_write scope to enable ai" do
-    user = users(:family_admin)
-    user.update!(ai_enabled: false)
-    device = user.mobile_devices.create!(@device_info)
-    token = Doorkeeper::AccessToken.create!(application: @shared_app, resource_owner_id: user.id, mobile_device_id: device.id, scopes: "read")
-
-    patch "/api/v1/auth/enable_ai", headers: {
-      "Authorization" => "Bearer #{token.token}",
-      "Content-Type" => "application/json"
-    }
-
-    assert_response :forbidden
-    response_data = JSON.parse(response.body)
-    assert_equal "insufficient_scope", response_data["error"]
-    assert_equal "This action requires the 'write' scope", response_data["message"]
-    assert_not user.reload.ai_enabled
-  end
-
-  test "should require authentication when enabling ai" do
-    patch "/api/v1/auth/enable_ai", headers: { "Content-Type" => "application/json" }
-
-    assert_response :unauthorized
-  end
-
-  # SSO Link tests
-  test "should link existing account via SSO and return tokens" do
-    user = users(:family_admin)
-
-    linking_code = SecureRandom.urlsafe_base64(32)
-    Rails.cache.write("mobile_sso_link:#{linking_code}", {
-      provider: "google_oauth2",
-      uid: "google-uid-123",
-      email: "google@example.com",
-      first_name: "Google",
-      last_name: "User",
-      name: "Google User",
-      device_info: @device_info.stringify_keys,
-      allow_account_creation: true
-    }, expires_in: 10.minutes)
-
-    assert_difference("OidcIdentity.count", 1) do
-      post "/api/v1/auth/sso_link", params: {
-        linking_code: linking_code,
-        email: user.email,
-        password: user_password_test
-      }
-    end
-
-    assert_response :success
-    response_data = JSON.parse(response.body)
-    assert response_data["access_token"].present?
-    assert response_data["refresh_token"].present?
-    assert_equal user.id.to_s, response_data["user"]["id"]
-
-    # Linking code should be consumed
-    assert_nil Rails.cache.read("mobile_sso_link:#{linking_code}")
-  end
-
-  test "should reject SSO link for a deactivated user even with correct password" do
-    user = users(:family_admin)
-    user.update_column(:active, false)
-
-    linking_code = SecureRandom.urlsafe_base64(32)
-    Rails.cache.write("mobile_sso_link:#{linking_code}", {
-      provider: "google_oauth2",
-      uid: "google-uid-deactivated",
-      email: "google-deactivated@example.com",
-      device_info: @device_info.stringify_keys,
-      allow_account_creation: true
-    }, expires_in: 10.minutes)
-
-    assert_no_difference("OidcIdentity.count") do
-      post "/api/v1/auth/sso_link", params: {
-        linking_code: linking_code,
-        email: user.email,
-        password: user_password_test
-      }
-    end
-
-    assert_response :unauthorized
-    response_data = JSON.parse(response.body)
-    assert_equal "This account has been deactivated. Please contact an administrator.", response_data["error"]
-
-    # Linking code should NOT be consumed on rejection
-    assert Rails.cache.read("mobile_sso_link:#{linking_code}").present?, "Expected linking code to survive a rejected link attempt"
-  end
-
-  test "should reject SSO link for a user deactivated between the initial check and token issuance" do
-    user = users(:family_admin)
-
-    linking_code = SecureRandom.urlsafe_base64(32)
-    Rails.cache.write("mobile_sso_link:#{linking_code}", {
-      provider: "google_oauth2",
-      uid: "google-uid-race",
-      email: "google-race@example.com",
-      device_info: @device_info.stringify_keys,
-      allow_account_creation: true
-    }, expires_in: 10.minutes)
-
-    # Simulate deactivation landing after the initial active? check but
-    # before issue_token! actually mints a token — SsoAuditLog.log_link!
-    # runs in that window in the real flow, so hook the deactivation there.
-    SsoAuditLog.stubs(:log_link!).with do |**kwargs|
-      kwargs[:user].update_column(:active, false)
-      true
-    end
-
-    # The identity, the device, and the token mint all run in the same
-    # transaction as the locked active? recheck, so a deactivation landing
-    # in that window must roll all of it back — nothing may survive a
-    # rejected request.
-    assert_no_difference [ "OidcIdentity.count", "MobileDevice.count", "Doorkeeper::AccessToken.count" ] do
-      post "/api/v1/auth/sso_link", params: {
-        linking_code: linking_code,
-        email: user.email,
-        password: user_password_test
-      }
-    end
-
-    assert_response :unauthorized
-    response_data = JSON.parse(response.body)
-    assert_equal "This account has been deactivated. Please contact an administrator.", response_data["error"]
-
-    # The code was already consumed before the rejected transaction; it
-    # must be restored so the user can retry instead of restarting the
-    # whole SSO flow from the IdP.
-    assert Rails.cache.read("mobile_sso_link:#{linking_code}").present?, "Expected linking code to be restored after a rejected request"
-  end
-
-  test "should restore the linking code when device registration fails during sso_link" do
-    user = users(:family_admin)
-
-    linking_code = SecureRandom.urlsafe_base64(32)
-    invalid_device_info = @device_info.merge(device_type: "invalid-type")
-    Rails.cache.write("mobile_sso_link:#{linking_code}", {
-      provider: "google_oauth2",
-      uid: "google-uid-device-failure",
-      email: "google-device-failure@example.com",
-      device_info: invalid_device_info.stringify_keys,
-      allow_account_creation: true
-    }, expires_in: 10.minutes)
-
-    assert_no_difference [ "OidcIdentity.count", "MobileDevice.count" ] do
-      post "/api/v1/auth/sso_link", params: {
-        linking_code: linking_code,
-        email: user.email,
-        password: user_password_test
-      }
-    end
-
-    assert_response :unprocessable_entity
-    response_data = JSON.parse(response.body)
-    assert_equal "Failed to register device", response_data["error"]
-
-    assert Rails.cache.read("mobile_sso_link:#{linking_code}").present?, "Expected linking code to be restored after a rejected request"
-  end
-
-  test "login rejects a user purged between authentication and the reload fast-path" do
-    user = users(:family_admin)
-    User.stubs(:find_by).with(email: user.email).returns(user)
-    user.stubs(:reload).raises(ActiveRecord::RecordNotFound)
-
-    post "/api/v1/auth/login", params: {
-      email: user.email,
-      password: user_password_test,
-      device: @device_info
-    }
-
-    # Must fall through to the same "deactivated" response every other
-    # rejection on this endpoint uses, not BaseController's generic
-    # record_not_found handler.
-    assert_response :unauthorized
-    response_data = JSON.parse(response.body)
-    assert_equal "This account has been deactivated. Please contact an administrator.", response_data["error"]
-  end
-
-  test "should reject SSO link with invalid password" do
-    user = users(:family_admin)
-
-    linking_code = SecureRandom.urlsafe_base64(32)
-    Rails.cache.write("mobile_sso_link:#{linking_code}", {
-      provider: "google_oauth2",
-      uid: "google-uid-123",
-      email: "google@example.com",
-      device_info: @device_info.stringify_keys,
-      allow_account_creation: true
-    }, expires_in: 10.minutes)
-
-    assert_no_difference("OidcIdentity.count") do
-      post "/api/v1/auth/sso_link", params: {
-        linking_code: linking_code,
-        email: user.email,
-        password: "wrong_password"
-      }
-    end
-
-    assert_response :unauthorized
-    response_data = JSON.parse(response.body)
-    assert_equal "Invalid email or password", response_data["error"]
-
-    # Linking code should NOT be consumed on failed password
-    assert Rails.cache.read("mobile_sso_link:#{linking_code}").present?, "Expected linking code to survive a failed attempt"
-  end
-
-  test "should reject SSO link when user has MFA enabled" do
-    user = users(:family_admin)
-    user.update!(otp_required: true, otp_secret: ROTP::Base32.random(32))
-
-    linking_code = SecureRandom.urlsafe_base64(32)
-    Rails.cache.write("mobile_sso_link:#{linking_code}", {
-      provider: "google_oauth2",
-      uid: "google-uid-mfa",
-      email: "mfa@example.com",
-      first_name: "MFA",
-      last_name: "User",
-      name: "MFA User",
-      device_info: @device_info.stringify_keys,
-      allow_account_creation: true
-    }, expires_in: 10.minutes)
-
-    assert_no_difference("OidcIdentity.count") do
-      post "/api/v1/auth/sso_link", params: {
-        linking_code: linking_code,
-        email: user.email,
-        password: user_password_test
-      }
-    end
-
-    assert_response :unauthorized
-    response_data = JSON.parse(response.body)
-    assert_equal true, response_data["mfa_required"]
-    assert_match(/MFA/, response_data["error"])
-
-    # Linking code should NOT be consumed on MFA rejection
-    assert Rails.cache.read("mobile_sso_link:#{linking_code}").present?, "Expected linking code to survive MFA rejection"
-  end
-
-  test "should reject SSO link with expired linking code" do
-    post "/api/v1/auth/sso_link", params: {
-      linking_code: "expired-code",
-      email: "test@example.com",
-      password: "password"
-    }
-
-    assert_response :unauthorized
-    response_data = JSON.parse(response.body)
-    assert_equal "Linking code is invalid or expired", response_data["error"]
-  end
-
-  test "should reject SSO link without linking code" do
-    post "/api/v1/auth/sso_link", params: {
-      email: "test@example.com",
-      password: "password"
-    }
-
-    assert_response :bad_request
-    response_data = JSON.parse(response.body)
-    assert_equal "Linking code is required", response_data["error"]
-  end
-
-  test "linking_code is single-use under race" do
-    user = users(:family_admin)
-
-    linking_code = SecureRandom.urlsafe_base64(32)
-    Rails.cache.write("mobile_sso_link:#{linking_code}", {
-      provider: "google_oauth2",
-      uid: "google-uid-race-test",
-      email: "race@example.com",
-      first_name: "Race",
-      last_name: "Test",
-      name: "Race Test",
-      device_info: @device_info.stringify_keys,
-      allow_account_creation: true
-    }, expires_in: 10.minutes)
-
-    # First request succeeds
-    assert_difference("OidcIdentity.count", 1) do
-      post "/api/v1/auth/sso_link", params: {
-        linking_code: linking_code,
-        email: user.email,
-        password: user_password_test
-      }
-    end
-    assert_response :success
-
-    # Second request with the same code is rejected
-    assert_no_difference("OidcIdentity.count") do
-      post "/api/v1/auth/sso_link", params: {
-        linking_code: linking_code,
-        email: user.email,
-        password: user_password_test
-      }
-    end
-    assert_response :unauthorized
-    assert_equal "Linking code is invalid or expired", JSON.parse(response.body)["error"]
-    assert_nil Rails.cache.read("mobile_sso_link:#{linking_code}")
-  end
-
-  # SSO Create Account tests
-  test "should create new account via SSO and return tokens" do
-    linking_code = SecureRandom.urlsafe_base64(32)
-    Rails.cache.write("mobile_sso_link:#{linking_code}", {
-      provider: "google_oauth2",
-      uid: "google-uid-456",
-      email: "newgoogleuser@example.com",
-      first_name: "New",
-      last_name: "GoogleUser",
-      name: "New GoogleUser",
-      device_info: @device_info.stringify_keys,
-      allow_account_creation: true
-    }, expires_in: 10.minutes)
-
-    assert_difference([ "User.count", "OidcIdentity.count" ], 1) do
-      post "/api/v1/auth/sso_create_account", params: {
-        linking_code: linking_code,
-        first_name: "New",
-        last_name: "GoogleUser"
-      }
-    end
-
-    assert_response :success
-    response_data = JSON.parse(response.body)
-    assert response_data["access_token"].present?
-    assert response_data["refresh_token"].present?
-    assert_equal "newgoogleuser@example.com", response_data["user"]["email"]
-    assert_equal "New", response_data["user"]["first_name"]
-    assert_equal "GoogleUser", response_data["user"]["last_name"]
-
-    # Linking code should be consumed
-    assert_nil Rails.cache.read("mobile_sso_link:#{linking_code}")
-  end
-
-  test "sso_create_account makes new family creator admin even when provider default role is member" do
-    Rails.configuration.x.auth.stubs(:sso_providers).returns([
-      { name: "google_oauth2", settings: { default_role: "member" } }
-    ])
-    linking_code = SecureRandom.urlsafe_base64(32)
-    Rails.cache.write("mobile_sso_link:#{linking_code}", {
-      provider: "google_oauth2",
-      uid: "google-uid-member-default",
-      email: "member-default@example.com",
-      first_name: "Member",
-      last_name: "Default",
-      name: "Member Default",
-      device_info: @device_info.stringify_keys,
-      allow_account_creation: true
-    }, expires_in: 10.minutes)
-
-    assert_difference([ "User.count", "OidcIdentity.count", "Family.count" ], 1) do
-      post "/api/v1/auth/sso_create_account", params: {
-        linking_code: linking_code,
-        first_name: "Member",
-        last_name: "Default"
-      }
-    end
-
-    assert_response :success
-    new_user = User.find_by!(email: "member-default@example.com")
-    assert_equal "admin", new_user.role
-    assert new_user.admin?
-  end
-
-  test "sso_create_account preserves super admin provider default for new family creator" do
-    Rails.configuration.x.auth.stubs(:sso_providers).returns([
-      { name: "google_oauth2", settings: { default_role: "super_admin" } }
-    ])
-    linking_code = SecureRandom.urlsafe_base64(32)
-    Rails.cache.write("mobile_sso_link:#{linking_code}", {
-      provider: "google_oauth2",
-      uid: "google-uid-super-admin-default",
-      email: "super-admin-default@example.com",
-      first_name: "Super",
-      last_name: "Default",
-      name: "Super Default",
-      device_info: @device_info.stringify_keys,
-      allow_account_creation: true
-    }, expires_in: 10.minutes)
-
-    assert_difference([ "User.count", "OidcIdentity.count", "Family.count" ], 1) do
-      post "/api/v1/auth/sso_create_account", params: {
-        linking_code: linking_code,
-        first_name: "Super",
-        last_name: "Default"
-      }
-    end
-
-    assert_response :success
-    new_user = User.find_by!(email: "super-admin-default@example.com")
-    assert_equal "super_admin", new_user.role
-    assert new_user.admin?
-  end
-
-  test "should reject SSO create account when not allowed" do
-    linking_code = SecureRandom.urlsafe_base64(32)
-    Rails.cache.write("mobile_sso_link:#{linking_code}", {
-      provider: "google_oauth2",
-      uid: "google-uid-789",
-      email: "blocked@example.com",
-      first_name: "Blocked",
-      last_name: "User",
-      device_info: @device_info.stringify_keys,
-      allow_account_creation: false
-    }, expires_in: 10.minutes)
-
-    assert_no_difference("User.count") do
-      post "/api/v1/auth/sso_create_account", params: {
-        linking_code: linking_code,
-        first_name: "Blocked",
-        last_name: "User"
-      }
-    end
-
-    assert_response :forbidden
-    response_data = JSON.parse(response.body)
-    assert_match(/disabled/, response_data["error"])
-
-    # Linking code should NOT be consumed on rejection
-    assert Rails.cache.read("mobile_sso_link:#{linking_code}").present?, "Expected linking code to survive a rejected create account attempt"
-  end
-
-  test "should reject SSO create account with expired linking code" do
-    post "/api/v1/auth/sso_create_account", params: {
-      linking_code: "expired-code",
-      first_name: "Test",
-      last_name: "User"
-    }
-
-    assert_response :unauthorized
-    response_data = JSON.parse(response.body)
-    assert_equal "Linking code is invalid or expired", response_data["error"]
-  end
-
-  test "should reject SSO create account without linking code" do
-    post "/api/v1/auth/sso_create_account", params: {
-      first_name: "Test",
-      last_name: "User"
-    }
-
-    assert_response :bad_request
-    response_data = JSON.parse(response.body)
-    assert_equal "Linking code is required", response_data["error"]
-  end
-
-  test "should return 422 when SSO create account fails user validation" do
-    existing_user = users(:family_admin)
-
-    linking_code = SecureRandom.urlsafe_base64(32)
-    Rails.cache.write("mobile_sso_link:#{linking_code}", {
-      provider: "google_oauth2",
-      uid: "google-uid-dup-email",
-      email: existing_user.email,
-      first_name: "Duplicate",
-      last_name: "Email",
-      name: "Duplicate Email",
-      device_info: @device_info.stringify_keys,
-      allow_account_creation: true
-    }, expires_in: 10.minutes)
-
-    assert_no_difference([ "User.count", "OidcIdentity.count" ]) do
-      post "/api/v1/auth/sso_create_account", params: {
-        linking_code: linking_code,
-        first_name: "Duplicate",
-        last_name: "Email"
-      }
-    end
-
-    assert_response :unprocessable_entity
-    response_data = JSON.parse(response.body)
-    assert response_data["errors"].any? { |e| e.match?(/email/i) }, "Expected email validation error in: #{response_data["errors"]}"
-  end
-
-  test "sso_create_account rolls back user when OIDC identity creation fails" do
-    email = "mobile-rollback@example.com"
-    linking_code = SecureRandom.urlsafe_base64(32)
-    Rails.cache.write("mobile_sso_link:#{linking_code}", {
-      provider: "google_oauth2",
-      uid: "google-uid-rollback",
-      email: email,
-      first_name: "Mobile",
-      last_name: "Rollback",
-      name: "Mobile Rollback",
-      device_info: @device_info.stringify_keys,
-      allow_account_creation: true
-    }, expires_in: 10.minutes)
-    OidcIdentity.stubs(:create_from_omniauth).raises(
-      ActiveRecord::RecordNotUnique,
-      'PG::UniqueViolation: ERROR:  duplicate key value violates unique constraint "index_oidc_identities_on_provider_and_uid" ' \
-      "DETAIL:  Key (provider, uid)=(google_oauth2, google-uid-rollback) already exists."
-    )
-
-    assert_no_difference([ "User.count", "OidcIdentity.count", "Family.count" ]) do
-      post "/api/v1/auth/sso_create_account", params: {
-        linking_code: linking_code,
-        first_name: "Mobile",
-        last_name: "Rollback"
-      }
-    end
-
-    assert_response :unprocessable_entity
-    assert_nil User.find_by(email: email)
-
-    # The database's own message names the index and echoes the values.
-    errors = JSON.parse(response.body)["errors"]
-    assert_equal [ "An account or sign-in identity with these details already exists" ], errors
-    assert_not_includes response.body, "index_oidc_identities"
-    assert_not_includes response.body, "google-uid-rollback"
-  end
-
-  test "sso_create_account linking_code single-use under race" do
-    linking_code = SecureRandom.urlsafe_base64(32)
-    Rails.cache.write("mobile_sso_link:#{linking_code}", {
-      provider: "google_oauth2",
-      uid: "google-uid-race-create",
-      email: "raceuser@example.com",
-      first_name: "Race",
-      last_name: "CreateUser",
-      name: "Race CreateUser",
-      device_info: @device_info.stringify_keys,
-      allow_account_creation: true
-    }, expires_in: 10.minutes)
-
-    # First request succeeds
-    assert_difference([ "User.count", "OidcIdentity.count" ], 1) do
-      post "/api/v1/auth/sso_create_account", params: {
-        linking_code: linking_code,
-        first_name: "Race",
-        last_name: "CreateUser"
-      }
-    end
-    assert_response :success
-
-    # Second request with the same code is rejected
-    assert_no_difference([ "User.count", "OidcIdentity.count" ]) do
-      post "/api/v1/auth/sso_create_account", params: {
-        linking_code: linking_code,
-        first_name: "Race",
-        last_name: "CreateUser"
-      }
-    end
-    assert_response :unauthorized
-    assert_equal "Linking code is invalid or expired", JSON.parse(response.body)["error"]
-    assert_nil Rails.cache.read("mobile_sso_link:#{linking_code}")
-  end
-
-  test "should return forbidden when ai is not available" do
-    user = users(:family_admin)
-    user.update!(ai_enabled: false)
-    device = user.mobile_devices.create!(@device_info)
-    token = Doorkeeper::AccessToken.create!(application: @shared_app, resource_owner_id: user.id, mobile_device_id: device.id, scopes: "read_write")
-    User.any_instance.stubs(:ai_available?).returns(false)
-
-    patch "/api/v1/auth/enable_ai", headers: {
-      "Authorization" => "Bearer #{token.token}",
-      "Content-Type" => "application/json"
-    }
-
-    assert_response :forbidden
-    response_data = JSON.parse(response.body)
-    assert_equal "AI is not available for your account", response_data["error"]
-    assert_not user.reload.ai_enabled
-  end
-
-  test "mobile SSO onboarding via invitation shares existing family accounts when family shares by default" do
-    family = families(:dylan_family)
-    family.update!(default_account_sharing: "shared")
-    invitation = family.invitations.create!(
-      email: "mobile-invitee@example.com", role: "member", inviter: users(:family_admin)
-    )
-
-    linking_code = SecureRandom.urlsafe_base64(32)
-    Rails.cache.write("mobile_sso_link:#{linking_code}", {
-      provider: "openid_connect",
-      uid: "mobile-invite-uid-1",
-      email: invitation.email,
-      first_name: "Mobile",
-      last_name: "Invitee",
-      name: "Mobile Invitee",
-      device_info: @device_info.stringify_keys,
-      allow_account_creation: true
-    }, expires_in: 10.minutes)
-
-    assert_difference("User.count", 1) do
-      post "/api/v1/auth/sso_create_account", params: {
-        linking_code: linking_code,
-        first_name: "Mobile",
-        last_name: "Invitee"
-      }
-    end
-
-    assert_response :success
-    invitee = User.find_by(email: invitation.email)
-    assert_not_nil invitee
-    assert_equal family.id, invitee.family_id
-    assert_equal family.accounts.pluck(:id).sort,
-      AccountShare.where(user: invitee).pluck(:account_id).sort
-  end
-
-  test "mobile SSO cannot use a cached linking code after its identity is removed" do
-    identity = oidc_identities(:bob_google)
-    SsoIdentityBlock.block_all!(OidcIdentity.where(id: identity.id), identity_label: identity.user.email)
-    linking_code = SecureRandom.urlsafe_base64(32)
-    Rails.cache.write("mobile_sso_link:#{linking_code}", {
-      provider: identity.provider,
-      uid: identity.uid,
-      email: "removed-mobile-sso@example.com",
-      device_info: @device_info.stringify_keys,
-      allow_account_creation: true
-    }, expires_in: 10.minutes)
-
-    assert_no_difference("User.count") do
-      post "/api/v1/auth/sso_create_account", params: {
-        linking_code: linking_code,
-        first_name: "Removed",
-        last_name: "User"
-      }
-    end
-
-    assert_response :forbidden
-    assert_nil Rails.cache.read("mobile_sso_link:#{linking_code}")
-  end
-
-  test "mobile SSO onboarding via invitation shares nothing when family sharing is private" do
-    family = families(:dylan_family)
-    family.update!(default_account_sharing: "private")
-    invitation = family.invitations.create!(
-      email: "mobile-private@example.com", role: "member", inviter: users(:family_admin)
-    )
-
-    linking_code = SecureRandom.urlsafe_base64(32)
-    Rails.cache.write("mobile_sso_link:#{linking_code}", {
-      provider: "openid_connect",
-      uid: "mobile-private-uid-1",
-      email: invitation.email,
-      first_name: "Mobile",
-      last_name: "Private",
-      name: "Mobile Private",
-      device_info: @device_info.stringify_keys,
-      allow_account_creation: true
-    }, expires_in: 10.minutes)
-
-    post "/api/v1/auth/sso_create_account", params: {
-      linking_code: linking_code,
-      first_name: "Mobile",
-      last_name: "Private"
-    }
-
-    assert_response :success
-    invitee = User.find_by(email: invitation.email)
-    assert_not_nil invitee
-    assert_equal family.id, invitee.family_id
-    assert_equal 0, AccountShare.where(user: invitee).count
   end
 end

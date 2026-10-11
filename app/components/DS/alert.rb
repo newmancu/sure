@@ -1,44 +1,24 @@
 class DS::Alert < DesignSystemComponent
-  VARIANTS = %i[info success warning error destructive].freeze
-  LIVE_MODES = %i[none status alert].freeze
-
-  def initialize(message: nil, title: nil, variant: :info, live: :none)
+  def initialize(message:, variant: :info)
     @message = message
-    @title = title
-    @variant = normalize_variant(variant)
-    @live = normalize_live(live)
+    @variant = variant
   end
 
   private
-    attr_reader :message, :title, :variant, :live
-
-    def normalize_variant(raw)
-      sym = raw.respond_to?(:to_sym) ? raw.to_sym : nil
-      VARIANTS.include?(sym) ? sym : :info
-    end
-
-    def normalize_live(raw)
-      sym = raw.respond_to?(:to_sym) ? raw.to_sym : nil
-      case sym
-      when :polite then :status
-      when :assertive then :alert
-      when *LIVE_MODES then sym
-      else :none
-      end
-    end
+    attr_reader :message, :variant
 
     def container_classes
-      base_classes = "p-4 rounded-lg border"
+      base_classes = "flex items-start gap-3 p-4 rounded-lg border"
 
       variant_classes = case variant
       when :info
-        "bg-info/10 border-info/20"
+        "bg-blue-50 text-blue-700 border-blue-200 theme-dark:bg-blue-900/20 theme-dark:text-blue-400 theme-dark:border-blue-800"
       when :success
-        "bg-success/10 border-success/20"
+        "bg-green-50 text-green-700 border-green-200 theme-dark:bg-green-900/20 theme-dark:text-green-400 theme-dark:border-green-800"
       when :warning
-        "bg-warning/10 border-warning/20"
+        "bg-yellow-50 text-yellow-700 border-yellow-200 theme-dark:bg-yellow-900/20 theme-dark:text-yellow-400 theme-dark:border-yellow-800"
       when :error, :destructive
-        "bg-destructive/10 border-destructive-subtle"
+        "bg-red-50 text-red-700 border-red-200 theme-dark:bg-red-900/20 theme-dark:text-red-400 theme-dark:border-red-800"
       end
 
       "#{base_classes} #{variant_classes}"
@@ -66,22 +46,7 @@ class DS::Alert < DesignSystemComponent
       when :error, :destructive
         "destructive"
       else
-        "info"
+        "blue-600"
       end
-    end
-
-    def aria_role
-      case live
-      when :status then "status"
-      when :alert then "alert"
-      end
-    end
-
-    def variant_label
-      I18n.t("ds.alert.variants.#{variant}")
-    end
-
-    def title_id
-      @title_id ||= "DS-alert-title-#{SecureRandom.hex(4)}"
     end
 end

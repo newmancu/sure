@@ -90,11 +90,6 @@ class MoneyTest < ActiveSupport::TestCase
     assert_equal "€ 1.000,12", Money.new(1000.12, :eur).format(locale: :nl)
   end
 
-  test "rounds for display using currency precision" do
-    assert_equal Money.new(1000.9, :usd), Money.new(1000.899, :usd).for_display
-    assert_equal Money.new(1001, :jpy), Money.new(1000.6, :jpy).for_display
-  end
-
   test "formats correctly for French locale" do
     # French uses non-breaking spaces (NBSP = \u00A0) between thousands and before currency symbol
     assert_equal "1\u00A0000,12\u00A0€", Money.new(1000.12, :eur).format(locale: :fr)
@@ -108,7 +103,6 @@ class MoneyTest < ActiveSupport::TestCase
 
   test "formats correctly for Spanish locale" do
     assert_equal "1.000,12 €", Money.new(1000.12, :eur).format(locale: :es)
-    assert_equal "100.12 MX$", Money.new(100.12, :mxn).format(locale: :es)
   end
 
   test "formats correctly for Italian locale" do
@@ -165,18 +159,9 @@ class MoneyTest < ActiveSupport::TestCase
     assert_equal "TW$1,000.12", Money.new(1000.12, :twd).format(locale: :"zh-TW")
   end
 
-  test "formats correctly for Hungarian locale" do
-    # Hungarian uses space as thousands delimiter, comma as decimal separator, symbol after number
-    # HUF has 0 decimal places (no fillér)
-    assert_equal "1 000 Ft", Money.new(1000, :huf).format(locale: :hu)
-    # Non-HUF currencies keep their own precision
-    assert_equal "1 000,12 $", Money.new(1000.12, :usd).format(locale: :hu)
-    assert_equal "1 000,12 €", Money.new(1000.12, :eur).format(locale: :hu)
-  end
-
   test "all supported locales can format money without errors" do
     # Ensure all supported locales from LanguagesHelper::SUPPORTED_LOCALES work
-    supported_locales = LanguagesHelper::SUPPORTED_LOCALES
+    supported_locales = %w[en fr de es tr nb ca ro pt-BR zh-CN zh-TW nl]
 
     supported_locales.each do |locale|
       locale_sym = locale.to_sym
@@ -195,46 +180,18 @@ class MoneyTest < ActiveSupport::TestCase
     assert_equal Money.new(1000).exchange_to(:eur), Money.new(1000 * 1.2, :eur)
   end
 
-  test "raises when no conversion rate available and no fallback provided" do
+  test "raises when no conversion rate available and no fallback rate provided" do
     ExchangeRate.expects(:find_or_fetch_rate).returns(nil)
 
-    assert_raises(Money::ConversionError) do
+    assert_raises Money::ConversionError do
       Money.new(1000).exchange_to(:jpy)
     end
   end
 
-  test "conversion error names the currency pair and date it failed on" do
-    error = Money::ConversionError.new(from_currency: "EUR", to_currency: "UAH", date: Date.new(2026, 9, 10))
+  test "converts currency with a fallback rate" do
+    ExchangeRate.expects(:find_or_fetch_rate).returns(nil).twice
 
-    assert_equal "Couldn't find exchange rate from EUR to UAH on 2026-09-10", error.message
-    assert_equal "EUR", error.from_currency
-    assert_equal "UAH", error.to_currency
-    assert_equal Date.new(2026, 9, 10), error.date
+    assert_equal 0, Money.new(1000).exchange_to(:jpy, fallback_rate: 0)
+    assert_equal Money.new(1000, :jpy), Money.new(1000, :usd).exchange_to(:jpy, fallback_rate: 1)
   end
-
-  test "conversion error raised by exchange_to carries a descriptive message" do
-    ExchangeRate.expects(:find_or_fetch_rate).returns(nil)
-
-    error = assert_raises(Money::ConversionError) do
-      Money.new(1000, :usd).exchange_to(:jpy, date: Date.new(2026, 9, 10))
-    end
-
-    assert_equal "Couldn't find exchange rate from USD to JPY on 2026-09-10", error.message
-  end
-
-  test "uses custom rate when provided" do
-    ExchangeRate.expects(:find_or_fetch_rate).never
-
-    assert_equal Money.new(1250, :jpy), Money.new(1000, :usd).exchange_to(:jpy, custom_rate: 1.25)
-  end
-
-  test "raises error when custom rate is invalid" do
-  assert_raises(Money::ConversionError) do
-    Money.new(1000).exchange_to(:jpy, custom_rate: 0)
-  end
-
-  assert_raises(Money::ConversionError) do
-    Money.new(1000).exchange_to(:jpy, custom_rate: -1)
-  end
-end
 end

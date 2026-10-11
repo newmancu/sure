@@ -19,19 +19,11 @@ class SimplefinAccount < ApplicationRecord
 
   validates :name, :account_type, :currency, presence: true
   validates :account_id, uniqueness: { scope: :simplefin_item_id, allow_nil: true }
-  validates :balance_sign_override, inclusion: { in: %w[credit debt], allow_nil: true }
   validate :has_balance
 
   # Helper to get account using new system first, falling back to legacy
   def current_account
     linked_account || account
-  end
-
-  # Summary of transaction activity derived from raw_transactions_payload.
-  # Used by the setup UI and ReplacementDetector to distinguish live vs dormant
-  # accounts without re-parsing the payload at every call site.
-  def activity_summary
-    ActivitySummary.new(raw_transactions_payload)
   end
 
   # Ensure there is an AccountProvider link for this SimpleFin account and its current Account.
@@ -120,18 +112,24 @@ class SimplefinAccount < ApplicationRecord
     end
 
     def parse_balance_date(balance_date_value)
-      parsed = Simplefin::DateUtils.parse_provider_time(balance_date_value)
-      return parsed if parsed.present?
       return nil if balance_date_value.nil?
 
-      Rails.logger.warn("Invalid balance date for SimpleFin account: #{balance_date_value}")
-      nil
-    rescue ArgumentError, TypeError, NameError
+      case balance_date_value
+      when String
+        Time.parse(balance_date_value)
+      when Numeric
+        Time.at(balance_date_value)
+      when Time, DateTime
+        balance_date_value
+      else
+        nil
+      end
+    rescue ArgumentError, TypeError
       Rails.logger.warn("Invalid balance date for SimpleFin account: #{balance_date_value}")
       nil
     end
     def has_balance
       return if current_balance.present? || available_balance.present?
-      errors.add(:base, :no_balance)
+      errors.add(:base, "SimpleFin account must have either current or available balance")
     end
 end

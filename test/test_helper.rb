@@ -23,30 +23,11 @@ require "minitest/autorun"
 require "mocha/minitest"
 require "aasm/minitest"
 require "webmock/minitest"
-require "rack/test"
-require "tempfile"
-require "uri"
-require Rails.root.join("test/support/sql_query_capture").to_s
-require Rails.root.join("test/support/rake_task_test_helper").to_s
 
 VCR.configure do |config|
   config.cassette_library_dir = "test/vcr_cassettes"
   config.hook_into :webmock
   config.ignore_localhost = true
-  config.ignore_request do |request|
-    selenium_remote_url = ENV["SELENIUM_REMOTE_URL"]
-    next false if selenium_remote_url.blank?
-
-    request_uri = URI(request.uri)
-    selenium_uri = URI(selenium_remote_url)
-
-    request_uri.host.present? &&
-      selenium_uri.host.present? &&
-      request_uri.host == selenium_uri.host &&
-      request_uri.port == selenium_uri.port
-  rescue URI::InvalidURIError
-    false
-  end
   config.default_cassette_options = { erb: true }
   config.filter_sensitive_data("<OPENAI_ACCESS_TOKEN>") { ENV["OPENAI_ACCESS_TOKEN"] }
   config.filter_sensitive_data("<OPENAI_ORGANIZATION_ID>") { ENV["OPENAI_ORGANIZATION_ID"] }
@@ -80,25 +61,9 @@ module ActiveSupport
     # Setup all fixtures in test/fixtures/*.yml for all tests in alphabetical order.
     fixtures :all
 
-    # rails-settings-cached keeps an in-memory cache that survives the per-test
-    # transaction rollback, so a Setting.* value written in one test leaks into
-    # later tests and causes order-dependent failures (e.g. Settings::Hostings
-    # reading a stale "" where nil is expected). Reset the cache before every
-    # test so each starts from the rolled-back DB state.
-    setup { Setting.clear_cache }
-
-    include SqlQueryCapture
-
     # Add more helper methods to be used by all tests here...
     def sign_in(user)
       post sessions_path, params: { email: user.email, password: user_password_test }
-      Current.session = user.sessions.order(:created_at).last
-    end
-
-    def ensure_tailwind_build
-      tailwind_build = Rails.root.join("app/assets/builds/tailwind.css")
-      FileUtils.mkdir_p(tailwind_build.dirname)
-      File.write(tailwind_build, "/* test */") unless tailwind_build.exist?
     end
 
     def with_env_overrides(overrides = {}, &block)
@@ -110,44 +75,17 @@ module ActiveSupport
       yield
     end
 
-    def api_headers(api_key)
-      { "X-Api-Key" => api_key.plain_key }
-    end
-
     def user_password_test
       "maybetestpassword817983172"
     end
 
-    def uploaded_file(filename:, content_type:, content: "date,amount\n2024-01-01,1\n")
-      tempfile = Tempfile.new([ File.basename(filename, ".*"), File.extname(filename) ])
-      tempfile.binmode
-      tempfile.write(content)
-      tempfile.rewind
-
-      Rack::Test::UploadedFile.new(tempfile.path, content_type, true, original_filename: filename)
-    end
-
-    def family_guest
-      @family_guest ||= users(:family_admin).family.users.create!(
-        first_name: "Readonly",
-        last_name: "Guest",
-        email: "readonly-guest@example.com",
-        password: user_password_test,
-        role: "guest",
-        onboarded_at: Time.current,
-        ui_layout: "dashboard"
-      )
-    end
-
     # Ensures the Investment Contributions category exists for a family
     # Used in transfer tests where this bootstrapped category is required
-    # Uses family locale to ensure consistent naming
     def ensure_investment_contributions_category(family)
-      I18n.with_locale(family.locale) do
-        family.categories.find_or_create_by!(name: Category.investment_contributions_name) do |c|
-          c.color = "#0d9488"
-          c.lucide_icon = "trending-up"
-        end
+      family.categories.find_or_create_by!(name: Category.investment_contributions_name) do |c|
+        c.color = "#0d9488"
+        c.lucide_icon = "trending-up"
+        c.classification = "expense"
       end
     end
   end

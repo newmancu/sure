@@ -2,27 +2,14 @@
 
 <div id="<%= dom_id(entry, :header) %>">
   <%= tag.header class: "mb-4 space-y-1" do %>
-    <% label = entry.trade.investment_activity_label %>
-    <% income_trade = %w[Dividend Interest].include?(label) %>
-    <%# The label is what the importer actually recorded, so it wins over the
-        amount's sign: a transfer between two accounts you own is neither a
-        purchase nor a sale, and calling it one misreads the event. The sign is
-        still the fallback for trades that carry no label at all, and for a
-        label this view has no wording for. %>
-    <% activity_key = label.presence&.parameterize(separator: "_") %>
-    <% named_activity = activity_key.present? && I18n.exists?("trades.header.#{activity_key}") %>
     <span class="text-secondary text-sm">
-      <% if named_activity %>
-        <%= t(".#{activity_key}") %>
-      <% else %>
-        <%= entry.amount.positive? ? t(".buy") : t(".sell") %>
-      <% end %>
+      <%= entry.amount.negative? ? t(".buy") : t(".sell") %>
     </span>
 
     <div class="flex items-center gap-4">
       <h3 class="font-medium">
-        <span class="text-2xl text-primary privacy-sensitive">
-          <%= format_money(income_trade ? entry.amount_money.abs : entry.amount_money) %>
+        <span class="text-2xl text-primary">
+          <%= format_money entry.amount_money %>
         </span>
 
         <span class="text-lg text-secondary">
@@ -31,28 +18,27 @@
       </h3>
 
       <% if entry.linked? %>
-        <span title="<%= t("transactions.transaction.linked_with_provider", provider: entry.account.provider_name&.titleize) %>">
+        <span title="Linked with Plaid">
           <%= icon("refresh-ccw", size: "sm") %>
         </span>
       <% end %>
     </div>
 
     <span class="text-sm text-secondary">
-      <%= entry.date ? I18n.l(entry.date, format: :long) : "—" %>
+      <%= I18n.l(entry.date, format: :long) %>
     </span>
   <% end %>
 
   <% trade = entry.trade %>
 
-  <% unless trade.security.cash? %>
   <div class="mb-2">
     <%= render DS::Disclosure.new(title: t(".overview"), open: true) do %>
       <div class="pb-4">
         <dl class="space-y-3 px-3 py-2">
-            <div class="flex items-center justify-between text-sm">
-              <dt class="text-secondary"><%= t(".symbol_label") %></dt>
-              <dd class="text-primary"><%= trade.security.ticker %></dd>
-            </div>
+          <div class="flex items-center justify-between text-sm">
+            <dt class="text-secondary"><%= t(".symbol_label") %></dt>
+            <dd class="text-primary"><%= trade.security.ticker %></dd>
+          </div>
 
           <% if trade.qty.positive? %>
             <div class="flex items-center justify-between text-sm">
@@ -62,14 +48,14 @@
 
             <div class="flex items-center justify-between text-sm">
               <dt class="text-secondary"><%= t(".purchase_price_label") %></dt>
-              <dd class="text-primary privacy-sensitive"><%= format_money trade.price_money %></dd>
+              <dd class="text-primary"><%= format_money trade.price_money %></dd>
             </div>
           <% end %>
 
-          <% if trade.qty.positive? && trade.security.current_price.present? %>
+          <% if trade.security.current_price.present? %>
             <div class="flex items-center justify-between text-sm">
               <dt class="text-secondary"><%= t(".current_market_price_label") %></dt>
-              <dd class="text-primary privacy-sensitive"><%= format_money trade.security.current_price %></dd>
+              <dd class="text-primary"><%= format_money trade.security.current_price %></dd>
             </div>
           <% end %>
 
@@ -85,5 +71,4 @@
       </div>
     <% end %>
   </div>
-  <% end %>
 </div>

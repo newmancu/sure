@@ -15,15 +15,9 @@ ca:
       success: T'has registrat correctament.
     new:
       invitation_message: "%{inviter} t'ha convidat a unir-te com a %{role}"
-      join_family_title: Uneix-te a %{family} (%{moniker})
+      join_family_title: Uneix-te a %{family}
       password_placeholder: Introdueix la teva contrasenya
-      password_requirements:
-        case: Majúscules i minúscules
-        length: Mínim 8 caràcters
-        number: Un número (0-9)
-        special: 'Un caràcter especial (!, @, #, $, %, etc)'
       role_admin: administrador/a
-      role_guest: convidat/da
       role_member: membre
       submit: Crea el compte
       title: Crea el teu compte

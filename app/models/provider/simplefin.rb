@@ -1,15 +1,13 @@
 class Provider::Simplefin
   # Pending: some institutions do not return pending transactions even with `pending=1`.
-  # This is provider variability (not a bug). The importer resolves pending inclusion
-  # from its explicit argument, SIMPLEFIN_INCLUDE_PENDING, or Setting.syncs_include_pending
-  # (default-on without overrides), then passes pending: to this client.
-  # SIMPLEFIN_DEBUG_RAW=1 enables raw payload logging (default-off); environment
-  # configuration lives in config/initializers/simplefin.rb.
+  # This is provider variability (not a bug). For troubleshooting, you can set
+  # `SIMPLEFIN_INCLUDE_PENDING=1` and/or `SIMPLEFIN_DEBUG_RAW=1` (both default-off).
+  # These are centralized in `Rails.configuration.x.simplefin.*` via
+  # `config/initializers/simplefin.rb`.
   include HTTParty
-  extend SslConfigurable
 
   headers "User-Agent" => "Sure Finance SimpleFin Client"
-  default_options.merge!({ timeout: 120 }.merge(httparty_ssl_options))
+  default_options.merge!(verify: true, ssl_verify_mode: OpenSSL::SSL::VERIFY_PEER, timeout: 120)
 
   # Retry configuration for transient network failures
   MAX_RETRIES = 3
@@ -36,9 +34,8 @@ class Provider::Simplefin
 
     # Use retry logic for transient network failures during token claim
     # Claim should be fast; keep request-path latency bounded.
-    # Use self.class.post to inherit class-level SSL and timeout defaults
-    response = with_retries("POST /claim", max_retries: 1, backoff: false) do
-      self.class.post(claim_url, timeout: 15)
+    response = with_retries("POST /claim", max_retries: 1, sleep: false) do
+      HTTParty.post(claim_url, timeout: 15)
     end
 
     case response.code
@@ -67,20 +64,15 @@ class Provider::Simplefin
       query_params["end-date"] = end_timestamp.to_s
     end
 
-    # Per the SimpleFIN protocol, pending transactions are excluded by default
-    # and only included when `pending=1` is present. Bridges presence-check the
-    # param, so sending `pending=0` behaves like `pending=1` — the only
-    # spec-compliant way to exclude pending is to omit the param entirely.
-    query_params["pending"] = "1" if pending
+    query_params["pending"] = pending ? "1" : "0" unless pending.nil?
 
     accounts_url = "#{access_url}/accounts"
     accounts_url += "?#{URI.encode_www_form(query_params)}" unless query_params.empty?
 
     # The access URL already contains HTTP Basic Auth credentials
     # Use retry logic with exponential backoff for transient network failures
-    # Use self.class.get to inherit class-level SSL and timeout defaults
     response = with_retries("GET /accounts") do
-      self.class.get(accounts_url)
+      HTTParty.get(accounts_url)
     end
 
     case response.code
@@ -106,8 +98,7 @@ class Provider::Simplefin
   end
 
   def get_info(base_url)
-    # Use self.class.get to inherit class-level SSL and timeout defaults
-    response = self.class.get("#{base_url}/info")
+    response = HTTParty.get("#{base_url}/info")
 
     case response.code
     when 200
@@ -131,7 +122,7 @@ class Provider::Simplefin
     # Execute a block with retry logic and exponential backoff for transient network errors.
     # This helps handle temporary network issues that cause autosync failures while
     # manual sync (with user retry) succeeds.
-    def with_retries(operation_name, max_retries: MAX_RETRIES, backoff: true)
+    def with_retries(operation_name, max_retries: MAX_RETRIES, sleep: true)
       retries = 0
 
       begin
@@ -145,7 +136,7 @@ class Provider::Simplefin
             "SimpleFin API: #{operation_name} failed (attempt #{retries}/#{max_retries}): " \
             "#{e.class}: #{e.message}. Retrying in #{delay}s..."
           )
-          sleep(delay) if backoff && delay.to_f.positive?
+          Kernel.sleep(delay) if sleep && delay.to_f.positive?
           retry
         else
           Rails.logger.error(

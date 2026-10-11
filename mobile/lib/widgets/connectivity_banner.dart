@@ -3,7 +3,6 @@ import 'package:provider/provider.dart';
 import '../services/connectivity_service.dart';
 import '../providers/transactions_provider.dart';
 import '../providers/auth_provider.dart';
-import '../l10n/app_localizations.dart';
 
 class ConnectivityBanner extends StatefulWidget {
   const ConnectivityBanner({super.key});
@@ -16,40 +15,36 @@ class _ConnectivityBannerState extends State<ConnectivityBanner> {
   bool _isSyncing = false;
 
   Future<void> _handleSync(BuildContext context, String? accessToken, TransactionsProvider transactionsProvider) async {
-    // Capture context-derived objects before the async gap so we never touch
-    // `context` after an await.
-    final l = AppLocalizations.of(context);
-    final messenger = ScaffoldMessenger.of(context);
     if (accessToken == null) {
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(l.connectivitySignInToSync),
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Please sign in to sync transactions'),
           backgroundColor: Colors.orange,
         ),
       );
-      if (mounted) {
-        setState(() {
-          _isSyncing = false;
-        });
-      }
       return;
     }
+
+    setState(() {
+      _isSyncing = true;
+    });
 
     try {
       await transactionsProvider.syncTransactions(accessToken: accessToken);
 
       if (!mounted) return;
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(l.connectivitySyncSuccess),
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Transactions synced successfully'),
           backgroundColor: Colors.green,
         ),
       );
     } catch (e) {
       if (!mounted) return;
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(l.connectivitySyncFailed),
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Failed to sync transactions. Please try again.'),
           backgroundColor: Colors.red,
         ),
       );
@@ -66,7 +61,6 @@ class _ConnectivityBannerState extends State<ConnectivityBanner> {
   Widget build(BuildContext context) {
     return Consumer2<ConnectivityService, TransactionsProvider>(
       builder: (context, connectivityService, transactionsProvider, _) {
-        final l = AppLocalizations.of(context);
         final isOffline = connectivityService.isOffline;
         final hasPending = transactionsProvider.hasPendingTransactions;
         final pendingCount = transactionsProvider.pendingCount;
@@ -92,8 +86,8 @@ class _ConnectivityBannerState extends State<ConnectivityBanner> {
                 Expanded(
                   child: Text(
                     isOffline
-                        ? l.connectivityOffline
-                        : l.connectivityPendingSync(pendingCount),
+                        ? 'You are offline. Changes will sync when online.'
+                        : '$pendingCount transaction${pendingCount == 1 ? '' : 's'} pending sync',
                     style: TextStyle(
                       color: isOffline ? Colors.orange.shade900 : Colors.blue.shade900,
                       fontSize: 14,
@@ -107,37 +101,11 @@ class _ConnectivityBannerState extends State<ConnectivityBanner> {
                       return TextButton(
                         onPressed: _isSyncing
                             ? null
-                            : () async {
-                                setState(() {
-                                  _isSyncing = true;
-                                });
-
-                                String? accessToken;
-                                try {
-                                  accessToken = await authProvider.getValidAccessToken();
-                                } catch (e) {
-                                  if (!context.mounted) return;
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    SnackBar(
-                                      content: Text(l.connectivityAuthFailed),
-                                      backgroundColor: Colors.red,
-                                    ),
-                                  );
-                                  if (mounted) {
-                                    setState(() {
-                                      _isSyncing = false;
-                                    });
-                                  }
-                                  return;
-                                }
-
-                                if (!context.mounted) return;
-                                await _handleSync(
+                            : () => _handleSync(
                                   context,
-                                  accessToken,
+                                  authProvider.tokens?.accessToken,
                                   transactionsProvider,
-                                );
-                              },
+                                ),
                         style: TextButton.styleFrom(
                           foregroundColor: Colors.blue.shade900,
                         ),
@@ -150,7 +118,7 @@ class _ConnectivityBannerState extends State<ConnectivityBanner> {
                                   valueColor: AlwaysStoppedAnimation<Color>(Colors.blue.shade900),
                                 ),
                               )
-                            : Text(l.connectivitySyncNow),
+                            : const Text('Sync Now'),
                       );
                     },
                   ),

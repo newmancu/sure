@@ -15,7 +15,6 @@ class LunchflowAccount < ApplicationRecord
   has_one :linked_account, through: :account_provider, source: :account
 
   validates :name, :currency, presence: true
-  validates :account_id, uniqueness: { scope: :lunchflow_item_id, allow_nil: true }
 
   # Helper to get account using account_providers system
   def current_account
@@ -37,12 +36,7 @@ class LunchflowAccount < ApplicationRecord
 
     assign_attributes(
       current_balance: nil, # Balance not provided by accounts endpoint
-      # The accounts endpoint usually omits currency (the balance endpoint is
-      # the authoritative source) — preserve what we already know rather than
-      # resetting an established account to USD. Normalize the preserved value
-      # too: a blank/invalid stored currency must fall through to USD, not
-      # propagate (blank would fail the presence validation and break import).
-      currency: parse_currency(snapshot[:currency]) || parse_currency(currency) || "USD",
+      currency: parse_currency(snapshot[:currency]) || "USD",
       name: display_name,
       account_id: snapshot[:id].to_s,
       account_status: snapshot[:status],

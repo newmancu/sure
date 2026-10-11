@@ -7,13 +7,6 @@ class RuleImport < Import
     end
   end
 
-  # Rules hang off the family, not the import — see
-  # Import#committed_by_named_records?. Nameless rows build unconditionally and
-  # carry no stable key, so a file of only nameless rows has no commit signal.
-  def data_committed?
-    committed_by_named_records?(family.rules)
-  end
-
   def column_keys
     %i[name resource_type active effective_date conditions actions]
   end
@@ -59,13 +52,12 @@ class RuleImport < Import
   def generate_rows_from_csv
     rows.destroy_all
 
-    csv_rows.each.with_index(1) do |row, index|
+    csv_rows.each do |row|
       normalized_row = normalize_rule_row(row)
 
       rows.create!(
-        source_row_number: index,
-        name: normalized_rule_text(normalized_row[:name], attribute: :name),
-        resource_type: normalized_rule_text(normalized_row[:resource_type], attribute: :resource_type),
+        name: normalized_row[:name].to_s.strip,
+        resource_type: normalized_row[:resource_type].to_s.strip,
         active: parse_boolean(normalized_row[:active]),
         effective_date: normalized_row[:effective_date].to_s.strip,
         conditions: normalized_row[:conditions].to_s.strip,
@@ -96,20 +88,6 @@ class RuleImport < Import
       }
     end
 
-    def normalized_rule_text(value, attribute:)
-      text = value.to_s
-      reject_invalid_text!(text, label: Rule.human_attribute_name(attribute))
-
-      text.strip
-    end
-
-    def reject_invalid_text!(value, label:)
-      return if DatabaseTextValidator.acceptable?(value)
-
-      errors.add(:base, :invalid, message: "#{label} #{I18n.t("errors.messages.invalid")}")
-      raise ActiveRecord::RecordInvalid.new(self)
-    end
-
     def extract_conditions_and_actions(fragments)
       pieces = Array(fragments).compact
       return [ "", "" ] if pieces.empty?
@@ -131,12 +109,12 @@ class RuleImport < Import
     end
 
     def create_or_update_rule_from_row(row)
-      rule_name = normalized_rule_text(row.name, attribute: :name).presence
-      resource_type = normalized_rule_text(row.resource_type, attribute: :resource_type)
+      rule_name = row.name.to_s.strip.presence
+      resource_type = row.resource_type.to_s.strip
 
       # Validate resource type
       unless resource_type == "transaction"
-        errors.add(:base, :unsupported_resource_type, resource_type: resource_type)
+        errors.add(:base, "Unsupported resource type: #{resource_type}")
         raise ActiveRecord::RecordInvalid.new(self)
       end
 
@@ -145,13 +123,13 @@ class RuleImport < Import
         conditions_data = parse_json_safely(row.conditions, "conditions")
         actions_data = parse_json_safely(row.actions, "actions")
       rescue JSON::ParserError => e
-        errors.add(:base, :invalid_json, message: e.message)
+        errors.add(:base, "Invalid JSON in conditions or actions: #{e.message}")
         raise ActiveRecord::RecordInvalid.new(self)
       end
 
       # Validate we have at least one action
       if actions_data.empty?
-        errors.add(:base, :min_actions)
+        errors.add(:base, "Rule must have at least one action")
         raise ActiveRecord::RecordInvalid.new(self)
       end
 
@@ -224,23 +202,30 @@ class RuleImport < Import
     def resolve_import_condition_value(condition_data)
       condition_type = condition_data["condition_type"]
       value = condition_data["value"]
-      reject_invalid_text!(value, label: Rule::Condition.human_attribute_name(:value))
 
       return value unless value.present?
 
       # Map category names to UUIDs
       if condition_type == "transaction_category"
-        return find_or_create_category(value).id
+        category = family.categories.find_by(name: value)
+        unless category
+          category = family.categories.create!(
+            name: value,
+            color: Category::UNCATEGORIZED_COLOR,
+            classification: "expense",
+            lucide_icon: "shapes"
+          )
+        end
+        return category.id
       end
 
       # Map merchant names to UUIDs
       if condition_type == "transaction_merchant"
-        return find_or_create_merchant(value).id
-      end
-
-      # Map tag names to UUIDs
-      if condition_type == "transaction_tag"
-        return find_or_create_tag(value).id
+        merchant = family.merchants.find_by(name: value)
+        unless merchant
+          merchant = family.merchants.create!(name: value)
+        end
+        return merchant.id
       end
 
       value
@@ -249,68 +234,45 @@ class RuleImport < Import
     def resolve_import_action_value(action_data)
       action_type = action_data["action_type"]
       value = action_data["value"]
-      reject_invalid_text!(value, label: Rule::Action.human_attribute_name(:value))
 
       return value unless value.present?
 
       # Map category names to UUIDs
       if action_type == "set_transaction_category"
-        return find_or_create_category(value).id
+        category = family.categories.find_by(name: value)
+        # Create category if it doesn't exist
+        unless category
+          category = family.categories.create!(
+            name: value,
+            color: Category::UNCATEGORIZED_COLOR,
+            classification: "expense",
+            lucide_icon: "shapes"
+          )
+        end
+        return category.id
       end
 
       # Map merchant names to UUIDs
       if action_type == "set_transaction_merchant"
-        return find_or_create_merchant(value).id
+        merchant = family.merchants.find_by(name: value)
+        # Create merchant if it doesn't exist
+        unless merchant
+          merchant = family.merchants.create!(name: value)
+        end
+        return merchant.id
       end
 
-      # Map tag names to UUIDs. `value` may be a comma-separated list of tag
-      # names for multi-tag actions (see Rule::Action#value=), so each name
-      # is resolved independently rather than treating the whole string as
-      # a single tag name.
+      # Map tag names to UUIDs
       if action_type == "set_transaction_tags"
-        return resolve_import_multi_tag_value(value)
+        tag = family.tags.find_by(name: value)
+        # Create tag if it doesn't exist
+        unless tag
+          tag = family.tags.create!(name: value)
+        end
+        return tag.id
       end
 
       value
-    end
-
-    def resolve_import_multi_tag_value(value)
-      names = Rule::Action.decode_multi_value_names(value).map(&:strip).reject(&:blank?)
-      return value if names.empty?
-
-      names.map { |name| find_or_create_tag(name).id }.join(",")
-    end
-
-    # Preloaded once per import and extended in place on cache-miss, so a
-    # category/merchant/tag created for an earlier row is immediately visible
-    # to a later row referencing the same name, instead of one query per
-    # condition/action across every row in the file.
-    def categories_by_name
-      @categories_by_name ||= family.categories.index_by(&:name)
-    end
-
-    def merchants_by_name
-      @merchants_by_name ||= family.merchants.index_by(&:name)
-    end
-
-    def tags_by_name
-      @tags_by_name ||= family.tags.index_by(&:name)
-    end
-
-    def find_or_create_category(name)
-      categories_by_name[name] ||= family.categories.create!(
-        name: name,
-        color: Category::UNCATEGORIZED_COLOR,
-        lucide_icon: "shapes"
-      )
-    end
-
-    def find_or_create_merchant(name)
-      merchants_by_name[name] ||= family.merchants.create!(name: name)
-    end
-
-    def find_or_create_tag(name)
-      tags_by_name[name] ||= family.tags.create!(name: name)
     end
 
     def parse_boolean(value)
@@ -329,13 +291,8 @@ class RuleImport < Import
     def parse_json_safely(json_string, field_name)
       return [] if json_string.blank?
 
-      cleaned = json_string.to_s.strip
-
-      # Most API-created rows already store valid JSON. Parse them as-is before
-      # falling back to the legacy cleanup path for older malformed payloads.
-      parse_json_payload(cleaned, normalize_legacy_strings: false)
-    rescue JSON::ParserError
       # Clean up the JSON string - remove extra escaping that might come from CSV parsing
+      cleaned = json_string.to_s.strip
 
       # Remove surrounding quotes if present (both single and double)
       cleaned = cleaned.gsub(/\A["']+|["']+\z/, "")
@@ -366,46 +323,8 @@ class RuleImport < Import
       end
 
       # Try parsing
-      parse_json_payload(cleaned, normalize_legacy_strings: true)
+      JSON.parse(cleaned)
     rescue JSON::ParserError => e
       raise JSON::ParserError.new("Invalid JSON in #{field_name}: #{e.message}. Raw value: #{json_string.inspect}")
-    end
-
-    def parse_json_payload(payload, normalize_legacy_strings:)
-      parsed = JSON.parse(payload)
-      parsed = JSON.parse(parsed) if wrapped_json_payload?(parsed)
-
-      normalize_json_values(parsed, normalize_legacy_strings:)
-    end
-
-    def wrapped_json_payload?(value)
-      return false unless value.is_a?(String)
-
-      stripped_value = value.strip
-      stripped_value.start_with?("[", "{")
-    end
-
-    def normalize_json_values(value, normalize_legacy_strings:)
-      case value
-      when Array
-        value.map { |item| normalize_json_values(item, normalize_legacy_strings:) }
-      when Hash
-        value.transform_values { |item| normalize_json_values(item, normalize_legacy_strings:) }
-      when String
-        normalized = value
-          .gsub(/\\u([0-9a-fA-F]{4})/i) { [ $1.to_i(16) ].pack("U") }
-          .gsub('\\"', '"')
-
-        if normalize_legacy_strings
-          normalized = normalized
-            .gsub("\\n", "\n")
-            .gsub("\\r", "\r")
-            .gsub("\\t", "\t")
-        end
-
-        normalized
-      else
-        value
-      end
     end
 end

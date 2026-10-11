@@ -2,7 +2,6 @@
 
 class SsoProvider < ApplicationRecord
   include Encryptable
-  extend SslConfigurable
 
   # Encrypt sensitive credentials if ActiveRecord encryption is configured
   if encryption_ready?
@@ -23,12 +22,6 @@ class SsoProvider < ApplicationRecord
   }
   validates :label, presence: true
   validates :enabled, inclusion: { in: [ true, false ] }
-  validates :icon, format: {
-    with: /\A\S+\z/,
-    message: "cannot be blank or contain only whitespace"
-  }, allow_nil: true
-
-  before_validation :normalize_icon
 
   # Strategy-specific validations
   validate :validate_oidc_fields, if: -> { strategy == "openid_connect" }
@@ -50,7 +43,7 @@ class SsoProvider < ApplicationRecord
       strategy: strategy,
       name: name,
       label: label,
-      icon: icon.present? && icon.strip.present? ? icon.strip : nil,
+      icon: icon,
       issuer: issuer,
       client_id: client_id,
       client_secret: client_secret,
@@ -60,10 +53,6 @@ class SsoProvider < ApplicationRecord
   end
 
   private
-    def normalize_icon
-      self.icon = icon.to_s.strip.presence
-    end
-
     def validate_oidc_fields
       if issuer.blank?
         errors.add(:issuer, "is required for OpenID Connect providers")
@@ -90,7 +79,7 @@ class SsoProvider < ApplicationRecord
       idp_sso_url = settings&.dig("idp_sso_url")
 
       if idp_metadata_url.blank? && idp_sso_url.blank?
-        errors.add(:settings, :saml_url_required)
+        errors.add(:settings, "Either IdP Metadata URL or IdP SSO URL is required for SAML providers")
       end
 
       # If using manual config, require certificate
@@ -99,27 +88,26 @@ class SsoProvider < ApplicationRecord
         idp_fingerprint = settings&.dig("idp_cert_fingerprint")
 
         if idp_cert.blank? && idp_fingerprint.blank?
-          errors.add(:settings, :saml_cert_required)
+          errors.add(:settings, "Either IdP Certificate or Certificate Fingerprint is required when not using metadata URL")
         end
       end
 
       # Validate URL formats if provided
       if idp_metadata_url.present? && !valid_url?(idp_metadata_url)
-        errors.add(:settings, :metadata_url_invalid)
+        errors.add(:settings, "IdP Metadata URL must be a valid URL")
       end
 
       if idp_sso_url.present? && !valid_url?(idp_sso_url)
-        errors.add(:settings, :sso_url_invalid)
+        errors.add(:settings, "IdP SSO URL must be a valid URL")
       end
     end
 
     def validate_default_role_setting
-      default_role = settings&.dig("default_role") || settings&.dig(:default_role)
-      default_role = default_role.to_s
+      default_role = settings&.dig("default_role")
       return if default_role.blank?
 
       unless User.roles.key?(default_role)
-        errors.add(:settings, "default_role must be guest, member, admin, or super_admin")
+        errors.add(:settings, "default_role must be member, admin, or super_admin")
       end
     end
 
@@ -128,7 +116,7 @@ class SsoProvider < ApplicationRecord
 
       begin
         discovery_url = issuer.end_with?("/") ? "#{issuer}.well-known/openid-configuration" : "#{issuer}/.well-known/openid-configuration"
-        response = Faraday.new(ssl: self.class.faraday_ssl_options).get(discovery_url) do |req|
+        response = Faraday.get(discovery_url) do |req|
           req.options.timeout = 5
           req.options.open_timeout = 3
         end

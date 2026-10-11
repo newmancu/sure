@@ -7,11 +7,7 @@ class Property < ApplicationRecord
     "condominium" => { short: "Condo", long: "Condominium" },
     "townhouse" => { short: "Townhouse", long: "Townhouse" },
     "investment_property" => { short: "Investment Property", long: "Investment Property" },
-    "second_home" => { short: "Second Home", long: "Second Home" },
-    "apartment" => { short: "Apartment", long: "Apartment" },
-    "plot" => { short: "Plot", long: "Plot / Land" },
-    "commercial" => { short: "Commercial", long: "Commercial Property" },
-    "agri_land" => { short: "Agri Land", long: "Agricultural Land" }
+    "second_home" => { short: "Second Home", long: "Second Home" }
   }.freeze
 
   has_one :address, as: :addressable, dependent: :destroy

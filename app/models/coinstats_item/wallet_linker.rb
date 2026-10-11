@@ -22,7 +22,7 @@ class CoinstatsItem::WalletLinker
     balance_data = fetch_balance_data
     tokens = normalize_tokens(balance_data)
 
-    return Result.new(success?: false, created_count: 0, errors: [ I18n.t("models.coinstats_item.wallet_linker.no_tokens_found") ]) if tokens.empty?
+    return Result.new(success?: false, created_count: 0, errors: [ "No tokens found for wallet" ]) if tokens.empty?
 
     created_count = 0
     errors = []
@@ -77,26 +77,27 @@ class CoinstatsItem::WalletLinker
     def create_account_from_token(token_data)
       token = token_data.with_indifferent_access
       account_name = build_account_name(token)
+      current_balance = calculate_balance(token)
       token_id = (token[:coinId] || token[:id])&.to_s
 
       ActiveRecord::Base.transaction do
         coinstats_account = coinstats_item.coinstats_accounts.create!(
           name: account_name,
           currency: "USD",
-          current_balance: 0,
+          current_balance: current_balance,
           account_id: token_id,
           wallet_address: address
         )
 
         # Store wallet metadata for future syncs
-        snapshot = build_snapshot(token)
+        snapshot = build_snapshot(token, current_balance)
         coinstats_account.upsert_coinstats_snapshot!(snapshot)
 
         account = coinstats_item.family.accounts.create!(
           accountable: Crypto.new,
           name: account_name,
-          balance: coinstats_account.current_balance,
-          cash_balance: coinstats_account.inferred_cash_balance,
+          balance: current_balance,
+          cash_balance: current_balance,
           currency: coinstats_account.currency,
           status: "active"
         )
@@ -131,12 +132,23 @@ class CoinstatsItem::WalletLinker
       end
     end
 
+    # Calculates USD balance from token amount and price.
+    # @param token [Hash] Token data with :amount/:balance and :price
+    # @return [Float] Balance in USD
+    def calculate_balance(token)
+      amount = token[:amount] || token[:balance] || token[:current_balance] || 0
+      price = token[:price] || 0
+      (amount.to_f * price.to_f)
+    end
+
     # Builds snapshot hash for storing in CoinstatsAccount.
     # @param token [Hash] Token data from API
+    # @param current_balance [Float] Calculated USD balance
     # @return [Hash] Snapshot with balance, address, and metadata
-    def build_snapshot(token)
-      token.to_h.except("id", :id).merge(
+    def build_snapshot(token, current_balance)
+      token.to_h.merge(
         id: (token[:coinId] || token[:id])&.to_s,
+        balance: current_balance,
         currency: "USD",
         address: address,
         blockchain: blockchain,

@@ -16,4 +16,3 @@ nb:
       title: Logg inn på kontoen din
       password_placeholder: Angi passordet ditt
       openid_connect: Logg inn med OpenID Connect
-      oidc: Logg inn med OpenID Connect

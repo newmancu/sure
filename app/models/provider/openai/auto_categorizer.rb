@@ -60,12 +60,12 @@ class Provider::Openai::AutoCategorizer
     end
   end
 
-  # A family's override from /settings/ai_prompts replaces both built-in
-  # variants. Without one, custom providers get the simplified instructions and
-  # everything else gets the detailed ones.
   def instructions
-    family&.ai_prompt(:categorizer_openai) ||
-      (custom_provider ? simple_instructions : detailed_instructions)
+    if custom_provider
+      simple_instructions
+    else
+      detailed_instructions
+    end
   end
 
   # Simplified instructions for smaller/local LLMs
@@ -105,7 +105,7 @@ class Provider::Openai::AutoCategorizer
       - Return 1 result per transaction
       - Correlate each transaction by ID (transaction_id)
       - Attempt to match the most specific category possible (i.e. subcategory over parent category)
-      - Any category can be used for any transaction regardless of whether the transaction is income or expense
+      - Category and transaction classifications should match (i.e. if transaction is an "expense", the category must have classification of "expense")
       - If you don't know the category, return "null"
         - You should always favor "null" over false positives
         - Be slightly pessimistic.  Only match a category if you're 60%+ confident it is the correct one.

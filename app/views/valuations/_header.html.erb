@@ -2,13 +2,12 @@
 
 <%= tag.header class: "mb-4 space-y-1", id: dom_id(entry, :header) do %>
   <span class="text-secondary text-sm">
-    <% valuation = entry.entryable %>
-    <%= valuation.respond_to?(:opening_anchor?) && valuation.opening_anchor? ? t("valuations.show.opening_balance") : entry.name %>
+    <%= entry.name %>
   </span>
 
   <div class="flex items-center gap-4">
     <h3 class="font-medium">
-      <span class="text-2xl text-primary privacy-sensitive">
+      <span class="text-2xl text-primary">
         <%= format_money entry.amount_money %>
       </span>
 
@@ -19,6 +18,6 @@
   </div>
 
   <span class="text-sm text-secondary">
-    <%= entry.date ? I18n.l(entry.date, format: :long) : "—" %>
+    <%= I18n.l(entry.date, format: :long) %>
   </span>
 <% end %>

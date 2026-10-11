@@ -1,19 +1,16 @@
 <div class="space-y-4 pb-6 lg:pb-12 flex flex-col">
   <header class="flex justify-between items-center text-primary font-medium">
-    <h1 class="text-xl"><%= t(".title") %></h1>
+    <h1 class="text-xl">Transactions</h1>
     <div class="flex items-center gap-5">
       <div class="flex items-center gap-2">
         <%= render DS::Menu.new do |menu| %>
-          <% menu.with_item(variant: "link", text: t(".new_rule"), href: new_rule_path(resource_type: "transaction"), icon: "plus", data: { turbo_frame: :modal }) %>
-          <% menu.with_item(variant: "link", text: t(".edit_rules"), href: rules_path, icon: "git-branch", data: { turbo_frame: :_top }) %>
-          <% menu.with_item(variant: "link", text: t(".edit_categories"), href: categories_path, icon: "shapes", data: { turbo_frame: :_top }) %>
-          <% menu.with_item(variant: "link", text: t(".edit_tags"), href: tags_path, icon: "tags", data: { turbo_frame: :_top }) %>
-          <% menu.with_item(variant: "link", text: t(".edit_merchants"), href: family_merchants_path, icon: "store", data: { turbo_frame: :_top }) %>
-          <% menu.with_item(variant: "link", text: t(".edit_imports"), href: imports_path, icon: "hard-drive-upload", data: { turbo_frame: :_top }) %>
-          <% menu.with_item(variant: "link", text: t(".import"), href: new_import_path, icon: "download", data: { turbo_frame: "modal", class_name: "md:!hidden" }) %>
-          <% if @uncategorized_count > 0 %>
-            <% menu.with_item(variant: "link", text: t(".categorize_button", count: @uncategorized_count), href: transactions_categorize_path, icon: "tag", data: { turbo_frame: :_top }) %>
-          <% end %>
+          <% menu.with_item(variant: "link", text: "New rule", href: new_rule_path(resource_type: "transaction"), icon: "plus", data: { turbo_frame: :modal }) %>
+          <% menu.with_item(variant: "link", text: "Edit rules", href: rules_path, icon: "git-branch", data: { turbo_frame: :_top }) %>
+          <% menu.with_item(variant: "link", text: "Edit categories", href: categories_path, icon: "shapes", data: { turbo_frame: :_top }) %>
+          <% menu.with_item(variant: "link", text: "Edit tags", href: tags_path, icon: "tags", data: { turbo_frame: :_top }) %>
+          <% menu.with_item(variant: "link", text: "Edit merchants", href: family_merchants_path, icon: "store", data: { turbo_frame: :_top }) %>
+          <% menu.with_item(variant: "link", text: "Edit imports", href: imports_path, icon: "hard-drive-upload", data: { turbo_frame: :_top }) %>
+          <% menu.with_item(variant: "link", text: "Import", href: new_import_path, icon: "download", data: { turbo_frame: "modal", class_name: "md:!hidden" }) %>
         <% end %>
 
         <div class="hidden md:flex">
@@ -27,7 +24,7 @@
         </div>
 
         <%= render DS::Link.new(
-            text: t(".new_transaction"),
+            text: "New transaction",
             icon: "plus",
             variant: "primary",
             href: new_transaction_path,
@@ -47,26 +44,88 @@
   </header>
 
   <%= render "summary", totals: @search.totals %>
-  <% if Current.family.recurring_transactions_disabled? %>
-    <%= render "transactions/list", transactions: @transactions, projected_recurring: @projected_recurring, q: params[:q], pagy: @pagy %>
-  <% else %>
-    <%= render DS::Tabs.new(active_tab: params[:tab].presence || "transactions") do |tabs| %>
-      <% tabs.with_nav(classes: "max-w-fit") do |nav| %>
-        <% nav.with_btn(id: "transactions", label: t("transactions.show.tab_transactions"), classes: "px-6") %>
-        <% nav.with_btn(id: "upcoming", label: t("transactions.show.tab_upcoming"), classes: "px-6") %>
-      <% end %>
 
-      <% tabs.with_panel(tab_id: "transactions") do %>
-        <div class="bg-container rounded-xl shadow-border-xs">
-          <%= render "transactions/list", transactions: @transactions, projected_recurring: @projected_recurring, q: params[:q], pagy: @pagy %>
-        </div>
-      <% end %>
+  <div id="transactions"
+       data-controller="bulk-select checkbox-toggle drag-and-drop-import"
+       data-bulk-select-singular-label-value="<%= t(".transaction") %>"
+       data-bulk-select-plural-label-value="<%= t(".transactions") %>"
+       class="flex flex-col bg-container rounded-xl shadow-border-xs px-3 py-4 lg:p-4 relative group">
 
-      <% tabs.with_panel(tab_id: "upcoming") do %>
-        <div class="bg-container rounded-xl shadow-border-xs">
-          <%= render "transactions/upcoming" %>
-        </div>
-      <% end %>
+    <%= form_with url: imports_path, method: :post, class: "hidden", data: { drag_and_drop_import_target: "form" } do |f| %>
+      <%= f.hidden_field "import[type]", value: "TransactionImport" %>
+      <%= f.file_field "import[csv_file]", class: "hidden", data: { drag_and_drop_import_target: "input" }, accept: ".csv" %>
     <% end %>
-  <% end %>
+
+    <%= render "imports/drag_drop_overlay", title: "Drop CSV to import", subtitle: "Upload transactions directly" %>
+
+    <%= render "transactions/searches/search" %>
+
+    <div id="entry-selection-bar" data-bulk-select-target="selectionBar" class="flex justify-center hidden">
+      <%= render "transactions/selection_bar" %>
+    </div>
+
+    <% if @pagy.count > 0 || (@projected_recurring.any? && @q.blank?) %>
+      <div class="grow overflow-y-auto">
+        <% if @transactions.any? %>
+          <div class="grid-cols-12 bg-container-inset rounded-xl px-5 py-3 text-xs uppercase font-medium text-secondary items-center mb-4 grid">
+            <div class="pl-0.5 col-span-8 flex items-center gap-4">
+              <%= check_box_tag "selection_entry",
+                                class: "checkbox checkbox--light hidden lg:block",
+                                data: {
+                                  action: "bulk-select#togglePageSelection",
+                                  checkbox_toggle_target: "selectionEntry"
+                                } %>
+              <p>transaction</p>
+            </div>
+
+            <p class="col-span-2 md:block hidden">category</p>
+            <p class="col-span-2 col-start-11 md:col-start-auto justify-self-end md:block">amount</p>
+          </div>
+        <% end %>
+
+        <div class="space-y-6">
+          <% if @projected_recurring.any? && @q.blank? %>
+            <div
+              class="space-y-2"
+              data-controller="transactions-section"
+              data-transactions-section-section-key-value="upcoming_recurring"
+              data-transactions-section-collapsed-value="<%= Current.user.transactions_section_collapsed?("upcoming_recurring") %>">
+              <div class="flex items-center gap-2 px-2">
+                <button
+                  type="button"
+                  class="text-secondary hover:text-primary transition-colors p-0.5"
+                  data-action="click->transactions-section#toggle keydown->transactions-section#handleToggleKeydown"
+                  data-transactions-section-target="button"
+                  aria-label="<%= t("transactions.toggle_recurring_section") %>"
+                  aria-expanded="<%= !Current.user.transactions_section_collapsed?("upcoming_recurring") %>">
+                  <%= icon("chevron-down", size: "sm", class: "transition-transform", data: { transactions_section_target: "chevron" }) %>
+                </button>
+                <h3 class="text-xs uppercase font-medium text-secondary"><%= t("recurring_transactions.upcoming") %></h3>
+              </div>
+              <div data-transactions-section-target="content">
+                <% @projected_recurring.group_by(&:next_expected_date).sort.each do |date, transactions| %>
+                  <div class="space-y-2">
+                    <div class="text-xs text-secondary px-2 pt-2"><%= l(date, format: :long) %></div>
+                    <% transactions.each do |recurring_transaction| %>
+                      <%= render "recurring_transactions/projected_transaction", recurring_transaction: recurring_transaction %>
+                    <% end %>
+                  </div>
+                <% end %>
+              </div>
+            </div>
+          <% end %>
+
+          <%= entries_by_date(@transactions.map(&:entry), totals: true) do |entries| %>
+            <%= render entries %>
+          <% end %>
+        </div>
+      </div>
+    <% else %>
+      <%= render "entries/empty" %>
+    <% end %>
+
+    <div class="pt-4">
+      <%= render "shared/pagination", pagy: @pagy %>
+    </div>
+  </div>
 </div>

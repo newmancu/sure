@@ -1,10 +1,6 @@
 require "securerandom"
 
 class Demo::Generator
-  # Alias the canonical sentinel from Subscription so callers that already
-  # reference Demo::Generator::DEMO_STRIPE_SUBSCRIPTION_ID keep working.
-  DEMO_STRIPE_SUBSCRIPTION_ID = Subscription::DEMO_STRIPE_ID
-
   # @param seed [Integer, String, nil] Seed value used to initialise the internal PRNG. If nil, the ENV variable DEMO_DATA_SEED will
   #   be honoured and default to a random seed when not present.
   #
@@ -76,9 +72,6 @@ class Demo::Generator
         create_realistic_accounts!(family)
         create_realistic_transactions!(family)
         generate_budget_auto_fill!(family)
-
-        puts "🎯 Seeding goals..."
-        generate_goals!(family)
       end
 
       family.sync_later
@@ -106,12 +99,6 @@ class Demo::Generator
       create_realistic_transactions!(family)
       # Auto-fill current-month budget based on recent spending averages
       generate_budget_auto_fill!(family)
-
-      puts "🎯 Seeding goals..."
-      generate_goals!(family)
-
-      puts "🔑 Creating monitoring API key..."
-      create_monitoring_api_key!(family)
 
       puts "✅ Realistic demo data loaded successfully!"
     end
@@ -169,7 +156,7 @@ class Demo::Generator
         date_format: "%m-%d-%Y"
       )
 
-      family.start_subscription!(DEMO_STRIPE_SUBSCRIPTION_ID) if subscribed
+      family.start_subscription!("sub_demo_123") if subscribed
 
       # Admin user
       family.users.create!(
@@ -181,7 +168,7 @@ class Demo::Generator
         onboarded_at: onboarded ? Time.current : nil
       )
 
-      # Family member user
+      # Member user
       family.users.create!(
         email: "partner_#{email}",
         first_name: "Eve",
@@ -194,84 +181,50 @@ class Demo::Generator
       family
     end
 
-    def create_monitoring_api_key!(family)
-      admin_user = family.users.find_by(role: "admin")
-      return unless admin_user
-
-      # Revoke any existing user-created web API keys to keep demo access predictable.
-      # (the monitoring key uses the dedicated "monitoring" source and cannot be revoked)
-      admin_user.api_keys.active.visible.where(source: "web").find_each(&:revoke!)
-
-      existing_key = ApiKey.find_by(display_key: ApiKey::DEMO_MONITORING_KEY)
-
-      if existing_key
-        existing_key.update!(
-          user: admin_user,
-          name: "monitoring",
-          scopes: [ "read" ],
-          source: "monitoring",
-          revoked_at: nil,
-          expires_at: nil
-        )
-        puts "  → Use existing monitoring API key"
-        return existing_key
-      end
-
-      api_key = admin_user.api_keys.create!(
-        name: "monitoring",
-        key: ApiKey::DEMO_MONITORING_KEY,
-        scopes: [ "read" ],
-        source: "monitoring"
-      )
-
-      puts "  → Created monitoring API key: #{ApiKey::DEMO_MONITORING_KEY}"
-      api_key
-    end
-
     def create_realistic_categories!(family)
       # Income categories (3 total)
-      @salary_cat = family.categories.create!(name: "Salary", color: "#10b981")
-      @freelance_cat = family.categories.create!(name: "Freelance", color: "#059669")
-      @investment_income_cat = family.categories.create!(name: "Investment Income", color: "#047857")
+      @salary_cat = family.categories.create!(name: "Salary", color: "#10b981", classification: "income")
+      @freelance_cat = family.categories.create!(name: "Freelance", color: "#059669", classification: "income")
+      @investment_income_cat = family.categories.create!(name: "Investment Income", color: "#047857", classification: "income")
 
       # Expense categories with subcategories (12 total)
-      @housing_cat = family.categories.create!(name: "Housing", color: "#dc2626")
-      @rent_cat = family.categories.create!(name: "Rent/Mortgage", parent: @housing_cat, color: "#b91c1c")
-      @utilities_cat = family.categories.create!(name: "Utilities", parent: @housing_cat, color: "#991b1b")
+      @housing_cat = family.categories.create!(name: "Housing", color: "#dc2626", classification: "expense")
+      @rent_cat = family.categories.create!(name: "Rent/Mortgage", parent: @housing_cat, color: "#b91c1c", classification: "expense")
+      @utilities_cat = family.categories.create!(name: "Utilities", parent: @housing_cat, color: "#991b1b", classification: "expense")
 
-      @food_cat = family.categories.create!(name: "Food & Dining", color: "#ea580c")
-      @groceries_cat = family.categories.create!(name: "Groceries", parent: @food_cat, color: "#c2410c")
-      @restaurants_cat = family.categories.create!(name: "Restaurants", parent: @food_cat, color: "#9a3412")
-      @coffee_cat = family.categories.create!(name: "Coffee & Takeout", parent: @food_cat, color: "#7c2d12")
+      @food_cat = family.categories.create!(name: "Food & Dining", color: "#ea580c", classification: "expense")
+      @groceries_cat = family.categories.create!(name: "Groceries", parent: @food_cat, color: "#c2410c", classification: "expense")
+      @restaurants_cat = family.categories.create!(name: "Restaurants", parent: @food_cat, color: "#9a3412", classification: "expense")
+      @coffee_cat = family.categories.create!(name: "Coffee & Takeout", parent: @food_cat, color: "#7c2d12", classification: "expense")
 
-      @transportation_cat = family.categories.create!(name: "Transportation", color: "#2563eb")
-      @gas_cat = family.categories.create!(name: "Gas", parent: @transportation_cat, color: "#1d4ed8")
-      @car_payment_cat = family.categories.create!(name: "Car Payment", parent: @transportation_cat, color: "#1e40af")
+      @transportation_cat = family.categories.create!(name: "Transportation", color: "#2563eb", classification: "expense")
+      @gas_cat = family.categories.create!(name: "Gas", parent: @transportation_cat, color: "#1d4ed8", classification: "expense")
+      @car_payment_cat = family.categories.create!(name: "Car Payment", parent: @transportation_cat, color: "#1e40af", classification: "expense")
 
-      @entertainment_cat = family.categories.create!(name: "Entertainment", color: "#7c3aed")
-      @healthcare_cat = family.categories.create!(name: "Healthcare", color: "#db2777")
-      @shopping_cat = family.categories.create!(name: "Shopping", color: "#059669")
-      @travel_cat = family.categories.create!(name: "Travel", color: "#0891b2")
-      @personal_care_cat = family.categories.create!(name: "Personal Care", color: "#be185d")
+      @entertainment_cat = family.categories.create!(name: "Entertainment", color: "#7c3aed", classification: "expense")
+      @healthcare_cat = family.categories.create!(name: "Healthcare", color: "#db2777", classification: "expense")
+      @shopping_cat = family.categories.create!(name: "Shopping", color: "#059669", classification: "expense")
+      @travel_cat = family.categories.create!(name: "Travel", color: "#0891b2", classification: "expense")
+      @personal_care_cat = family.categories.create!(name: "Personal Care", color: "#be185d", classification: "expense")
 
       # Additional high-level expense categories to reach 13 top-level items
-      @insurance_cat = family.categories.create!(name: "Insurance", color: "#6366f1")
-      @misc_cat      = family.categories.create!(name: "Miscellaneous", color: "#6b7280")
+      @insurance_cat = family.categories.create!(name: "Insurance", color: "#6366f1", classification: "expense")
+      @misc_cat      = family.categories.create!(name: "Miscellaneous", color: "#6b7280", classification: "expense")
 
       # Interest expense bucket
-      @interest_cat = family.categories.create!(name: "Loan Interest", color: "#475569")
+      @interest_cat = family.categories.create!(name: "Loan Interest", color: "#475569", classification: "expense")
     end
 
     def create_realistic_accounts!(family)
       # Checking accounts (USD)
-      @chase_checking = family.accounts.create!(accountable: Depository.new(subtype: "checking"), name: "Chase Premier Checking", balance: 0, currency: "USD")
-      @ally_checking = family.accounts.create!(accountable: Depository.new(subtype: "checking"), name: "Ally Online Checking", balance: 0, currency: "USD")
+      @chase_checking = family.accounts.create!(accountable: Depository.new, name: "Chase Premier Checking", balance: 0, currency: "USD")
+      @ally_checking = family.accounts.create!(accountable: Depository.new, name: "Ally Online Checking", balance: 0, currency: "USD")
 
       # Savings account (USD)
-      @marcus_savings = family.accounts.create!(accountable: Depository.new(subtype: "savings"), name: "Marcus High-Yield Savings", balance: 0, currency: "USD")
+      @marcus_savings = family.accounts.create!(accountable: Depository.new, name: "Marcus High-Yield Savings", balance: 0, currency: "USD")
 
       # EUR checking (EUR)
-      @eu_checking = family.accounts.create!(accountable: Depository.new(subtype: "checking"), name: "Deutsche Bank EUR Account", balance: 0, currency: "EUR")
+      @eu_checking = family.accounts.create!(accountable: Depository.new, name: "Deutsche Bank EUR Account", balance: 0, currency: "EUR")
 
       # Credit cards (USD)
       @amex_gold = family.accounts.create!(accountable: CreditCard.new, name: "Amex Gold Card", balance: 0, currency: "USD")
@@ -294,46 +247,12 @@ class Demo::Generator
       # Crypto (USD)
       @coinbase_usdc = family.accounts.create!(accountable: Crypto.new, name: "Coinbase USDC", balance: 0, currency: "USD")
 
-      # Loans / Liabilities (USD). Each carries the terms its amortisation
-      # schedule is built from; its principal is the opening valuation written
-      # by open_demo_loan!. The mortgage is adjustable with two recorded rate
-      # changes -- a cut two years in, a rise two years later -- so the demo
-      # shows a schedule re-amortising. The car and student loans start the
-      # month before generate_loan_payments! makes their first payment.
-      mortgage_start = 5.years.ago.to_date
-      loans_start = 37.months.ago.beginning_of_month.to_date
-      @mortgage = family.accounts.create!(
-        accountable: Loan.new(
-          subtype: "mortgage", rate_type: "adjustable", interest_rate: 6.25, term_months: 360,
-          start_date: mortgage_start, initial_balance: 320_000,
-          # A deposit and a level-term policy, so the demo mortgage shows the
-          # leverage and insurance cards rather than hiding both.
-          down_payment: 70_000, insurance_rate: 0.36, insurance_rate_type: "level_term",
-          rate_changes: [
-            { effective_date: (mortgage_start >> 24).iso8601, rate: "5.5" },
-            { effective_date: (mortgage_start >> 48).iso8601, rate: "6.75" }
-          ]
-        ),
-        name: "Home Mortgage", balance: 0, currency: "USD"
-      )
-      @car_loan = family.accounts.create!(
-        accountable: Loan.new(subtype: "auto", rate_type: "fixed", interest_rate: 6.9, term_months: 60,
-                              start_date: loans_start, initial_balance: 24_000,
-                              # The other policy shape, on a fixed loan.
-                              down_payment: 4_000, insurance_rate: 0.5,
-                              insurance_rate_type: "decreasing_life"),
-        name: "Car Loan", balance: 0, currency: "USD"
-      )
-      @student_loan = family.accounts.create!(
-        accountable: Loan.new(subtype: "student", rate_type: "fixed", interest_rate: 5.5, term_months: 120,
-                              start_date: loans_start, initial_balance: 42_000),
-        name: "Student Loan", balance: 0, currency: "USD"
-      )
+      # Loans / Liabilities (USD)
+      @mortgage      = family.accounts.create!(accountable: Loan.new, name: "Home Mortgage", balance: 0, currency: "USD")
+      @car_loan      = family.accounts.create!(accountable: Loan.new, name: "Car Loan", balance: 0, currency: "USD")
+      @student_loan  = family.accounts.create!(accountable: Loan.new, name: "Student Loan", balance: 0, currency: "USD")
 
       @personal_loc  = family.accounts.create!(accountable: OtherLiability.new, name: "Personal Line of Credit", balance: 0, currency: "USD")
-
-      @financekit_generator = Demo::FinancekitGenerator.new(family, seed: seed)
-      @financekit_generator.create_accounts!
 
       # Other asset (USD)
       @jewelry = family.accounts.create!(accountable: OtherAsset.new, name: "Jewelry Collection", balance: 0, currency: "USD")
@@ -390,9 +309,6 @@ class Demo::Generator
       puts "   🔒 Generating crypto & misc asset transactions..."
       generate_crypto_and_misc_assets!
 
-      puts "   👛 Generating Apple Wallet transactions..."
-      @financekit_generator.create_transactions!
-
       puts "   ✅ Reconciling balances to target snapshot..."
       reconcile_balances!(family)
 
@@ -408,11 +324,11 @@ class Demo::Generator
       analysis_start  = (current_month - 3.months).beginning_of_month
       analysis_period = analysis_start..(current_month - 1.day)
 
-      # Fetch expense transactions in the analysis period (positive amounts = expenses)
+      # Fetch expense transactions in the analysis period
       txns = Entry.joins("INNER JOIN transactions ON transactions.id = entries.entryable_id")
                   .joins("INNER JOIN categories ON categories.id = transactions.category_id")
-                  .where(entries: { entryable_type: "Transaction", date: analysis_period, account_id: family.accounts.select(:id) })
-                  .where("entries.amount > 0")
+                  .where(entries: { entryable_type: "Transaction", date: analysis_period })
+                  .where(categories: { classification: "expense" })
 
       spend_per_cat = txns.group("categories.id").sum("entries.amount")
 
@@ -506,9 +422,16 @@ class Demo::Generator
       start_date = 3.years.ago.to_date  # Reduced from 12 years
       base_rent = 2500 # Higher starting amount for higher income family
 
-      # The mortgage is paid by generate_loan_payments!, from its own schedule.
-      # A flat payment booked here as well moved the loan's balance a second
-      # time, so the demo mortgage owed less than any schedule could explain.
+      # Monthly rent/mortgage payments
+      (start_date..Date.current).each do |date|
+        next unless date.day == 1 # First of month
+
+        # Mortgage payment from checking account (positive expense)
+        create_transaction!(@chase_checking, 2800, "Mortgage Payment", @rent_cat, date)
+        # Principal payment reduces mortgage debt (negative transaction)
+        principal_payment = 800 # ~$800 goes to principal
+        create_transaction!(@mortgage, -principal_payment, "Principal Payment", nil, date)
+      end
 
       # Monthly utilities (reduced frequency)
       utilities = [
@@ -562,11 +485,9 @@ class Demo::Generator
         create_transaction!(@chase_checking, amount, "#{stations.sample} Gas", @gas_cat, date)
       end
 
-      # Payments on the previous car, up to the day before the demo car loan
-      # starts: from then on generate_loan_payments! pays the car loan from its
-      # schedule, and a flat payment alongside it would count the car twice.
+      # Car payment (monthly for 6 years)
       car_payment_start = 6.years.ago.to_date
-      car_payment_end = [ 1.year.ago.to_date, @car_loan.loan.start_date - 1 ].min
+      car_payment_end = 1.year.ago.to_date
 
       (car_payment_start..car_payment_end).each do |date|
         next unless date.day == 15 # 15th of month
@@ -757,14 +678,9 @@ class Demo::Generator
     def generate_major_purchases!
       # Home purchase (5 years ago) - only record the down payment, not full value
       # Property value will be set by valuation in reconcile_balances!
-      home_date = @mortgage.loan.start_date
+      home_date = 5.years.ago.to_date
       create_transaction!(@chase_checking, 70_000, "Home Down Payment", @housing_cat, home_date)
-
-      # Each loan opens at its principal on its start date -- the mortgage's
-      # 320,000 among them. A valuation rather than a transaction, because
-      # Loan#original_balance reads the first valuation: recorded as a
-      # transaction, the debt left the schedule with no principal to amortise.
-      [ @mortgage, @car_loan, @student_loan ].each { |loan_account| open_demo_loan!(loan_account) }
+      create_transaction!(@mortgage, 320_000, "Mortgage Principal", nil, home_date) # Initial mortgage debt
 
       # Initial account funding (realistic amounts)
       create_transaction!(@chase_checking, -5_000, "Initial Deposit", @salary_cat, 12.years.ago.to_date)
@@ -782,19 +698,6 @@ class Demo::Generator
       create_transaction!(@chase_checking, 12_000, "Roof Replacement", @utilities_cat, 3.years.ago.to_date)
       create_transaction!(@chase_checking, 8_000, "Family Emergency", @healthcare_cat, 4.years.ago.to_date)
       create_transaction!(@chase_checking, 15_000, "Wedding Expenses", @entertainment_cat, 9.years.ago.to_date)
-    end
-
-    # The opening anchor valuation a loan account created through the form
-    # would carry: the loan's principal on its start date.
-    def open_demo_loan!(account)
-      loan = account.loan
-      account.entries.create!(
-        entryable: Valuation.new(kind: "opening_anchor"),
-        amount: loan.initial_balance,
-        name: Valuation.build_opening_anchor_name(account.accountable_type),
-        currency: account.currency,
-        date: loan.start_date
-      )
     end
 
     def generate_transfers_and_payments!
@@ -932,24 +835,16 @@ class Demo::Generator
       diff_amex     = amex_balance - target_amex
       diff_sapphire = sapphire_balance - target_sapphire
 
-      if diff_amex > 250
-        create_transfer!(@chase_checking, @amex_gold, diff_amex, "Amex Balance Adjust", Date.current)
-        amex_balance -= diff_amex
-      elsif diff_amex < -250
-        # Balance landed below target: a transfer can't have a negative payment
-        # amount, so bring the card up to target with a direct charge instead.
-        shortfall = diff_amex.abs
-        create_transaction!(@amex_gold, shortfall, "Balance Reconciliation", random_expense_category, Date.current)
-        amex_balance += shortfall
+      if diff_amex.abs > 250
+        adjust_payment = diff_amex.positive? ? diff_amex : 0
+        create_transfer!(@chase_checking, @amex_gold, adjust_payment, "Amex Balance Adjust", Date.current)
+        amex_balance -= adjust_payment
       end
 
-      if diff_sapphire > 250
-        create_transfer!(@chase_checking, @chase_sapphire, diff_sapphire, "Sapphire Balance Adjust", Date.current)
-        sapphire_balance -= diff_sapphire
-      elsif diff_sapphire < -250
-        shortfall = diff_sapphire.abs
-        create_transaction!(@chase_sapphire, shortfall, "Balance Reconciliation", random_expense_category, Date.current)
-        sapphire_balance += shortfall
+      if diff_sapphire.abs > 250
+        adjust_payment = diff_sapphire.positive? ? diff_sapphire : 0
+        create_transfer!(@chase_checking, @chase_sapphire, adjust_payment, "Sapphire Balance Adjust", Date.current)
+        sapphire_balance -= adjust_payment
       end
 
       puts "   💳 Charges generated: #{charges_this_run} | Payments: #{payments_this_run}"
@@ -1072,40 +967,43 @@ class Demo::Generator
     # ---------------------------------------------------------------------------
     # Loan payments (Task 8)
     # ---------------------------------------------------------------------------
-    # The one extra principal payment the student loan makes, a year ago.
-    STUDENT_LOAN_EXTRA_PAYMENT = 2_000
-
-    # Each demo loan pays what its own schedule asks, split into that payment's
-    # principal and interest, on every scheduled date up to today, so its
-    # balance is the one its schedule gives. Flat figures here (600 principal
-    # and 1,100 interest on the mortgage, whatever its rate) left the balances
-    # disagreeing with the schedules beside them. The student loan also makes
-    # one extra payment, so the demo shows a loan ahead of schedule for a real
-    # reason; the mortgage and the car loan sit on theirs.
     def generate_loan_payments!
-      [
-        [ @mortgage, "Mortgage Payment", @rent_cat ],
-        [ @student_loan, "Student Loan Payment", @interest_cat ],
-        [ @car_loan, "Auto Loan Payment", @transportation_cat ]
-      ].each do |account, memo, interest_category|
-        # Loan's touch callback can cache a missing account while it is saved
-        # before its parent. Within a sample-data/refresh transaction, the
-        # after-commit cache reset has not run yet, so reload before scheduling.
-        account.loan.reload.amortization_schedule.payments.each do |payment|
-          break if payment.date > Date.current
+      date_cursor = 36.months.ago.beginning_of_month
+      while date_cursor <= Date.current
+        payment_date = first_business_day(date_cursor)
 
-          make_loan_payment!(
-            principal_account: account,
-            principal_amount: payment.principal.amount,
-            interest_amount: payment.interest.amount,
-            interest_category: interest_category,
-            date: payment.date,
-            memo: memo
-          )
-        end
+        # Mortgage
+        make_loan_payment!(
+          principal_account: @mortgage,
+          principal_amount: 600,
+          interest_amount: 1_100,
+          interest_category: @housing_cat,
+          date: payment_date,
+          memo: "Mortgage Payment"
+        )
+
+        # Student loan
+        make_loan_payment!(
+          principal_account: @student_loan,
+          principal_amount: 350,
+          interest_amount: 100,
+          interest_category: @interest_cat,
+          date: payment_date,
+          memo: "Student Loan Payment"
+        )
+
+        # Car loan – assume 300 principal / 130 interest
+        make_loan_payment!(
+          principal_account: @car_loan,
+          principal_amount: 300,
+          interest_amount: 130,
+          interest_category: @transportation_cat,
+          date: payment_date,
+          memo: "Auto Loan Payment"
+        )
+
+        date_cursor = date_cursor.next_month.beginning_of_month
       end
-
-      create_transfer!(@chase_checking, @student_loan, STUDENT_LOAN_EXTRA_PAYMENT, "Student Loan Extra Payment", 1.year.ago.to_date)
     end
 
     def make_loan_payment!(principal_account:, principal_amount:, interest_amount:, interest_category:, date:, memo:)
@@ -1345,184 +1243,5 @@ class Demo::Generator
       )
 
       puts "   ✅ Set property and vehicle valuations"
-    end
-
-    def generate_goals!(family)
-      # Order so primary/secondary picks stay stable across reseeds — the
-      # state-coverage matrix below routes goals to specific accounts to
-      # surface every status branch, so DB return order can't pick.
-      depository_accounts = family.accounts
-                                  .where(accountable_type: "Depository")
-                                  .visible
-                                  .order(:created_at, :id)
-                                  .to_a
-      return if depository_accounts.empty?
-
-      currency = depository_accounts.first.currency
-      eligible = depository_accounts.select { |a| a.currency == currency }
-      primary = eligible.first
-      secondary = (eligible - [ primary ]).first || primary
-
-      # Demo coverage matrix. The demo seeds a heavy primary checking
-      # balance (~$150k) plus a smaller secondary account (~$10k). To
-      # surface every goal state we deliberately route goals to different
-      # account pools so progress lands above or below the target:
-      #
-      #   AASM states:    active, paused, completed, archived
-      #   Computed status (on active goals):
-      #                   :reached, :on_track, :behind, :no_target_date
-      #   Edge surfaces:  past-due target_date ("was due"), open pledge
-      #                   banner, matched pledge ("last pledge matched")
-      goals = [
-        # active · behind — secondary account only, target above its balance
-        {
-          name: "Vacation in Italy",
-          target: 20_000,
-          target_date: 4.months.from_now.to_date,
-          accounts: [ secondary ],
-          allocations: { secondary => 3_000 },
-          pledges: [
-            { account: secondary, amount: 250, kind: "transfer", status: "open", expires_at: 5.days.from_now }
-          ]
-        },
-        # active · reached — earmark comfortably above target
-        {
-          name: "Wedding fund",
-          target: 2_400,
-          target_date: 12.months.from_now.to_date,
-          accounts: [ primary ],
-          allocations: { primary => 2_500 }
-        },
-        # active · no_target_date — secondary so progress doesn't auto-cap at 100%
-        {
-          name: "Emergency fund",
-          target: 30_000,
-          target_date: nil,
-          accounts: [ secondary ],
-          allocations: { secondary => 3_000 }
-        },
-        # active · behind big — combined pools still well short of the target
-        {
-          name: "House downpayment",
-          target: 500_000,
-          target_date: 24.months.from_now.to_date,
-          accounts: eligible.first(2),
-          allocations: { primary => 1_000, secondary => 2_000 },
-          pledges: [
-            { account: primary, amount: 2_000, kind: "transfer", status: "open", expires_at: 4.days.from_now }
-          ]
-        },
-        # active · on_track — the one goal left holding all of `primary`, so
-        # its balance stays close enough to the target for a 60-month pace to
-        # read as on track
-        {
-          name: "Long-term portfolio",
-          target: 200_000,
-          target_date: 60.months.from_now.to_date,
-          accounts: [ primary ]
-        },
-        # active · past-due — exercises "was due" header copy + the
-        # months_remaining = 0 branch in monthly_target_amount
-        {
-          name: "Tax prep buffer",
-          target: 1_200,
-          target_date: 2.months.ago.to_date,
-          accounts: [ secondary ],
-          allocations: { secondary => 1_000 }
-        },
-        # AASM paused
-        {
-          name: "Sabbatical",
-          target: 15_000,
-          target_date: 18.months.from_now.to_date,
-          state: "paused",
-          accounts: [ primary ],
-          allocations: { primary => 1_000 }
-        },
-        # AASM archived
-        {
-          name: "Old laptop fund",
-          target: 1_500,
-          target_date: 12.months.ago.to_date,
-          state: "archived",
-          accounts: [ primary ],
-          allocations: { primary => 500 }
-        },
-        # AASM completed
-        {
-          name: "Paid-off car",
-          target: 8_000,
-          target_date: 6.months.ago.to_date,
-          state: "completed",
-          accounts: [ primary ],
-          allocations: { primary => 8_000 }
-        }
-      ]
-
-      wedding_goal = nil
-      goals.each do |goal_spec|
-        goal = family.goals.new(
-          name: goal_spec[:name],
-          target_amount: goal_spec[:target],
-          target_date: goal_spec[:target_date],
-          currency: currency,
-          color: Goal::COLORS.sample,
-          state: goal_spec[:state] || "active"
-        )
-        goal_spec[:accounts].uniq.each do |a|
-          goal.goal_accounts.build(account: a, allocated_amount: goal_spec.dig(:allocations, a))
-        end
-        goal.save!
-        wedding_goal = goal if goal_spec[:name] == "Wedding fund"
-
-        Array(goal_spec[:pledges]).each do |pledge_spec|
-          goal.goal_pledges.create!(
-            account: pledge_spec[:account] || goal.linked_accounts.first,
-            amount: pledge_spec[:amount],
-            currency: currency,
-            kind: pledge_spec[:kind] || "transfer",
-            status: pledge_spec[:status] || "open",
-            expires_at: pledge_spec[:expires_at] || 7.days.from_now
-          )
-        end
-      end
-
-      seed_matched_pledge_demo_for_wedding!(wedding_goal, currency, primary) if wedding_goal && primary
-
-      puts "   ✅ Seeded #{goals.size} goals"
-    end
-
-    # Bind one matched pledge on the Wedding fund to a real recent demo
-    # inflow Transaction. Surfaces the "Last pledge matched N days ago"
-    # header copy + exercises the partial-unique index on
-    # transactions.extra->'goal'->>'pledge_id'.
-    def seed_matched_pledge_demo_for_wedding!(wedding, currency, primary)
-      return unless wedding && primary
-
-      recent_inflow_entry = Entry
-        .joins("INNER JOIN transactions ON transactions.id = entries.entryable_id AND entries.entryable_type = 'Transaction'")
-        .where(account_id: primary.id, excluded: false)
-        .where("entries.amount < 0")
-        .where("entries.date >= ?", 30.days.ago.to_date)
-        .where("(transactions.extra -> 'goal' ->> 'pledge_id') IS NULL")
-        .order("entries.date DESC", "entries.id DESC")
-        .first
-
-      return unless recent_inflow_entry
-
-      pledge = wedding.goal_pledges.create!(
-        account: primary,
-        amount: recent_inflow_entry.amount.to_d.abs,
-        currency: currency,
-        kind: "transfer",
-        status: "matched",
-        matched_transaction_id: recent_inflow_entry.entryable_id,
-        expires_at: 7.days.ago
-      )
-
-      txn = recent_inflow_entry.entryable
-      new_extra = (txn.extra || {}).deep_dup
-      new_extra["goal"] = (new_extra["goal"] || {}).merge("pledge_id" => pledge.id)
-      txn.update!(extra: new_extra)
     end
 end

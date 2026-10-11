@@ -2,7 +2,7 @@ class FamilyExportsController < ApplicationController
   include StreamExtensions
 
   before_action :require_admin
-  before_action :set_export, only: [ :download, :destroy, :cancel ]
+  before_action :set_export, only: [ :download, :destroy ]
 
   def new
     # Modal view for initiating export
@@ -26,11 +26,7 @@ class FamilyExportsController < ApplicationController
       [ t("breadcrumbs.home"), root_path ],
       [ t("breadcrumbs.exports"), family_exports_path ]
     ]
-
-    respond_to do |format|
-      format.html { render layout: "settings" }
-      format.turbo_stream { redirect_to family_exports_path }
-    end
+    render layout: "settings"
   end
 
   def download
@@ -44,14 +40,6 @@ class FamilyExportsController < ApplicationController
   def destroy
     @export.destroy
     redirect_to family_exports_path, notice: t("family_exports.destroy.success")
-  end
-
-  def cancel
-    if @export.force_fail!
-      redirect_to family_exports_path, notice: t(".cancelled")
-    else
-      redirect_to family_exports_path, alert: t(".not_cancellable")
-    end
   end
 
   private

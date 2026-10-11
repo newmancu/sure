@@ -1,23 +1,10 @@
 namespace :demo_data do
-  desc "Add Apple Card and family Apple Cash accounts to an existing demo family"
-  task financekit: :environment do
-    family = if ENV["FAMILY_ID"].present?
-      Family.find(ENV.fetch("FAMILY_ID"))
-    else
-      email = ENV.fetch("DEMO_EMAIL", Rails.application.config_for(:demo).fetch(:email))
-      User.find_by!(email: email).family
-    end
-    item = Demo::FinancekitGenerator.new(family, seed: ENV.fetch("SEED", 42)).generate!
-    puts "Apple Wallet demo ready: #{item.accounts.count} linked accounts."
-  end
-
   desc "Load empty demo dataset (no financial data)"
   task empty: :environment do
     start = Time.now
-    skip_clear = ENV.fetch("SKIP_CLEAR", "1") == "1"
-    puts "🚀 Loading EMPTY demo data#{skip_clear ? ' (preserving existing data)' : ' (clearing existing data)'}…"
+    puts "🚀 Loading EMPTY demo data…"
 
-    Demo::Generator.new.generate_empty_data!(skip_clear: skip_clear)
+    Demo::Generator.new.generate_empty_data!
 
     puts "✅ Done in #{(Time.now - start).round(2)}s"
   end
@@ -25,10 +12,9 @@ namespace :demo_data do
   desc "Load new-user demo dataset (family created but not onboarded)"
   task new_user: :environment do
     start = Time.now
-    skip_clear = ENV.fetch("SKIP_CLEAR", "1") == "1"
-    puts "🚀 Loading NEW-USER demo data#{skip_clear ? ' (preserving existing data)' : ' (clearing existing data)'}…"
+    puts "🚀 Loading NEW-USER demo data…"
 
-    Demo::Generator.new.generate_new_user_data!(skip_clear: skip_clear)
+    Demo::Generator.new.generate_new_user_data!
 
     puts "✅ Done in #{(Time.now - start).round(2)}s"
   end
@@ -37,11 +23,10 @@ namespace :demo_data do
   task default: :environment do
     start    = Time.now
     seed     = ENV.fetch("SEED", Random.new_seed)
-    skip_clear = ENV.fetch("SKIP_CLEAR", "1") == "1"
-    puts "🚀 Loading FULL demo data (seed=#{seed})#{skip_clear ? ' (preserving existing data)' : ' (clearing existing data)'}…"
+    puts "🚀 Loading FULL demo data (seed=#{seed})…"
 
     generator = Demo::Generator.new(seed: seed)
-    generator.generate_default_data!(skip_clear: skip_clear)
+    generator.generate_default_data!
 
     validate_demo_data
 

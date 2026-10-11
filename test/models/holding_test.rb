@@ -20,22 +20,6 @@ class HoldingTest < ActiveSupport::TestCase
     assert_in_delta expected_nvda_weight, @nvda.weight, 0.001
   end
 
-  test "calculates portfolio weight after converting foreign-currency holdings" do
-    ExchangeRate.create!(from_currency: "EUR", to_currency: "USD", date: Date.current, rate: 1.5)
-
-    foreign_security = Security.create!(ticker: "ASML", name: "ASML")
-    foreign_holding = @account.holdings.create!(
-      security: foreign_security,
-      date: Date.current,
-      qty: 1,
-      price: 100,
-      amount: 100,
-      currency: "EUR"
-    )
-
-    assert_in_delta 0.75, foreign_holding.weight, 0.001
-  end
-
   test "calculates average cost basis" do
     create_trade(@amzn.security, account: @account, qty: 10, price: 212.00, date: 1.day.ago.to_date)
     create_trade(@amzn.security, account: @account, qty: 15, price: 216.00, date: Date.current)
@@ -74,9 +58,8 @@ class HoldingTest < ActiveSupport::TestCase
     nvda_qty = BigDecimal("5") + BigDecimal("30")
     expected_nvda_usd = nvda_total_usd / nvda_qty
 
-    ExchangeRate.stubs(:find_or_fetch_rate).returns(OpenStruct.new(rate: 1))
-    assert_equal Money.new(expected_amzn_usd, "CAD").exchange_to("USD"), @amzn.avg_cost
-    assert_equal Money.new(expected_nvda_usd, "CAD").exchange_to("USD"), @nvda.avg_cost
+    assert_equal Money.new(expected_amzn_usd, "CAD").exchange_to("USD", fallback_rate: 1), @amzn.avg_cost
+    assert_equal Money.new(expected_nvda_usd, "CAD").exchange_to("USD", fallback_rate: 1), @nvda.avg_cost
   end
 
   test "calculates total return trend" do
@@ -146,18 +129,17 @@ class HoldingTest < ActiveSupport::TestCase
     assert_not @amzn.cost_basis_replaceable_by?("manual")
   end
 
-  test "cost_basis_replaceable_by? respects priority hierarchy and allows refreshes" do
-    # Provider data can be replaced by higher-priority sources (calculated/manual)
-    # and can be refreshed by provider again.
+  test "cost_basis_replaceable_by? respects priority hierarchy" do
+    # Provider data can be replaced by calculated or manual
     @amzn.update!(cost_basis: 200, cost_basis_source: "provider", cost_basis_locked: false)
     assert @amzn.cost_basis_replaceable_by?("calculated")
     assert @amzn.cost_basis_replaceable_by?("manual")
-    assert @amzn.cost_basis_replaceable_by?("provider")
+    assert_not @amzn.cost_basis_replaceable_by?("provider")
 
-    # Calculated data can be replaced by manual and can be refreshed by calculated again.
+    # Calculated data can be replaced by manual only
     @amzn.update!(cost_basis: 200, cost_basis_source: "calculated", cost_basis_locked: false)
     assert @amzn.cost_basis_replaceable_by?("manual")
-    assert @amzn.cost_basis_replaceable_by?("calculated")
+    assert_not @amzn.cost_basis_replaceable_by?("calculated")
     assert_not @amzn.cost_basis_replaceable_by?("provider")
 
     # Manual data when LOCKED cannot be replaced by anything
@@ -454,68 +436,4 @@ class HoldingTest < ActiveSupport::TestCase
         amount: qty * price,
         currency: "USD"
     end
-
-    # A coin bought elsewhere at one price and moved in at another was never
-    # bought here, so counting the day it arrived as its cost reports a gain of
-    # zero on a position that may have doubled.
-    test "an internal movement does not set the cost basis" do
-      holding = holdings(:one)
-
-      Trade::INTERNAL_MOVEMENT_LABELS.each do |label|
-        holding.account.trades.each { |trade| trade.update!(investment_activity_label: label) }
-
-        assert_nil holding.avg_cost,
-          "a position moved by #{label} has no cost basis this app can know"
-      end
-    end
-
-    # `!=` is NULL for an unlabelled row, so a naive exclusion drops the ordinary
-    # purchases that carry no label — which is most of them.
-    test "an unlabelled purchase still sets it" do
-      holding = holdings(:one)
-      holding.account.trades.each { |t| t.update!(investment_activity_label: nil) }
-
-      assert_not_nil holding.avg_cost
-    end
-
-    # Averaging the purchases alone and applying that to every unit is the same
-    # fabrication in a quieter form.
-    test "a position mixing a purchase and a transfer has no knowable cost" do
-      holding = holdings(:one)
-      holding.account.trades.each { |t| t.update!(investment_activity_label: "Buy") }
-
-      holding.account.entries.create!(
-        date: holding.date - 1,
-        name: "Received 1 unit",
-        amount: -100,
-        currency: holding.currency,
-        entryable: Trade.new(
-          security: holding.security,
-          qty: 1,
-          price: 100,
-          currency: holding.currency,
-          investment_activity_label: Trade::TRANSFER_LABEL
-        )
-      )
-
-      assert_nil holding.avg_cost
-    end
-
-    # A figure the user typed is theirs, not ours to discard: they are saying
-    # what the position cost them, which is exactly what the app cannot work
-    # out on its own for a transfer.
-    test "a cost basis the user set survives a transfer" do
-      holding = holdings(:one)
-      holding.account.trades.each { |t| t.update!(investment_activity_label: Trade::TRANSFER_LABEL) }
-      holding.update_columns(cost_basis: 100, cost_basis_source: "manual")
-
-      assert_equal 100, holding.reload.avg_cost.amount.to_d
-    end
-
-    test "a purchase still sets it" do
-        holding = holdings(:one)
-        holding.account.trades.each { |t| t.update!(investment_activity_label: "Buy") }
-
-        assert_not_nil holding.avg_cost
-      end
 end

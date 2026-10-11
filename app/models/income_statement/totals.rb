@@ -1,20 +1,14 @@
 class IncomeStatement::Totals
-  include IncomeStatement::ScopedTransactionsQuery
-
-  def initialize(family, transactions_scope:, date_range:, include_trades: true, included_account_ids: nil)
+  def initialize(family, transactions_scope:, date_range:, include_trades: true)
     @family = family
     @transactions_scope = transactions_scope
     @date_range = date_range
     @include_trades = include_trades
-    @included_account_ids = included_account_ids
 
     validate_date_range!
   end
 
   def call
-    # No finance accounts means no transactions to report
-    return [] if @included_account_ids&.empty?
-
     ActiveRecord::Base.connection.select_all(query_sql).map do |row|
       TotalsRow.new(
         parent_category_id: row["parent_category_id"],
@@ -62,23 +56,25 @@ class IncomeStatement::Totals
         SELECT
           c.id as category_id,
           c.parent_id as parent_category_id,
-          #{classification_sql("at")} as classification,
-          ABS(SUM(#{converted_amount_sql("at")})) as total,
+          CASE WHEN at.kind = 'investment_contribution' THEN 'expense' WHEN ae.amount < 0 THEN 'income' ELSE 'expense' END as classification,
+          ABS(SUM(CASE WHEN at.kind = 'investment_contribution' THEN ABS(ae.amount * COALESCE(er.rate, 1)) ELSE ae.amount * COALESCE(er.rate, 1) END)) as total,
           COUNT(ae.id) as transactions_count,
           false as is_uncategorized_investment
         FROM (#{@transactions_scope.to_sql}) at
-        #{entries_join_sql("at")}
-        #{accounts_join_sql}
+        JOIN entries ae ON ae.entryable_id = at.id AND ae.entryable_type = 'Transaction'
+        JOIN accounts a ON a.id = ae.account_id
         LEFT JOIN categories c ON c.id = at.category_id
-        #{exchange_rates_join_sql}
-        WHERE at.kind NOT IN (#{budget_excluded_kinds_sql})
+        LEFT JOIN exchange_rates er ON (
+          er.date = ae.date AND
+          er.from_currency = ae.currency AND
+          er.to_currency = :target_currency
+        )
+        WHERE at.kind NOT IN ('funds_movement', 'one_time', 'cc_payment')
           AND ae.excluded = false
           AND a.family_id = :family_id
           AND a.status IN ('draft', 'active')
-          AND a.exclude_from_reports = false
           #{exclude_tax_advantaged_sql}
-          #{include_finance_accounts_sql}
-        GROUP BY c.id, c.parent_id, #{classification_sql("at")};
+        GROUP BY c.id, c.parent_id, CASE WHEN at.kind = 'investment_contribution' THEN 'expense' WHEN ae.amount < 0 THEN 'income' ELSE 'expense' END;
       SQL
     end
 
@@ -87,24 +83,29 @@ class IncomeStatement::Totals
         SELECT
           c.id as category_id,
           c.parent_id as parent_category_id,
-          #{classification_sql("at")} as classification,
-          ABS(SUM(#{converted_amount_sql("at")})) as total,
+          CASE WHEN at.kind = 'investment_contribution' THEN 'expense' WHEN ae.amount < 0 THEN 'income' ELSE 'expense' END as classification,
+          ABS(SUM(CASE WHEN at.kind = 'investment_contribution' THEN ABS(ae.amount * COALESCE(er.rate, 1)) ELSE ae.amount * COALESCE(er.rate, 1) END)) as total,
           COUNT(ae.id) as entry_count,
           false as is_uncategorized_investment
         FROM (#{@transactions_scope.to_sql}) at
-        #{entries_join_sql("at")}
-        #{accounts_join_sql}
+        JOIN entries ae ON ae.entryable_id = at.id AND ae.entryable_type = 'Transaction'
+        JOIN accounts a ON a.id = ae.account_id
         LEFT JOIN categories c ON c.id = at.category_id
-        #{exchange_rates_join_sql}
-        WHERE at.kind NOT IN (#{budget_excluded_kinds_sql})
-          #{investment_activity_label_sql("at")}
+        LEFT JOIN exchange_rates er ON (
+          er.date = ae.date AND
+          er.from_currency = ae.currency AND
+          er.to_currency = :target_currency
+        )
+        WHERE at.kind NOT IN ('funds_movement', 'one_time', 'cc_payment')
+          AND (
+            at.investment_activity_label IS NULL
+            OR at.investment_activity_label NOT IN ('Transfer', 'Sweep In', 'Sweep Out', 'Exchange')
+          )
           AND ae.excluded = false
           AND a.family_id = :family_id
           AND a.status IN ('draft', 'active')
-          AND a.exclude_from_reports = false
           #{exclude_tax_advantaged_sql}
-          #{include_finance_accounts_sql}
-        GROUP BY c.id, c.parent_id, #{classification_sql("at")}
+        GROUP BY c.id, c.parent_id, CASE WHEN at.kind = 'investment_contribution' THEN 'expense' WHEN ae.amount < 0 THEN 'income' ELSE 'expense' END
       SQL
     end
 
@@ -121,11 +122,35 @@ class IncomeStatement::Totals
     end
 
     def sql_params
-      params = base_sql_params(start_date: @date_range.begin, end_date: @date_range.end)
+      params = {
+        target_currency: @family.currency,
+        family_id: @family.id,
+        start_date: @date_range.begin,
+        end_date: @date_range.end
+      }
 
-      # Add included account IDs for per-user finance scoping
-      params[:included_account_ids] = @included_account_ids if @included_account_ids
+      # Add tax-advantaged account IDs if any exist
+      ids = @family.tax_advantaged_account_ids
+      params[:tax_advantaged_account_ids] = ids if ids.present?
 
       params
+    end
+
+    # Returns SQL clause to exclude tax-advantaged accounts from budget calculations.
+    # Tax-advantaged accounts (401k, IRA, HSA, etc.) are retirement savings, not daily expenses.
+    def exclude_tax_advantaged_sql
+      ids = @family.tax_advantaged_account_ids
+      return "" if ids.empty?
+      "AND a.id NOT IN (:tax_advantaged_account_ids)"
+    end
+
+    def validate_date_range!
+      unless @date_range.is_a?(Range)
+        raise ArgumentError, "date_range must be a Range, got #{@date_range.class}"
+      end
+
+      unless @date_range.begin.respond_to?(:to_date) && @date_range.end.respond_to?(:to_date)
+        raise ArgumentError, "date_range must contain date-like objects"
+      end
     end
 end

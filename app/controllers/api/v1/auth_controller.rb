@@ -6,11 +6,6 @@ module Api
       skip_before_action :authenticate_request!
       skip_before_action :check_api_key_rate_limit
       skip_before_action :log_api_access
-      before_action :authenticate_request!, only: :enable_ai
-      before_action :ensure_write_scope, only: :enable_ai
-      before_action :check_api_key_rate_limit, only: :enable_ai
-      before_action :log_api_access, only: :enable_ai
-      rescue_from SsoIdentityBlock::BlockedIdentity, with: :render_removed_identity
 
       def signup
         # Check if invite code is required
@@ -44,43 +39,33 @@ module Api
         # First user of an instance becomes super_admin
         family = Family.new
         user.family = family
+        user.role = User.role_for_new_family_creator
 
-        # Atomic: user creation, invite-code claim, and device/token issuance
-        # either all commit or none do. Without this, a post-commit device
-        # failure (e.g., racing uniqueness) would leave the user/invite/family
-        # committed while the client got a 422 "Failed to register device".
-        token_response = nil
-        begin
-          ActiveRecord::Base.transaction do
-            User.lock_first_user_role!
-            user.role = User.role_for_new_family_creator
+        if user.save
+          # Claim invite code if provided
+          InviteCode.claim!(params[:invite_code]) if params[:invite_code].present?
 
-            unless user.save
-              render json: { errors: user.errors.full_messages }, status: :unprocessable_entity
-              raise ActiveRecord::Rollback
-            end
-            InviteCode.claim!(params[:invite_code]) if params[:invite_code].present?
-            device = MobileDevice.upsert_device!(user, device_params)
-            token_response = device.issue_token!
-          end
-        rescue ActiveRecord::RecordInvalid, User::InactiveError => e
-          Rails.logger.error("[Auth] Device registration failed: #{e.class} - #{e.message}")
-          render json: { error: "Failed to register device" }, status: :unprocessable_entity
-          return
+          # Create device and OAuth token
+          device = create_or_update_device(user)
+          token_response = create_oauth_token_for_device(user, device)
+
+          render json: token_response.merge(
+            user: {
+              id: user.id,
+              email: user.email,
+              first_name: user.first_name,
+              last_name: user.last_name
+            }
+          ), status: :created
+        else
+          render json: { errors: user.errors.full_messages }, status: :unprocessable_entity
         end
-
-        render json: token_response.merge(user: mobile_user_payload(user)), status: :created if token_response
       end
 
       def login
         user = User.find_by(email: params[:email])
 
         if user&.authenticate(params[:password])
-          unless user.active?
-            render json: { error: "This account has been deactivated. Please contact an administrator." }, status: :unauthorized
-            return
-          end
-
           # Check MFA if enabled
           if user.otp_required?
             unless params[:otp_code].present? && user.verify_otp?(params[:otp_code])
@@ -98,239 +83,20 @@ module Api
             return
           end
 
-          # Fast-path re-check to skip a pointless device upsert for a user
-          # already known to be inactive — issue_token! re-checks active? under
-          # lock immediately before minting (see its comment) and is the actual
-          # authorization boundary, not this check. Treats a concurrently
-          # purged user (reload raises RecordNotFound) the same as inactive.
-          unless user_reloadable_and_active?(user)
-            render json: { error: "This account has been deactivated. Please contact an administrator." }, status: :unauthorized
-            return
-          end
+          # Create device and OAuth token
+          device = create_or_update_device(user)
+          token_response = create_oauth_token_for_device(user, device)
 
-          begin
-            device = MobileDevice.upsert_device!(user, device_params)
-          rescue ActiveRecord::RecordInvalid => e
-            Rails.logger.error("[Auth] Device registration failed: #{e.message}")
-            render json: { error: "Failed to register device" }, status: :unprocessable_entity
-            return
-          end
-
-          begin
-            token_response = device.issue_token!
-          rescue User::InactiveError
-            render json: { error: "This account has been deactivated. Please contact an administrator." }, status: :unauthorized
-            return
-          end
-
-          render json: token_response.merge(user: mobile_user_payload(user))
+          render json: token_response.merge(
+            user: {
+              id: user.id,
+              email: user.email,
+              first_name: user.first_name,
+              last_name: user.last_name
+            }
+          )
         else
           render json: { error: "Invalid email or password" }, status: :unauthorized
-        end
-      end
-
-      def sso_exchange
-        code = sso_exchange_params
-
-        if code.blank?
-          render json: { error: "invalid_or_expired_code", message: "Authorization code is required" }, status: :unauthorized
-          return
-        end
-
-        cache_key = "mobile_sso:#{code}"
-        cached = Rails.cache.read(cache_key)
-
-        unless cached.present?
-          render json: { error: "invalid_or_expired_code", message: "Authorization code is invalid or expired" }, status: :unauthorized
-          return
-        end
-
-        # Atomic delete — only the request that successfully deletes the key may proceed.
-        # This prevents a race where two concurrent requests both read the same code.
-        unless Rails.cache.delete(cache_key)
-          render json: { error: "invalid_or_expired_code", message: "Authorization code is invalid or expired" }, status: :unauthorized
-          return
-        end
-
-        render json: {
-          access_token: cached[:access_token],
-          refresh_token: cached[:refresh_token],
-          token_type: cached[:token_type],
-          expires_in: cached[:expires_in],
-          created_at: cached[:created_at],
-          user: {
-            id: cached[:user_id],
-            email: cached[:user_email],
-            first_name: cached[:user_first_name],
-            last_name: cached[:user_last_name],
-            ui_layout: cached[:user_ui_layout],
-            ai_enabled: cached[:user_ai_enabled]
-          }
-        }
-      end
-
-      def sso_link
-        linking_code = params[:linking_code]
-        cached = validate_linking_code(linking_code)
-        return unless cached
-
-        user = User.authenticate_by(email: params[:email], password: params[:password])
-
-        unless user
-          render json: { error: "Invalid email or password" }, status: :unauthorized
-          return
-        end
-
-        unless user.active?
-          render json: { error: "This account has been deactivated. Please contact an administrator." }, status: :unauthorized
-          return
-        end
-
-        if user.otp_required?
-          render json: { error: "MFA users should sign in with email and password", mfa_required: true }, status: :unauthorized
-          return
-        end
-
-        # Atomically claim the code before creating the identity
-        return render json: { error: "Linking code is invalid or expired" }, status: :unauthorized unless consume_linking_code!(linking_code)
-
-        device_info = cached[:device_info]
-        device_info = device_info.symbolize_keys if device_info.respond_to?(:symbolize_keys)
-
-        # Identity creation, the audit record, and the actual token mint all
-        # run in one transaction so a rejected request can't leave a linked
-        # identity or a successful-link audit record behind. issue_token!'s
-        # locked active? recheck (the real authorization boundary) is what
-        # decides whether this commits or rolls everything back together.
-        token_response = nil
-        begin
-          ActiveRecord::Base.transaction do
-            OidcIdentity.create_from_omniauth(build_omniauth_hash(cached), user)
-
-            SsoAuditLog.log_link!(
-              user: user,
-              provider: cached[:provider],
-              request: request
-            )
-
-            device = MobileDevice.upsert_device!(user, device_info)
-            token_response = device.issue_token!
-          end
-        rescue User::InactiveError
-          restore_linking_code!(linking_code, cached)
-          render json: { error: "This account has been deactivated. Please contact an administrator." }, status: :unauthorized
-          return
-        rescue ActiveRecord::RecordInvalid => e
-          restore_linking_code!(linking_code, cached)
-          Rails.logger.error("[Auth] Device registration failed: #{e.message}")
-          render json: { error: "Failed to register device" }, status: :unprocessable_entity
-          return
-        end
-
-        render json: token_response.merge(user: mobile_user_payload(user))
-      end
-
-      def sso_create_account
-        linking_code = params[:linking_code]
-        cached = validate_linking_code(linking_code)
-        return unless cached
-
-        email = cached[:email]
-
-        # Check for a pending invitation for this email
-        invitation = Invitation.pending.find_by(email: email)
-
-        unless invitation.present? || cached[:allow_account_creation]
-          render json: { error: "SSO account creation is disabled. Please contact an administrator." }, status: :forbidden
-          return
-        end
-
-        # Atomically claim the code before creating the user
-        return render json: { error: "Linking code is invalid or expired" }, status: :unauthorized unless consume_linking_code!(linking_code)
-
-        user = User.new(
-          email: email,
-          first_name: params[:first_name].presence || cached[:first_name],
-          last_name: params[:last_name].presence || cached[:last_name],
-          skip_password_validation: true
-        )
-
-        if invitation.present?
-          # Accept the pending invitation: join the existing family
-          user.family_id = invitation.family_id
-          user.role = invitation.role
-        else
-          user.family = Family.new
-
-          # New family creators must be able to administer their own family.
-          # Lower provider defaults are promoted to admin by role_for_new_family_creator,
-          # while intentional super_admin defaults remain supported.
-          provider_config = Rails.configuration.x.auth.sso_providers&.find { |p| p[:name] == cached[:provider] }
-          provider_default_role = provider_config&.dig(:settings, :default_role)
-        end
-
-        identity = nil
-        account_created = false
-
-        begin
-          account_created = ActiveRecord::Base.transaction do
-            unless invitation.present?
-              User.lock_first_user_role!
-              user.role = User.role_for_new_family_creator(fallback_role: provider_default_role || :admin)
-            end
-
-            unless user.save
-              raise ActiveRecord::Rollback
-            end
-
-            # Mark invitation as accepted if one was used
-            invitation&.update!(accepted_at: Time.current)
-
-            # Joining an existing family via invitation must honor the family's
-            # default sharing policy, matching Invitation#accept_for, so a mobile
-            # SSO invitee sees the accounts the family shares by default.
-            user.family.auto_share_existing_accounts_with(user) if invitation.present?
-
-            identity = OidcIdentity.create_from_omniauth(build_omniauth_hash(cached), user)
-            true
-          end
-        rescue ActiveRecord::RecordInvalid => e
-          # Expected persistence failures (e.g. a duplicate identity) roll the
-          # whole onboarding back and return the error response. Unexpected
-          # errors propagate so they surface instead of being hidden.
-          user.errors.add(:base, e.message)
-        rescue ActiveRecord::RecordNotUnique
-          # PostgreSQL's message names the index and echoes the conflicting values.
-          user.errors.add(:base, "An account or sign-in identity with these details already exists")
-        end
-
-        if account_created
-          if identity&.persisted?
-            SsoAuditLog.log_jit_account_created!(
-              user: user,
-              provider: cached[:provider],
-              request: request
-            )
-          end
-
-          issue_mobile_tokens(user, cached[:device_info])
-        else
-          render json: { errors: user.errors.full_messages }, status: :unprocessable_entity
-        end
-      end
-
-      def enable_ai
-        user = current_resource_owner
-
-        unless user.ai_available?
-          render json: { error: "AI is not available for your account" }, status: :forbidden
-          return
-        end
-
-        if user.update(ai_enabled: true)
-          render json: { user: mobile_user_payload(user) }
-        else
-          render json: { errors: user.errors.full_messages }, status: :unprocessable_entity
         end
       end
 
@@ -351,35 +117,22 @@ module Api
           return
         end
 
-        user = User.find_by(id: access_token.resource_owner_id)
-        new_token = begin
-          user&.with_active_lock! do
-            access_token.with_lock do
-              next false if access_token.revoked?
+        # Create new access token
+        new_token = Doorkeeper::AccessToken.create!(
+          application: access_token.application,
+          resource_owner_id: access_token.resource_owner_id,
+          expires_in: 30.days.to_i,
+          scopes: access_token.scopes,
+          use_refresh_token: true
+        )
 
-              token = Doorkeeper::AccessToken.create!( # pipelock:ignore Credential in URL
-                application: access_token.application,
-                resource_owner_id: access_token.resource_owner_id,
-                mobile_device_id: access_token.mobile_device_id,
-                expires_in: 30.days.to_i,
-                scopes: access_token.scopes,
-                use_refresh_token: true
-              )
+        # Revoke old access token
+        access_token.revoke
 
-              access_token.revoke
-              device = user.mobile_devices.find_by(device_id: params.dig(:device, :device_id))
-              device&.update_last_seen!
-              token
-            end
-          end
-        rescue ActiveRecord::RecordNotFound, User::InactiveError
-          false
-        end
-
-        unless new_token
-          render json: { error: "Invalid refresh token" }, status: :unauthorized
-          return
-        end
+        # Update device last seen
+        user = User.find(access_token.resource_owner_id)
+        device = user.mobile_devices.find_by(device_id: params[:device][:device_id])
+        device&.update_last_seen!
 
         render json: {
           access_token: new_token.plaintext_token,
@@ -417,136 +170,41 @@ module Api
           return false if device.nil?
 
           required_fields = %w[device_id device_name device_type os_version app_version]
-          return false unless required_fields.all? { |field| device[field].present? }
-
-          # Run MobileDevice's attribute-level validations up front (e.g.,
-          # device_type must be ios/android/web) so a misconfigured client
-          # is rejected BEFORE signup commits user/family/invite. Skip
-          # errors we can't evaluate without a user: the :user belongs_to
-          # presence check, and device_id uniqueness scoped to user_id
-          # (upsert_device! treats collisions as updates anyway).
-          preview = MobileDevice.new(device_params)
-          preview.valid?
-          relevant_errors = preview.errors.errors.reject do |err|
-            err.type == :taken || err.attribute == :user
-          end
-          relevant_errors.empty?
+          required_fields.all? { |field| device[field].present? }
         end
 
-        def device_params
-          params.require(:device).permit(:device_id, :device_name, :device_type, :os_version, :app_version)
+        def create_or_update_device(user)
+          # Handle both string and symbol keys
+          device_data = params[:device].permit(:device_id, :device_name, :device_type, :os_version, :app_version)
+
+          device = user.mobile_devices.find_or_initialize_by(device_id: device_data[:device_id])
+          device.update!(device_data.merge(last_seen_at: Time.current))
+          device
         end
 
-        def sso_exchange_params
-          params.require(:code)
-        end
+        def create_oauth_token_for_device(user, device)
+          # Create OAuth application for this device if needed
+          oauth_app = device.create_oauth_application!
 
-        def mobile_user_payload(user)
-          {
-            id: user.id,
-            email: user.email,
-            first_name: user.first_name,
-            last_name: user.last_name,
-            ui_layout: user.ui_layout,
-            ai_enabled: user.ai_enabled?
-          }
-        end
+          # Revoke any existing tokens for this device
+          device.revoke_all_tokens!
 
-        # A concurrent purge between the initial check and this fast-path
-        # re-check raises RecordNotFound on reload; treat it the same as
-        # inactive instead of letting it fall through to BaseController's
-        # generic record_not_found handler.
-        def user_reloadable_and_active?(user)
-          user.reload.active?
-        rescue ActiveRecord::RecordNotFound
-          false
-        end
-
-        def build_omniauth_hash(cached)
-          OpenStruct.new(
-            provider: cached[:provider],
-            uid: cached[:uid],
-            info: OpenStruct.new(cached.slice(:email, :name, :first_name, :last_name)),
-            extra: OpenStruct.new(raw_info: OpenStruct.new(iss: cached[:issuer]))
+          # Create new access token with 30-day expiration
+          access_token = Doorkeeper::AccessToken.create!(
+            application: oauth_app,
+            resource_owner_id: user.id,
+            expires_in: 30.days.to_i,
+            scopes: "read_write",
+            use_refresh_token: true
           )
-        end
 
-        def validate_linking_code(linking_code)
-          if linking_code.blank?
-            render json: { error: "Linking code is required" }, status: :bad_request
-            return nil
-          end
-
-          cache_key = "mobile_sso_link:#{linking_code}"
-          cached = Rails.cache.read(cache_key)
-
-          unless cached.present?
-            render json: { error: "Linking code is invalid or expired" }, status: :unauthorized
-            return nil
-          end
-
-          if SsoIdentityBlock.blocked?(provider: cached[:provider], uid: cached[:uid])
-            Rails.cache.delete(cache_key)
-            render json: { error: "SSO identity was removed by an administrator" }, status: :forbidden
-            return nil
-          end
-
-          cached
-        end
-
-        def render_removed_identity
-          render json: { error: "SSO identity was removed by an administrator" }, status: :forbidden
-        end
-
-        # Atomically deletes the linking code from cache.
-        # Returns true only for the first caller; subsequent callers get false.
-        def consume_linking_code!(linking_code)
-          Rails.cache.delete("mobile_sso_link:#{linking_code}")
-        end
-
-        # Best-effort restore so a request rejected *after* consuming the
-        # code (deactivation race or a device-registration failure inside
-        # the transaction) can retry with the same code instead of
-        # restarting the SSO flow from the IdP. Safe to write back verbatim:
-        # a legitimate retry re-authenticates with email/password from
-        # scratch, and OidcIdentity's unique (provider, uid) index is the
-        # backstop if a second request somehow raced onto the restored code.
-        def restore_linking_code!(linking_code, cached)
-          Rails.cache.write("mobile_sso_link:#{linking_code}", cached, expires_in: 10.minutes)
-        end
-
-        # Used by sso_create_account for its brand-new user (always active —
-        # the reload is a harmless no-op there, but still races a concurrent
-        # purge the same way login's fast path does). Reload right before
-        # minting, same reasoning as Authentication#create_session_for.
-        def issue_mobile_tokens(user, device_info)
-          unless user_reloadable_and_active?(user)
-            render json: { error: "This account has been deactivated. Please contact an administrator." }, status: :unauthorized
-            return
-          end
-
-          device_info = device_info.symbolize_keys if device_info.respond_to?(:symbolize_keys)
-
-          begin
-            device = MobileDevice.upsert_device!(user, device_info)
-          rescue ActiveRecord::RecordInvalid => e
-            Rails.logger.error("[Auth] Device registration failed: #{e.message}")
-            render json: { error: "Failed to register device" }, status: :unprocessable_entity
-            return
-          end
-
-          begin
-            token_response = device.issue_token!
-          rescue User::InactiveError
-            render json: { error: "This account has been deactivated. Please contact an administrator." }, status: :unauthorized
-            return
-          end
-
-          render json: token_response.merge(user: mobile_user_payload(user))
-        end
-
-        def ensure_write_scope
-          authorize_scope!(:write)
+          {
+            access_token: access_token.plaintext_token,
+            refresh_token: access_token.plaintext_refresh_token,
+            token_type: "Bearer",
+            expires_in: access_token.expires_in,
+            created_at: access_token.created_at.to_i
+          }
         end
     end
   end

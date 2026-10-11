@@ -6,13 +6,12 @@ class UsersController < ApplicationController
     if @user.resend_confirmation_email
       redirect_to settings_profile_path, notice: t(".success")
     else
-      redirect_to settings_profile_path, alert: t(".no_pending_change")
+      redirect_to settings_profile_path, alert: t("no_pending_change")
     end
   end
 
   def update
     @user = Current.user
-    return if admin_family_change_requested? && !ensure_admin
 
     if email_changed?
       if @user.initiate_email_change(user_params[:email])
@@ -27,27 +26,21 @@ class UsersController < ApplicationController
       end
     else
       was_ai_enabled = @user.ai_enabled
-      if @user.update(user_params.except(:redirect_to, :delete_profile_image))
-        @user.profile_image.purge if should_purge_profile_image?
+      @user.update!(user_params.except(:redirect_to, :delete_profile_image))
+      @user.profile_image.purge if should_purge_profile_image?
 
-        # Add a special notice if AI was just enabled or disabled
-        notice = if !was_ai_enabled && @user.ai_enabled
-          "AI Assistant has been enabled successfully."
-        elsif was_ai_enabled && !@user.ai_enabled
-          "AI Assistant has been disabled."
-        else
-          t(".success")
-        end
-
-        respond_to do |format|
-          format.html { handle_redirect(notice) }
-          format.json { head :ok }
-        end
+      # Add a special notice if AI was just enabled or disabled
+      notice = if !was_ai_enabled && @user.ai_enabled
+        "AI Assistant has been enabled successfully."
+      elsif was_ai_enabled && !@user.ai_enabled
+        "AI Assistant has been disabled."
       else
-        respond_to do |format|
-          format.html { redirect_to settings_profile_path, alert: @user.errors.full_messages.to_sentence }
-          format.json { render json: { errors: @user.errors.full_messages }, status: :unprocessable_entity }
-        end
+        t(".success")
+      end
+
+      respond_to do |format|
+        format.html { handle_redirect(notice) }
+        format.json { head :ok }
       end
     end
   end
@@ -89,12 +82,8 @@ class UsersController < ApplicationController
         redirect_to goals_onboarding_path
       when "trial"
         redirect_to trial_onboarding_path
-      when "appearance"
-        redirect_to settings_appearance_path, notice: notice
       when "ai_prompts"
         redirect_to settings_ai_prompts_path, notice: notice
-      when "chats"
-        redirect_to chats_path, notice: notice
       else
         redirect_to settings_profile_path, notice: notice
       end
@@ -114,17 +103,10 @@ class UsersController < ApplicationController
     end
 
     def user_params
-      family_attrs = [ :name, :currency, :country, :date_format, :timezone, :locale, :month_start_day, :id ]
-      if Current.user.admin?
-        family_attrs.push(:personal_budgets, :household_budget_enabled) # Needed for updating existing family
-        family_attrs.push(:moniker, :default_account_sharing)
-        family_attrs << { enabled_currencies: [] }
-      end
-
       params.require(:user).permit(
         :first_name, :last_name, :email, :profile_image, :redirect_to, :delete_profile_image, :onboarded_at,
         :show_sidebar, :default_period, :default_account_order, :show_ai_sidebar, :ai_enabled, :theme, :set_onboarding_preferences_at, :set_onboarding_goals_at, :locale,
-        family_attributes: family_attrs,
+        family_attributes: [ :name, :currency, :country, :date_format, :timezone, :locale, :id ],
         goals: []
       )
     end
@@ -133,23 +115,7 @@ class UsersController < ApplicationController
       @user = Current.user
     end
 
-    def admin_family_change_requested?
-      family_attrs = params.dig(:user, :family_attributes)
-      return false if family_attrs.blank?
-
-      moniker_changed = family_attrs[:moniker].present? && family_attrs[:moniker] != Current.family.moniker
-      sharing_changed = family_attrs[:default_account_sharing].present? && family_attrs[:default_account_sharing] != Current.family.default_account_sharing
-      enabled_currencies_changed = family_attrs.key?(:enabled_currencies)
-      personal_budgets_changed = family_attrs.key?(:personal_budgets)
-      household_budget_enabled_changed = family_attrs.key?(:household_budget_enabled)
-
-      moniker_changed || sharing_changed || enabled_currencies_changed || personal_budgets_changed || household_budget_enabled_changed
-    end
-
     def ensure_admin
-      return true if Current.user.admin?
-
-      redirect_to settings_profile_path, alert: I18n.t("users.reset.unauthorized")
-      false
+      redirect_to settings_profile_path, alert: I18n.t("users.reset.unauthorized") unless Current.user.admin?
     end
 end

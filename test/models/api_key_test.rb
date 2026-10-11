@@ -135,7 +135,7 @@ class ApiKeyTest < ActiveSupport::TestCase
     assert @api_key.last_used_at > (original_time || Time.at(0))
   end
 
-  test "allows multiple active api keys for the same user" do
+  test "should prevent user from having multiple active api keys" do
     @api_key.save!
 
     second_key = ApiKey.new(
@@ -145,98 +145,22 @@ class ApiKeyTest < ActiveSupport::TestCase
       scopes: [ "read" ]
     )
 
-    assert second_key.valid?
-    assert second_key.save
-    assert second_key.active?
-    assert_equal 2, @user.api_keys.active.count
+    assert_not second_key.valid?
+    assert_includes second_key.errors[:user], "can only have one active API key per source (web)"
   end
 
-  test "rejects duplicate name among active keys for the same user" do
-    ApiKey.create!(
-      user: @user,
-      name: "Dup",
-      key: "dup_key_123",
-      scopes: [ "read" ]
-    )
-
-    duplicate = ApiKey.new(
-      user: @user,
-      name: "Dup",
-      key: "dup_key_456",
-      scopes: [ "read" ]
-    )
-
-    assert_not duplicate.valid?
-    assert_includes duplicate.errors.attribute_names, :name
-  end
-
-  test "allows reusing the name of a revoked key" do
-    first = ApiKey.create!(
-      user: @user,
-      name: "Reuse",
-      key: "reuse_key_123",
-      scopes: [ "read" ]
-    )
-    first.revoke!
-
-    reused = ApiKey.new(
-      user: @user,
-      name: "Reuse",
-      key: "reuse_key_456",
-      scopes: [ "read" ]
-    )
-
-    assert reused.valid?
-  end
-
-  test "allows the same name across different users" do
-    ApiKey.create!(
-      user: @user,
-      name: "Shared",
-      key: "shared_key_123",
-      scopes: [ "read" ]
-    )
-
-    other_user = users(:family_member)
-    other_user.api_keys.destroy_all
-
-    other_key = ApiKey.new(
-      user: other_user,
-      name: "Shared",
-      key: "shared_key_456",
-      scopes: [ "read" ]
-    )
-
-    assert other_key.valid?
-  end
-
-  test "should allow active monitoring key alongside active web key" do
+  test "should allow user to have new active key after revoking old one" do
     @api_key.save!
+    @api_key.revoke!
 
-    monitoring_key = ApiKey.new(
+    second_key = ApiKey.new(
       user: @user,
-      name: "Monitoring API Key",
-      key: "monitoring_key_123",
-      scopes: [ "read" ],
-      source: "monitoring"
-    )
-
-    assert monitoring_key.valid?
-  end
-
-  test "visible scope excludes the demo monitoring key" do
-    # The demo key's exclusion from `.visible` is the revocation guard used by
-    # Settings::ApiKeysController#destroy. Lock the invariant so broadening the
-    # scope can't silently make the demo key revocable.
-    demo_key = ApiKey.create!(
-      user: @user,
-      name: "Demo Monitoring Key",
-      display_key: ApiKey::DEMO_MONITORING_KEY,
+      name: "Second API Key",
+      key: "another_key_123",
       scopes: [ "read" ]
     )
 
-    refute_includes ApiKey.visible, demo_key
-    refute_includes @user.api_keys.active.visible, demo_key
+    assert second_key.valid?
   end
 
   test "should include active api keys in active scope" do
@@ -279,55 +203,5 @@ class ApiKeyTest < ActiveSupport::TestCase
     @api_key.scopes = [ "invalid_scope" ]
     assert_not @api_key.valid?
     assert_includes @api_key.errors[:scopes], "must be either 'read' or 'read_write'"
-  end
-
-  test "should prevent destroying demo monitoring api key" do
-    demo_key = ApiKey.create!(
-      user: @user,
-      name: "Demo Monitoring Key",
-      display_key: ApiKey::DEMO_MONITORING_KEY,
-      scopes: [ "read" ]
-    )
-
-    assert_raises(ActiveRecord::RecordNotDestroyed) { demo_key.destroy! }
-    assert ApiKey.exists?(demo_key.id)
-  end
-
-  test "should prevent revoking demo monitoring api key" do
-    demo_key = ApiKey.create!(
-      user: @user,
-      name: "Demo Monitoring Key",
-      display_key: ApiKey::DEMO_MONITORING_KEY,
-      scopes: [ "read" ]
-    )
-
-    assert_raises(ActiveRecord::RecordNotDestroyed) { demo_key.revoke! }
-    demo_key.reload
-    assert_nil demo_key.revoked_at
-  end
-
-  test "should prevent deleting demo monitoring api key" do
-    demo_key = ApiKey.create!(
-      user: @user,
-      name: "Demo Monitoring Key",
-      display_key: ApiKey::DEMO_MONITORING_KEY,
-      scopes: [ "read" ]
-    )
-
-    assert_raises(ActiveRecord::RecordNotDestroyed) { demo_key.delete }
-    assert ApiKey.exists?(demo_key.id)
-  end
-
-  test "should allow destroying non-demo api key" do
-    api_key = ApiKey.create!(
-      user: @user,
-      name: "Disposable API Key",
-      display_key: "disposable_key_123",
-      scopes: [ "read" ]
-    )
-
-    assert_difference("ApiKey.count", -1) do
-      api_key.destroy!
-    end
   end
 end

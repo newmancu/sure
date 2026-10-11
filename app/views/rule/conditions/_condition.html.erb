@@ -3,10 +3,7 @@
 <% condition = form.object %>
 <% rule = condition.rule %>
 
-<li data-controller="rule--conditions"
-    data-rule--conditions-condition-filters-value="<%= rule.condition_filters.to_json %>"
-    data-rule--conditions-valueless-operators-value="<%= Rule::ConditionFilter::VALUELESS_OPERATORS.to_json %>"
-    class="flex items-center gap-3">
+<li data-controller="rule--conditions" data-rule--conditions-condition-filters-value="<%= rule.condition_filters.to_json %>" class="flex items-center gap-3">
 
   <%# Conditionally render the prefix %>
   <%# Condition groups pass in show_prefix: false for subconditions since the ANY/ALL selector makes that clear %>
@@ -16,23 +13,23 @@
     </div>
   <% end %>
 
-  <div class="grid grid-cols-2 gap-2 items-center h-full">
+  <div class="grow flex gap-2 items-center h-full">
     <%= form.hidden_field :_destroy, value: false, data: { rule__conditions_target: "destroyField" } %>
 
-    <div class="w-full">
+    <div class="w-2/5 shrink-0">
       <%= form.select :condition_type, rule.condition_filters.map { |filter| [ filter.label, filter.key ] }, {}, data: { action: "rule--conditions#handleConditionTypeChange" } %>
     </div>
 
-    <%= form.select :operator, condition.operators, { container_class: "w-full" }, data: { rule__conditions_target: "operatorSelect", action: "rule--conditions#handleOperatorChange" } %>
+    <%= form.select :operator, condition.operators, { container_class: "w-fit min-w-36" }, data: { rule__conditions_target: "operatorSelect", action: "rule--conditions#handleOperatorChange" } %>
 
-    <div data-rule--conditions-target="filterValue" class="col-span-2 w-full">
+    <div data-rule--conditions-target="filterValue" class="grow">
       <% if condition.filter.type == "select" %>
         <%= form.select :value, condition.options, {} %>
       <% else %>
         <% if condition.filter.type == "number" %>
           <%= form.number_field :value, placeholder: "10", step: 0.01 %>
         <% else %>
-          <%= form.text_field :value, placeholder: t(".value_placeholder") %>
+          <%= form.text_field :value, placeholder: "Enter a value" %>
         <% end %>
       <% end %>
     </div>

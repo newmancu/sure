@@ -1,8 +1,16 @@
 class CoinbaseItem < ApplicationRecord
-  include Syncable, Provided, Unlinking, DestroyableLater
-  include Encryptable
+  include Syncable, Provided, Unlinking
 
   enum :status, { good: "good", requires_update: "requires_update" }, default: :good
+
+  # Helper to detect if ActiveRecord Encryption is configured for this app
+  def self.encryption_ready?
+    creds_ready = Rails.application.credentials.active_record_encryption.present?
+    env_ready = ENV["ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY"].present? &&
+                ENV["ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY"].present? &&
+                ENV["ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT"].present?
+    creds_ready || env_ready
+  end
 
   # Encrypt sensitive credentials if ActiveRecord encryption is configured
   # api_key uses deterministic encryption for querying, api_secret uses standard encryption
@@ -16,15 +24,19 @@ class CoinbaseItem < ApplicationRecord
   validates :api_secret, presence: true
 
   belongs_to :family
-  has_one_attached :logo, dependent: :purge_later
+  has_one_attached :logo
 
   has_many :coinbase_accounts, dependent: :destroy
   has_many :accounts, through: :coinbase_accounts
 
   scope :active, -> { where(scheduled_for_deletion: false) }
-  scope :syncable, -> { active }
   scope :ordered, -> { order(created_at: :desc) }
   scope :needs_update, -> { where(status: :requires_update) }
+
+  def destroy_later
+    update!(scheduled_for_deletion: true)
+    DestroyJob.perform_later(self)
+  end
 
   def import_latest_coinbase_data
     provider = coinbase_provider

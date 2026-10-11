@@ -46,6 +46,7 @@ RSpec.describe 'API V1 Transactions', type: :request do
   let(:category) do
     family.categories.create!(
       name: 'Groceries',
+      classification: 'expense',
       color: '#4CAF50',
       lucide_icon: 'shopping-cart'
     )
@@ -89,7 +90,6 @@ RSpec.describe 'API V1 Transactions', type: :request do
     get 'List transactions' do
       tags 'Transactions'
       security [ { apiKeyAuth: [] } ]
-      description 'Returns global ledger history for accessible accounts, including disabled accounts but excluding accounts pending deletion.'
       produces 'application/json'
       parameter name: :page, in: :query, type: :integer, required: false,
                 description: 'Page number (default: 1)'
@@ -132,7 +132,11 @@ RSpec.describe 'API V1 Transactions', type: :request do
       response '200', 'transactions listed' do
         schema '$ref' => '#/components/schemas/TransactionCollection'
 
-        run_test!
+        run_test! do |response|
+          payload = JSON.parse(response.body)
+          expect(payload.fetch('transactions')).to be_present
+          expect(payload.fetch('pagination')).to include('page', 'per_page', 'total_count', 'total_pages')
+        end
       end
 
       response '200', 'transactions filtered by account' do
@@ -140,7 +144,10 @@ RSpec.describe 'API V1 Transactions', type: :request do
 
         let(:account_id) { account.id }
 
-        run_test!
+        run_test! do |response|
+          payload = JSON.parse(response.body)
+          expect(payload.fetch('transactions')).to be_present
+        end
       end
 
       response '200', 'transactions filtered by date range' do
@@ -149,7 +156,10 @@ RSpec.describe 'API V1 Transactions', type: :request do
         let(:start_date) { (Date.current - 7.days).to_s }
         let(:end_date) { Date.current.to_s }
 
-        run_test!
+        run_test! do |response|
+          payload = JSON.parse(response.body)
+          expect(payload.fetch('transactions')).to be_present
+        end
       end
     end
 
@@ -174,9 +184,6 @@ RSpec.describe 'API V1 Transactions', type: :request do
               category_id: { type: :string, format: :uuid, description: 'Category ID' },
               merchant_id: { type: :string, format: :uuid, description: 'Merchant ID' },
               nature: { type: :string, enum: %w[income expense inflow outflow], description: 'Transaction nature (determines sign)' },
-              external_id: { type: :string, description: 'Optional external idempotency key scoped to account and source' },
-              source: { type: :string, description: 'Optional source namespace for external_id. Requires external_id and defaults to api when external_id is provided' },
-              user_modified: { type: :boolean, description: 'Whether provider syncs should preserve user-supplied transaction changes' },
               tag_ids: { type: :array, items: { type: :string, format: :uuid }, description: 'Array of tag IDs' }
             },
             required: %w[account_id date amount name]
@@ -202,39 +209,11 @@ RSpec.describe 'API V1 Transactions', type: :request do
       response '201', 'transaction created' do
         schema '$ref' => '#/components/schemas/Transaction'
 
-        run_test!
-      end
-
-      response '200', 'transaction already exists for external idempotency key' do
-        schema '$ref' => '#/components/schemas/Transaction'
-
-        let(:body) do
-          {
-            transaction: {
-              account_id: account.id,
-              date: Date.current.to_s,
-              amount: 50.00,
-              name: 'Test purchase',
-              nature: 'expense',
-              external_id: 'docs-import-transaction-1',
-              source: 'external_import'
-            }
-          }
+        run_test! do |response|
+          payload = JSON.parse(response.body)
+          expect(payload.fetch('name')).to eq('Test purchase')
+          expect(payload.fetch('account').fetch('id')).to eq(account.id)
         end
-
-        before do
-          account.entries.create!(
-            name: 'Test purchase',
-            date: Date.current,
-            amount: 50.00,
-            currency: 'USD',
-            external_id: 'docs-import-transaction-1',
-            source: 'external_import',
-            entryable: Transaction.new
-          )
-        end
-
-        run_test!
       end
 
       response '422', 'validation error - missing account_id' do
@@ -270,7 +249,7 @@ RSpec.describe 'API V1 Transactions', type: :request do
   end
 
   path '/api/v1/transactions/{id}' do
-    parameter name: :id, in: :path, schema: { type: :string, format: :uuid }, required: true, description: 'Transaction ID'
+    parameter name: :id, in: :path, type: :string, required: true, description: 'Transaction ID'
 
     get 'Retrieve a transaction' do
       tags 'Transactions'
@@ -282,7 +261,14 @@ RSpec.describe 'API V1 Transactions', type: :request do
       response '200', 'transaction retrieved' do
         schema '$ref' => '#/components/schemas/Transaction'
 
-        run_test!
+        run_test! do |response|
+          payload = JSON.parse(response.body)
+          expect(payload.fetch('id')).to eq(transaction.id)
+          expect(payload.fetch('name')).to eq('Grocery shopping')
+          expect(payload.fetch('category').fetch('name')).to eq('Groceries')
+          expect(payload.fetch('merchant').fetch('name')).to eq('Whole Foods')
+          expect(payload.fetch('tags').first.fetch('name')).to eq('Essential')
+        end
       end
 
       response '404', 'transaction not found' do
@@ -317,12 +303,7 @@ RSpec.describe 'API V1 Transactions', type: :request do
               category_id: { type: :string, format: :uuid },
               merchant_id: { type: :string, format: :uuid },
               nature: { type: :string, enum: %w[income expense inflow outflow] },
-              tag_ids: {
-                type: :array,
-                items: { type: :string, format: :uuid },
-                description: 'Array of tag IDs to assign. Omit to preserve existing tags; use [] to clear all tags.'
-              },
-              user_modified: { type: :boolean, description: 'Whether provider syncs should preserve user-supplied transaction changes' }
+              tag_ids: { type: :array, items: { type: :string, format: :uuid } }
             }
           }
         }
@@ -340,7 +321,11 @@ RSpec.describe 'API V1 Transactions', type: :request do
       response '200', 'transaction updated' do
         schema '$ref' => '#/components/schemas/Transaction'
 
-        run_test!
+        run_test! do |response|
+          payload = JSON.parse(response.body)
+          expect(payload.fetch('name')).to eq('Updated grocery shopping')
+          expect(payload.fetch('notes')).to eq('Weekly groceries')
+        end
       end
 
       response '404', 'transaction not found' do
@@ -362,7 +347,10 @@ RSpec.describe 'API V1 Transactions', type: :request do
       response '200', 'transaction deleted' do
         schema '$ref' => '#/components/schemas/DeleteResponse'
 
-        run_test!
+        run_test! do |response|
+          payload = JSON.parse(response.body)
+          expect(payload.fetch('message')).to eq('Transaction deleted successfully')
+        end
       end
 
       response '404', 'transaction not found' do

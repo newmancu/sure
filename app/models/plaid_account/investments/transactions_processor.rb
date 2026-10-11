@@ -46,7 +46,7 @@ class PlaidAccount::Investments::TransactionsProcessor
     end
 
     def cash_transaction?(transaction)
-      %w[cash fee transfer contribution withdrawal].include?(transaction["type"])
+      transaction["type"] == "cash" || transaction["type"] == "fee" || transaction["type"] == "transfer"
     end
 
     def find_or_create_trade_entry(transaction)

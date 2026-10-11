@@ -11,10 +11,6 @@ class Family::Syncer
 
     # Schedule child syncs
     child_syncables.each do |syncable|
-      # Cooperative cancellation: stop fanning out child syncs once a cancel
-      # has been requested (fresh read — the flag is set from another process).
-      break if sync.cancel_requested?
-
       syncable.sync_later(parent_sync: sync, window_start_date: sync.window_start_date, window_end_date: sync.window_end_date)
     end
   end
@@ -29,26 +25,7 @@ class Family::Syncer
   end
 
   private
-
-    # Collect all syncable provider items via reflection so new `*_items`
-    # integrations participate in nightly family sync as soon as they include
-    # Syncable and expose a `syncable` scope.
     def child_syncables
-      provider_items = syncable_item_associations.flat_map do |association|
-        family.public_send(association).syncable
-      end
-
-      provider_items + family.accounts.manual
-    end
-
-    def syncable_item_associations
-      Family.reflect_on_all_associations(:has_many).filter_map do |association|
-        next unless association.name.to_s.end_with?("_items")
-        next unless association.klass.included_modules.include?(Syncable)
-
-        association.name
-      rescue NameError
-        nil
-      end
+      family.plaid_items + family.simplefin_items.active + family.lunchflow_items.active + family.enable_banking_items.active + family.accounts.manual
     end
 end

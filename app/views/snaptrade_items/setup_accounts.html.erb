@@ -26,7 +26,7 @@
             </ul>
             <p class="text-xs text-warning mt-2">
               <%= icon "alert-triangle", size: "xs", class: "inline-block mr-1" %>
-              <%= t("snaptrade_items.setup_accounts.free_tier_note", default: "SnapTrade free tier allows 20 brokerage connections.") %>
+              <%= t("snaptrade_items.setup_accounts.free_tier_note", default: "SnapTrade free tier allows 5 brokerage connections. Check your SnapTrade dashboard for current usage.") %>
             </p>
           </div>
         </div>
@@ -34,7 +34,7 @@
 
       <% if @waiting_for_sync %>
         <%# Syncing state - show spinner with manual refresh option %>
-        <div id="snaptrade-sync-spinner" class="flex flex-col items-center justify-center py-6 space-y-3">
+        <div class="flex flex-col items-center justify-center py-6 space-y-3">
           <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
           <p class="text-secondary text-center">
             <%= t("snaptrade_items.setup_accounts.loading", default: "Fetching accounts from SnapTrade...") %>
@@ -60,7 +60,7 @@
         </div>
       <% elsif @no_accounts_found %>
         <%# No accounts found after sync completed %>
-        <div class="no-accounts-found flex flex-col items-center justify-center py-6 space-y-3">
+        <div class="flex flex-col items-center justify-center py-6 space-y-3">
           <%= icon "alert-circle", size: "lg", class: "text-warning" %>
           <p class="text-primary text-center font-medium">
             <%= t("snaptrade_items.setup_accounts.no_accounts_title", default: "No Accounts Found") %>
@@ -70,27 +70,11 @@
           </p>
         </div>
         <div class="flex gap-3 justify-center">
-          <%
-            brokerage_connect_href = if @snaptrade_item.oauth_configured?
-              connect_snaptrade_item_path(
-                @snaptrade_item,
-                return_to: "setup_accounts",
-                accountable_type: params[:accountable_type]
-              )
-            else
-              snaptrade_authorize_path(
-                item_id: @snaptrade_item.id,
-                accountable_type: params[:accountable_type],
-                return_to: params[:return_to]
-              )
-            end
-            brokerage_connect_frame = @snaptrade_item.oauth_configured? ? "_top" : snaptrade_authorize_frame
-          %>
           <%= render DS::Link.new(
             text: t("snaptrade_items.setup_accounts.try_again", default: "Connect Brokerage"),
             variant: "primary",
-            href: brokerage_connect_href,
-            frame: brokerage_connect_frame
+            href: connect_snaptrade_item_path(@snaptrade_item),
+            frame: "_top"
           ) %>
           <%= render DS::Link.new(
             text: t("snaptrade_items.setup_accounts.back_to_settings", default: "Back to Settings"),
@@ -140,13 +124,6 @@
                     </label>
                   </div>
                   <div class="mt-3 pl-7" onclick="event.stopPropagation();">
-                    <%= render DS::Select.new(
-                      form: form,
-                      method: "account_types[#{snaptrade_account.id}]",
-                      items: @account_type_options.map { |label, value| { label: label, value: value } },
-                      selected: snaptrade_account.suggested_account_type,
-                      label: t("snaptrade_items.setup_accounts.account_type_label")
-                    ) %>
                     <label for="sync_start_<%= snaptrade_account.id %>" class="block text-xs text-secondary mb-1">
                       <%= t("snaptrade_items.setup_accounts.sync_start_date_label", default: "Import transactions from:") %>
                     </label>
@@ -161,7 +138,6 @@
                       <%= t("snaptrade_items.setup_accounts.sync_start_date_help", default: "Leave blank for all available history") %>
                     </p>
                   </div>
-
                 </div>
               <% end %>
             </div>
@@ -184,70 +160,40 @@
             </div>
           <% end %>
 
-        <% end %>
-
-        <%# Link-to-existing forms rendered OUTSIDE the create form to avoid nested <form> %>
-        <% if @unlinked_accounts.any? && @linkable_accounts.any? %>
-          <div class="border-t border-secondary pt-4 mt-2">
-            <p class="text-xs text-secondary mb-3">
-              <%= t("snaptrade_items.setup_accounts.or_link_existing", default: "Or link to an existing account instead of creating a new one:") %>
-            </p>
-            <div class="space-y-2">
-              <% @unlinked_accounts.each do |snaptrade_account| %>
-                <%= form_with url: link_existing_account_snaptrade_items_path, method: :post, data: { turbo_frame: "_top" } do |link_form| %>
-                  <%= link_form.hidden_field :snaptrade_account_id, value: snaptrade_account.id %>
-                  <%= link_form.hidden_field :snaptrade_item_id, value: @snaptrade_item.id %>
-                  <p class="text-xs text-primary mb-1"><%= snaptrade_account.name %></p>
-                  <div class="flex items-center gap-2">
-                    <%= link_form.select :account_id,
-                          options_for_select(@linkable_accounts.map { |a| ["#{a.name} (#{number_to_currency(a.balance, unit: Money::Currency.new(a.currency || "USD").symbol)})", a.id] }),
-                          { prompt: t("snaptrade_items.setup_accounts.select_account", default: "Select an account...") },
-                          class: "bg-container border border-primary rounded px-2 py-1 text-sm text-primary flex-1 min-w-0" %>
-                    <%= render DS::Button.new(
-                      text: t("snaptrade_items.setup_accounts.link_button", default: "Link"),
-                      variant: "secondary",
-                      size: "sm",
-                      type: "submit"
-                    ) %>
-                  </div>
-                <% end %>
-              <% end %>
-            </div>
-          </div>
-        <% end %>
-
-        <% if @linked_accounts.any? %>
-          <div class="<%= "border-t border-primary pt-6 mt-4" if @unlinked_accounts.any? %>">
-            <h3 class="font-medium text-primary mb-4"><%= t("snaptrade_items.setup_accounts.linked_accounts", default: "Already Linked") %></h3>
-            <% @linked_accounts.each do |snaptrade_account| %>
-              <div class="border border-success/20 bg-success/5 rounded-lg p-4 mb-2">
-                <div class="flex items-center justify-between">
-                  <div class="flex items-center gap-3">
-                    <%= icon "check-circle", class: "text-success" %>
-                    <div>
-                      <h4 class="font-medium text-primary"><%= snaptrade_account.name %></h4>
-                      <p class="text-sm text-secondary">
-                        <%= t("snaptrade_items.setup_accounts.linked_to", default: "Linked to:") %>
-                        <%= link_to snaptrade_account.current_account.name, account_path(snaptrade_account.current_account), class: "link" %>
-                      </p>
+          <% if @linked_accounts.any? %>
+            <div class="<%= "border-t border-primary pt-6 mt-6" if @unlinked_accounts.any? %>">
+              <h3 class="font-medium text-primary mb-4"><%= t("snaptrade_items.setup_accounts.linked_accounts", default: "Already Linked") %></h3>
+              <% @linked_accounts.each do |snaptrade_account| %>
+                <div class="border border-success/20 bg-success/5 rounded-lg p-4 mb-2">
+                  <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-3">
+                      <%= icon "check-circle", class: "text-success" %>
+                      <div>
+                        <h4 class="font-medium text-primary"><%= snaptrade_account.name %></h4>
+                        <p class="text-sm text-secondary">
+                          <%= t("snaptrade_items.setup_accounts.linked_to", default: "Linked to:") %>
+                          <%= link_to snaptrade_account.current_account.name, account_path(snaptrade_account.current_account), class: "link" %>
+                        </p>
+                      </div>
                     </div>
                   </div>
                 </div>
+              <% end %>
+            </div>
+
+            <%# Show Done button when all accounts are linked (no unlinked) %>
+            <% if @unlinked_accounts.blank? %>
+              <div class="flex justify-end mt-4">
+                <%= render DS::Link.new(
+                  text: t("snaptrade_items.setup_accounts.done_button", default: "Done"),
+                  variant: "primary",
+                  href: accounts_path,
+                  frame: "_top"
+                ) %>
               </div>
             <% end %>
-          </div>
-
-          <%# Show Done button when all accounts are linked (no unlinked) %>
-          <% if @unlinked_accounts.blank? %>
-            <div class="flex justify-end mt-4">
-              <%= render DS::Link.new(
-                text: t("snaptrade_items.setup_accounts.done_button", default: "Done"),
-                variant: "primary",
-                href: accounts_path,
-                frame: "_top"
-              ) %>
-            </div>
           <% end %>
+
         <% end %>
       <% end %>
     </div>

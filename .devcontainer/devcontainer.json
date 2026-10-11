@@ -4,8 +4,7 @@
   "service": "app",
   "runServices": [
     "db",
-    "redis",
-    "selenium"
+    "redis"
   ],
   "workspaceFolder": "/workspace",
   "containerEnv": {

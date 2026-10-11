@@ -4,12 +4,9 @@ class Import::CleansController < ApplicationController
   before_action :set_import
 
   def show
-    unless @import.configured?
-      redirect_path = @import.is_a?(PdfImport) ? import_path(@import) : import_configuration_path(@import)
-      return redirect_to redirect_path, alert: t(".not_configured")
-    end
+    redirect_to import_configuration_path(@import), alert: "Please configure your import before proceeding." unless @import.configured?
 
-    rows = @import.rows_ordered
+    rows = @import.rows.ordered
 
     if params[:view] == "errors"
       rows = rows.reject { |row| row.valid? }

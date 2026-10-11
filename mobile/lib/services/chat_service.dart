@@ -18,7 +18,10 @@ class ChatService {
 
       final response = await http.get(
         url,
-        headers: ApiConfig.getAuthHeaders(accessToken),
+        headers: {
+          'Authorization': 'Bearer $accessToken',
+          'Accept': 'application/json',
+        },
       ).timeout(const Duration(seconds: 30));
 
       if (response.statusCode == 200) {
@@ -75,7 +78,10 @@ class ChatService {
 
       final response = await http.get(
         url,
-        headers: ApiConfig.getAuthHeaders(accessToken),
+        headers: {
+          'Authorization': 'Bearer $accessToken',
+          'Accept': 'application/json',
+        },
       ).timeout(const Duration(seconds: 30));
 
       if (response.statusCode == 200) {
@@ -118,11 +124,14 @@ class ChatService {
     required String accessToken,
     String? title,
     String? initialMessage,
+    String model = 'gpt-4',
   }) async {
     try {
       final url = Uri.parse('${ApiConfig.baseUrl}/api/v1/chats');
 
-      final body = <String, dynamic>{};
+      final body = <String, dynamic>{
+        'model': model,
+      };
 
       if (title != null) {
         body['title'] = title;
@@ -135,7 +144,8 @@ class ChatService {
       final response = await http.post(
         url,
         headers: {
-          ...ApiConfig.getAuthHeaders(accessToken),
+          'Authorization': 'Bearer $accessToken',
+          'Accept': 'application/json',
           'Content-Type': 'application/json',
         },
         body: jsonEncode(body),
@@ -189,7 +199,8 @@ class ChatService {
       final response = await http.post(
         url,
         headers: {
-          ...ApiConfig.getAuthHeaders(accessToken),
+          'Authorization': 'Bearer $accessToken',
+          'Accept': 'application/json',
           'Content-Type': 'application/json',
         },
         body: jsonEncode({
@@ -244,7 +255,8 @@ class ChatService {
       final response = await http.patch(
         url,
         headers: {
-          ...ApiConfig.getAuthHeaders(accessToken),
+          'Authorization': 'Bearer $accessToken',
+          'Accept': 'application/json',
           'Content-Type': 'application/json',
         },
         body: jsonEncode({
@@ -297,7 +309,10 @@ class ChatService {
 
       final response = await http.delete(
         url,
-        headers: ApiConfig.getAuthHeaders(accessToken),
+        headers: {
+          'Authorization': 'Bearer $accessToken',
+          'Accept': 'application/json',
+        },
       ).timeout(const Duration(seconds: 30));
 
       if (response.statusCode == 204) {
@@ -331,34 +346,6 @@ class ChatService {
     }
   }
 
-  /// Delete multiple chats in parallel
-  Future<Map<String, dynamic>> deleteMultipleChats({
-    required String accessToken,
-    required List<String> chatIds,
-  }) async {
-    final results = await Future.wait(
-      chatIds.map((id) async {
-        try {
-          return await deleteChat(accessToken: accessToken, chatId: id);
-        } catch (_) {
-          return {'success': false};
-        }
-      }),
-      eagerError: false,
-    );
-    final failedIds = chatIds
-        .asMap()
-        .entries
-        .where((e) => results[e.key]['success'] != true)
-        .map((e) => e.value)
-        .toList();
-    return {
-      'success': failedIds.isEmpty,
-      'deletedCount': chatIds.length - failedIds.length,
-      'failedIds': failedIds,
-    };
-  }
-
   /// Retry the last assistant response in a chat
   Future<Map<String, dynamic>> retryMessage({
     required String accessToken,
@@ -369,7 +356,10 @@ class ChatService {
 
       final response = await http.post(
         url,
-        headers: ApiConfig.getAuthHeaders(accessToken),
+        headers: {
+          'Authorization': 'Bearer $accessToken',
+          'Accept': 'application/json',
+        },
       ).timeout(const Duration(seconds: 30));
 
       if (response.statusCode == 202) {

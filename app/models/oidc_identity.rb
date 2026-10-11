@@ -25,13 +25,10 @@ class OidcIdentity < ApplicationRecord
       groups: groups
     })
 
-    # Sync name to user only when Sure has nothing on file (first link, or an
-    # admin blanked the field). Edits made inside Sure must survive subsequent
-    # SSO logins — previously the IdP value won unconditionally and clobbered
-    # any manually-edited name on every login (#1103).
+    # Sync name to user if provided (keep existing if IdP doesn't provide)
     user.update!(
-      first_name: user.first_name.presence || auth.info&.first_name.presence,
-      last_name: user.last_name.presence || auth.info&.last_name.presence
+      first_name: auth.info&.first_name.presence || user.first_name,
+      last_name: auth.info&.last_name.presence || user.last_name
     )
 
     # Apply role mapping based on group membership
@@ -62,7 +59,7 @@ class OidcIdentity < ApplicationRecord
     return unless role_mapping.present?
 
     # Check roles in order of precedence (highest to lowest)
-    %w[super_admin admin member guest].each do |role|
+    %w[super_admin admin member].each do |role|
       mapped_groups = role_mapping[role] || role_mapping[role.to_sym] || []
       mapped_groups = Array(mapped_groups)
 
@@ -78,37 +75,27 @@ class OidcIdentity < ApplicationRecord
 
   # Extract and store relevant info from OmniAuth auth hash
   def self.create_from_omniauth(auth, user)
-    SsoIdentityBlock.with_identity_lock(provider: auth.provider, uid: auth.uid) do
-      if SsoIdentityBlock.blocked?(provider: auth.provider, uid: auth.uid)
-        raise SsoIdentityBlock::BlockedIdentity
-      end
+    # Extract issuer from OIDC auth response if available
+    issuer = auth.extra&.raw_info&.iss || auth.extra&.raw_info&.[]("iss")
 
-      # Extract issuer from OIDC auth response if available
-      issuer = auth.extra&.raw_info&.iss || auth.extra&.raw_info&.[]("iss")
-
-      create!(
-        user: user,
-        provider: auth.provider,
-        uid: auth.uid,
-        issuer: issuer,
-        info: {
-          email: auth.info&.email,
-          name: auth.info&.name,
-          first_name: auth.info&.first_name,
-          last_name: auth.info&.last_name
-        },
-        last_authenticated_at: Time.current
-      )
-    end
+    create!(
+      user: user,
+      provider: auth.provider,
+      uid: auth.uid,
+      issuer: issuer,
+      info: {
+        email: auth.info&.email,
+        name: auth.info&.name,
+        first_name: auth.info&.first_name,
+        last_name: auth.info&.last_name
+      },
+      last_authenticated_at: Time.current
+    )
   end
 
   # Find the configured provider for this identity
   def provider_config
-    AuthConfig.sso_providers&.find do |p|
-      p_name = p[:name] || p["name"]
-      p_id = p[:id] || p["id"]
-      p_name == provider || p_id == provider
-    end
+    Rails.configuration.x.auth.sso_providers&.find { |p| p[:name] == provider || p[:id] == provider }
   end
 
   # Validate that the stored issuer matches the configured provider's issuer
@@ -117,9 +104,8 @@ class OidcIdentity < ApplicationRecord
     return true if issuer.blank? # Backward compatibility for old records
 
     config = provider_config
-    config_issuer = config&.dig(:issuer) || config&.dig("issuer")
-    return true if config_issuer.blank? # No config to validate against
+    return true if config.blank? || config[:issuer].blank? # No config to validate against
 
-    issuer == config_issuer
+    issuer == config[:issuer]
   end
 end

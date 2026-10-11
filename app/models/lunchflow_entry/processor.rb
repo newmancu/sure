@@ -18,16 +18,6 @@ class LunchflowEntry::Processor
       return nil
     end
 
-    # If this is a pending transaction with a temporary ID, check if a posted version already exists
-    # This prevents duplicate entries when posted transactions arrive before pending ones
-    if is_pending? && external_id.start_with?("lunchflow_pending_")
-      existing_posted = find_existing_posted_version
-      if existing_posted
-        Rails.logger.info "LunchflowEntry::Processor - Skipping pending transaction (posted version already exists): pending=#{external_id}, posted=#{existing_posted.external_id}"
-        return existing_posted
-      end
-    end
-
     # Wrap import in error handling to catch validation and save errors
     begin
       import_adapter.import_transaction(
@@ -73,10 +63,6 @@ class LunchflowEntry::Processor
     end
 
     def external_id
-      @external_id ||= calculate_external_id
-    end
-
-    def calculate_external_id
       id = data[:id].presence
 
       # For pending transactions, Lunchflow may return blank/nil IDs
@@ -87,20 +73,10 @@ class LunchflowEntry::Processor
         base_temp_id = content_hash_for_transaction(data)
         temp_id_with_prefix = "lunchflow_pending_#{base_temp_id}"
 
-        # Check if entry with this external_id already exists
-        # If it does AND it's still pending, reuse the same ID for re-sync.
-        # The import adapter's skip logic will handle user edits correctly.
-        # We DON'T check if attributes match - user edits should not cause duplicates.
-        if entry_exists_with_external_id?(temp_id_with_prefix)
-          existing_entry = account.entries.find_by(external_id: temp_id_with_prefix, source: "lunchflow")
-          if existing_entry && existing_entry.entryable.is_a?(Transaction) && existing_entry.entryable.pending?
-            Rails.logger.debug "Lunchflow: Reusing ID #{temp_id_with_prefix} for re-synced pending transaction"
-            return temp_id_with_prefix
-          end
-        end
-
-        # Handle true collisions: multiple different transactions with same attributes
-        # (e.g., two Uber rides on the same day for the same amount within the same sync)
+        # Handle collisions: if this external_id already exists for this account,
+        # append a counter to make it unique. This prevents multiple pending transactions
+        # with identical attributes (e.g., two same-day Uber rides) from colliding.
+        # We check both the account's entries and the current raw payload being processed.
         final_id = temp_id_with_prefix
         counter = 1
 
@@ -115,10 +91,10 @@ class LunchflowEntry::Processor
           Rails.logger.debug "Lunchflow: Generated temporary ID #{final_id} for pending transaction: #{data[:merchant]} #{data[:amount]} #{data[:currency]}"
         end
 
-        final_id
-      else
-        "lunchflow_#{id}"
+        return final_id
       end
+
+      "lunchflow_#{id}"
     end
 
     def entry_exists_with_external_id?(external_id)
@@ -188,15 +164,12 @@ class LunchflowEntry::Processor
     def date
       case data[:date]
       when String
-        if data[:date].include?("T") || data[:date].include?(":")
-          Time.parse(data[:date]).in_time_zone(account&.family&.timezone).to_date
-        else
-          Date.parse(data[:date])
-        end
+        Date.parse(data[:date])
       when Integer, Float
-        Time.at(data[:date]).in_time_zone(account&.family&.timezone).to_date
+        # Unix timestamp
+        Time.at(data[:date]).to_date
       when Time, DateTime
-        data[:date].in_time_zone(account&.family&.timezone).to_date
+        data[:date].to_date
       when Date
         data[:date]
       else
@@ -219,36 +192,5 @@ class LunchflowEntry::Processor
       end
 
       metadata
-    end
-
-    # Check if this transaction is marked as pending
-    def is_pending?
-      ActiveModel::Type::Boolean.new.cast(data[:isPending])
-    end
-
-    # Find an existing posted version of this pending transaction
-    # Matches by: exact amount, currency, merchant name (if present), and date window
-    # Uses same 8-day window as Account::ProviderImportAdapter reconciliation logic
-    # Note: Lunchflow never provides real IDs for pending transactions (they're always blank),
-    # so filtering by external_id NOT LIKE 'lunchflow_pending_%' is sufficient to exclude pending entries
-    def find_existing_posted_version
-      return nil unless account.present?
-
-      query = account.entries
-        .where(source: "lunchflow")
-        .where(amount: amount)
-        .where(currency: currency)
-        .where("date BETWEEN ? AND ?", date, date + 8)
-        .where("external_id NOT LIKE 'lunchflow_pending_%'")
-        .where("external_id IS NOT NULL")
-        .order(date: :asc) # Closest date first (prefer same-day posted, then next day, etc.)
-
-      # Add merchant name matching for better precision
-      # Only if merchant name is present in the transaction data
-      if data[:merchant].present?
-        query = query.where(name: name)
-      end
-
-      query.first
     end
 end

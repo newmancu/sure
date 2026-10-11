@@ -52,11 +52,11 @@ class Balance::ChartSeriesBuilderTest < ActiveSupport::TestCase
     )
 
     # Only 1 rate in DB. We'll be missing the first and last days in the series.
-    # This rate should be applied to all days: LOCF for future dates, nearest future rate for earlier dates.
+    # This rate should be applied to 1 day ago and today, but not 2 days ago (will fall back to 1)
     ExchangeRate.create!(date: 1.day.ago.to_date, from_currency: "USD", to_currency: "EUR", rate: 2)
 
     expected = [
-      2000, # No prior rate, so use nearest future rate (2:1 from 1 day ago): 1000 * 2 = 2000
+      1000, # No rate available, so fall back to 1:1 conversion (1000 USD = 1000 EUR)
       2200, # Rate available, so use 2:1 conversion (1100 USD = 2200 EUR)
       2400 # Rate NOT available, but LOCF will use the last available rate, so use 2:1 conversion (1200 USD = 2400 EUR)
     ]
@@ -94,24 +94,6 @@ class Balance::ChartSeriesBuilderTest < ActiveSupport::TestCase
     ]
 
     assert_equal expected, builder.balance_series.map { |v| v.value.amount }
-  end
-
-  test "account active until dates stop locf while preserving date rows" do
-    account = accounts(:depository)
-    account.balances.destroy_all
-
-    period = Period.custom(start_date: 2.days.ago.to_date, end_date: Date.current)
-    create_balance(account: account, date: period.start_date, balance: 1000)
-
-    builder = Balance::ChartSeriesBuilder.new(
-      account_ids: [ account.id ],
-      account_active_until_dates: { account.id => 1.day.ago.to_date },
-      currency: "USD",
-      period: period,
-      interval: "1 day"
-    )
-
-    assert_equal [ 1000, 1000, 0 ], builder.balance_series.map { |v| v.value.amount }
   end
 
   test "when favorable direction is down balance signage inverts" do
@@ -338,160 +320,4 @@ class Balance::ChartSeriesBuilderTest < ActiveSupport::TestCase
     assert_equal 1, linked_account.balances.where(currency: "USD").count
     assert_equal 0, linked_account.balances.where(currency: "EUR").count
   end
-
-  test "gains series computes unrealized gains from holdings with locf" do
-    account = accounts(:investment)
-    account.holdings.destroy_all
-    security = securities(:aapl)
-
-    # 10 shares with avg cost of $90/share
-    create_holding(account: account, security: security, date: 3.days.ago.to_date, qty: 10, price: 100, cost_basis: 90)
-    create_holding(account: account, security: security, date: 1.day.ago.to_date, qty: 10, price: 110, cost_basis: 90)
-    create_holding(account: account, security: security, date: Date.current, qty: 10, price: 105, cost_basis: 90)
-
-    builder = Balance::ChartSeriesBuilder.new(
-      account_ids: [ account.id ],
-      currency: "USD",
-      period: Period.custom(start_date: 4.days.ago.to_date, end_date: Date.current),
-      interval: "1 day"
-    )
-
-    expected = [
-      0, # No holdings yet
-      100, # 1000 - 900
-      100, # Last observation carried forward
-      200, # 1100 - 900
-      150 # 1050 - 900
-    ]
-
-    assert_equal expected, builder.gains_series.map { |v| v.value.amount }
-  end
-
-  test "gains series treats unusable cost basis as zero gain" do
-    account = accounts(:investment)
-    account.holdings.destroy_all
-
-    # Unlocked zero cost basis (provider "unknown") -> no gain contribution
-    create_holding(account: account, security: securities(:aapl), date: Date.current, qty: 10, price: 100, cost_basis: 0)
-    # Nil cost basis -> no gain contribution
-    create_holding(account: account, security: securities(:msft), date: Date.current, qty: 5, price: 50, cost_basis: nil)
-
-    builder = Balance::ChartSeriesBuilder.new(
-      account_ids: [ account.id ],
-      currency: "USD",
-      period: Period.custom(start_date: Date.current, end_date: Date.current),
-      interval: "1 day"
-    )
-
-    assert_equal [ 0 ], builder.gains_series.map { |v| v.value.amount }
-
-    # Locked zero cost basis (e.g. airdrop) is trusted -> full amount is gain
-    account.holdings.where(security: securities(:aapl)).update_all(cost_basis_locked: true)
-
-    builder = Balance::ChartSeriesBuilder.new(
-      account_ids: [ account.id ],
-      currency: "USD",
-      period: Period.custom(start_date: Date.current, end_date: Date.current),
-      interval: "1 day"
-    )
-
-    assert_equal [ 1000 ], builder.gains_series.map { |v| v.value.amount }
-  end
-
-  test "gains series converts holding gains to target currency with locf rates" do
-    family = families(:dylan_family)
-    account = family.accounts.create!(
-      name: "EUR Investment",
-      balance: 1000,
-      currency: "EUR",
-      accountable: Investment.new
-    )
-    security = securities(:aapl)
-
-    # Gains in EUR: 100 yesterday (1000 - 900), 200 today (1100 - 900)
-    create_holding(account: account, security: security, date: 1.day.ago.to_date, qty: 10, price: 100, cost_basis: 90)
-    create_holding(account: account, security: security, date: Date.current, qty: 10, price: 110, cost_basis: 90)
-
-    # Single EUR -> USD rate; LOCF applies it to today as well
-    ExchangeRate.create!(date: 1.day.ago.to_date, from_currency: "EUR", to_currency: "USD", rate: 1.1)
-
-    builder = Balance::ChartSeriesBuilder.new(
-      account_ids: [ account.id ],
-      currency: "USD",
-      period: Period.custom(start_date: 1.day.ago.to_date, end_date: Date.current),
-      interval: "1 day"
-    )
-
-    expected = [
-      110, # 100 EUR * 1.1
-      220 # 200 EUR * 1.1 (rate carried forward)
-    ]
-
-    assert_equal expected, builder.gains_series.map { |v| v.value.amount }
-  end
-
-  test "gains series carries cost basis forward over gap-filled holdings" do
-    account = accounts(:investment)
-    account.holdings.destroy_all
-    security = securities(:aapl)
-
-    create_holding(account: account, security: security, date: 2.days.ago.to_date, qty: 10, price: 100, cost_basis: 90)
-    # Gap-filled rows (weekends, price gaps) are persisted without cost_basis
-    create_holding(account: account, security: security, date: 1.day.ago.to_date, qty: 10, price: 100, cost_basis: nil)
-    create_holding(account: account, security: security, date: Date.current, qty: 10, price: 110, cost_basis: nil)
-
-    builder = Balance::ChartSeriesBuilder.new(
-      account_ids: [ account.id ],
-      currency: "USD",
-      period: Period.custom(start_date: 2.days.ago.to_date, end_date: Date.current),
-      interval: "1 day"
-    )
-
-    expected = [
-      100, # 1000 - 900
-      100, # basis carried forward from 2 days ago, not zeroed
-      200 # 1100 - 900
-    ]
-
-    assert_equal expected, builder.gains_series.map { |v| v.value.amount }
-  end
-
-  test "gains series values carry trend vs previous point" do
-    account = accounts(:investment)
-    account.holdings.destroy_all
-    security = securities(:aapl)
-
-    create_holding(account: account, security: security, date: 1.day.ago.to_date, qty: 10, price: 100, cost_basis: 90)
-    create_holding(account: account, security: security, date: Date.current, qty: 10, price: 110, cost_basis: 90)
-
-    builder = Balance::ChartSeriesBuilder.new(
-      account_ids: [ account.id ],
-      currency: "USD",
-      period: Period.custom(start_date: 1.day.ago.to_date, end_date: Date.current),
-      interval: "1 day"
-    )
-
-    series = builder.gains_series
-
-    # First point has no prior point, so trend is flat
-    assert_equal 100, series.values.first.trend.previous.amount
-    assert_equal 100, series.values.first.trend.current.amount
-
-    assert_equal 100, series.values.last.trend.previous.amount
-    assert_equal 200, series.values.last.trend.current.amount
-  end
-
-  private
-    def create_holding(account:, security:, date:, qty:, price:, cost_basis:)
-      Holding.create!(
-        account: account,
-        security: security,
-        date: date,
-        qty: qty,
-        price: price,
-        amount: qty * price,
-        currency: account.currency,
-        cost_basis: cost_basis
-      )
-    end
 end

@@ -3,22 +3,6 @@ require "test_helper"
 class AssistantTest < ActiveSupport::TestCase
   include ProviderTestHelper
 
-  test "default registry includes the analytical read tools and gates preview reads" do
-    default_classes = Assistant.function_classes
-
-    assert_includes default_classes, Assistant::Function::GetMerchants
-    assert_includes default_classes, Assistant::Function::GetRecurringTransactions
-    assert_not_includes default_classes, Assistant::Function::GetInsights
-    assert_not_includes default_classes, Assistant::Function::GetValuations
-
-    preview_user = users(:family_admin)
-    preview_user.update!(preferences: (preview_user.preferences || {}).merge("preview_features_enabled" => true))
-    preview_classes = Assistant.function_classes(preview_user)
-
-    assert_includes preview_classes, Assistant::Function::GetInsights
-    assert_includes preview_classes, Assistant::Function::GetValuations
-  end
-
   setup do
     @chat = chats(:two)
     @message = @chat.messages.create!(
@@ -30,10 +14,6 @@ class AssistantTest < ActiveSupport::TestCase
     @provider = mock
     @expected_session_id = @chat.id.to_s
     @expected_user_identifier = ::Digest::SHA256.hexdigest(@chat.user_id.to_s)
-    @expected_conversation_history = [
-      { role: "user", content: "Can you help me understand my spending habits?" },
-      { role: "user", content: "What is my net worth?" }
-    ]
   end
 
   test "errors get added to chat" do
@@ -120,7 +100,6 @@ class AssistantTest < ActiveSupport::TestCase
     @provider.expects(:chat_response).with do |message, **options|
       assert_equal @expected_session_id, options[:session_id]
       assert_equal @expected_user_identifier, options[:user_identifier]
-      assert_equal @expected_conversation_history, options[:messages]
       text_chunks.each do |text_chunk|
         options[:streamer].call(text_chunk)
       end
@@ -140,8 +119,10 @@ class AssistantTest < ActiveSupport::TestCase
   test "responds with tool function calls" do
     @assistant.expects(:get_model_provider).with("gpt-4.1").returns(@provider).once
 
+    # Only first provider call executes function
     Assistant::Function::GetAccounts.any_instance.stubs(:call).returns("test value").once
 
+    # Call #1: Function requests
     call1_response_chunk = provider_response_chunk(
       id: "1",
       model: "gpt-4.1",
@@ -151,6 +132,9 @@ class AssistantTest < ActiveSupport::TestCase
       ]
     )
 
+    call1_response = provider_success_response(call1_response_chunk.data)
+
+    # Call #2: Text response (that uses function results)
     call2_text_chunks = [
       provider_text_chunk("Your net worth is "),
       provider_text_chunk("$124,200")
@@ -163,523 +147,36 @@ class AssistantTest < ActiveSupport::TestCase
       function_requests: []
     )
 
-    expect_provider_rounds(
-      [ call1_response_chunk ],
-      [ *call2_text_chunks, call2_response_chunk ]
-    )
+    call2_response = provider_success_response(call2_response_chunk.data)
+
+    sequence = sequence("provider_chat_response")
+
+    @provider.expects(:chat_response).with do |message, **options|
+      assert_equal @expected_session_id, options[:session_id]
+      assert_equal @expected_user_identifier, options[:user_identifier]
+      call2_text_chunks.each do |text_chunk|
+        options[:streamer].call(text_chunk)
+      end
+
+      options[:streamer].call(call2_response_chunk)
+      true
+    end.returns(call2_response).once.in_sequence(sequence)
+
+    @provider.expects(:chat_response).with do |message, **options|
+      assert_equal @expected_session_id, options[:session_id]
+      assert_equal @expected_user_identifier, options[:user_identifier]
+      options[:streamer].call(call1_response_chunk)
+      true
+    end.returns(call1_response).once.in_sequence(sequence)
 
     assert_difference "AssistantMessage.count", 1 do
       @assistant.respond_to(@message)
       message = @chat.messages.ordered.where(type: "AssistantMessage").last
-      assert_equal "complete", message.status
-      assert_equal "Your net worth is $124,200", message.content
       assert_equal 1, message.tool_calls.size
     end
   end
 
-  test "responds after multiple rounds of tool calls" do
-    @assistant.expects(:get_model_provider).with("gpt-4.1").returns(@provider).once
-    @provider.stubs(:supports_responses_endpoint?).returns(false)
-
-    Assistant::Function::GetAccounts.any_instance.stubs(:call).returns("accounts").twice
-    Assistant::Function::GetIncomeStatement.any_instance.stubs(:call).returns("income").once
-
-    first_tools = provider_response_chunk(
-      id: "1",
-      model: "gpt-4.1",
-      messages: [],
-      function_requests: [
-        provider_function_request(id: "1", call_id: "1", function_name: "get_accounts", function_args: "{}")
-      ]
-    )
-    second_tools = provider_response_chunk(
-      id: "2",
-      model: "gpt-4.1",
-      messages: [],
-      function_requests: [
-        provider_function_request(id: "2", call_id: "2", function_name: "get_income_statement", function_args: "{}"),
-        provider_function_request(id: "2", call_id: "3", function_name: "get_accounts", function_args: "{}")
-      ]
-    )
-    final_text = provider_text_chunk("Final answer.")
-    final_response = provider_response_chunk(
-      id: "3",
-      model: "gpt-4.1",
-      messages: [ provider_message(id: "3", text: final_text.data) ],
-      function_requests: []
-    )
-
-    expect_provider_rounds(
-      [ first_tools ],
-      [ second_tools ],
-      [ final_text, final_response ],
-      expected_function_result_ids: [ [], [ "1" ], [ "1", "2", "3" ] ]
-    )
-
-    assert_difference "AssistantMessage.count", 1 do
-      @assistant.respond_to(@message)
-    end
-
-    response = @chat.messages.ordered.where(type: "AssistantMessage").last
-    assert_equal "complete", response.status
-    assert_equal "Final answer.", response.content
-    assert_equal [ "get_accounts", "get_accounts", "get_income_statement" ],
-                 response.tool_calls.map(&:function_name).sort
-  end
-
-  test "keeps earlier text when the final tool follow-up is empty" do
-    @assistant.expects(:get_model_provider).with("gpt-4.1").returns(@provider).once
-    Assistant::Function::GetAccounts.any_instance.stubs(:call).returns("accounts").once
-
-    partial_text = provider_text_chunk("I found your accounts.")
-    tools_with_text = provider_response_chunk(
-      id: "1",
-      model: "gpt-4.1",
-      messages: [ provider_message(id: "1", text: partial_text.data) ],
-      function_requests: [
-        provider_function_request(id: "1", call_id: "1", function_name: "get_accounts", function_args: "{}")
-      ]
-    )
-    empty_follow_up = provider_response_chunk(
-      id: "2",
-      model: "gpt-4.1",
-      messages: [],
-      function_requests: []
-    )
-
-    expect_provider_rounds(
-      [ partial_text, tools_with_text ],
-      [ empty_follow_up ]
-    )
-
-    @assistant.respond_to(@message)
-
-    response = @chat.messages.ordered.where(type: "AssistantMessage").last
-    assert_equal "complete", response.status
-    assert_equal "I found your accounts.", response.content
-    assert_equal 1, response.tool_calls.size
-  end
-
-  test "cleans up the pending message when the tool-call limit is exceeded" do
-    @assistant.expects(:get_model_provider).with("gpt-4.1").returns(@provider).once
-    Assistant::Function::GetAccounts.any_instance.stubs(:call).returns("accounts").once
-
-    first_tools = provider_response_chunk(
-      id: "1",
-      model: "gpt-4.1",
-      messages: [],
-      function_requests: [
-        provider_function_request(id: "1", call_id: "1", function_name: "get_accounts", function_args: "{}")
-      ]
-    )
-    second_tools = provider_response_chunk(
-      id: "2",
-      model: "gpt-4.1",
-      messages: [],
-      function_requests: [
-        provider_function_request(id: "2", call_id: "2", function_name: "get_accounts", function_args: "{}")
-      ]
-    )
-
-    expect_provider_rounds([ first_tools ], [ second_tools ])
-    pending = AssistantMessage.create!(chat: @chat, content: "", ai_model: @message.ai_model, status: :pending)
-
-    with_env_overrides("ASSISTANT_MAX_TOOL_CALL_ITERATIONS" => "1") do
-      @assistant.respond_to(@message, assistant_message: pending)
-    end
-
-    assert_not AssistantMessage.exists?(pending.id)
-    assert_includes @chat.reload.technical_error_message, "tool-call limit"
-  end
-
-  test "cleans up the pending message when the model returns no text or tools" do
-    @assistant.expects(:get_model_provider).with("gpt-4.1").returns(@provider).once
-
-    empty_response = provider_response_chunk(
-      id: "1",
-      model: "gpt-4.1",
-      messages: [],
-      function_requests: []
-    )
-
-    expect_provider_rounds([ empty_response ])
-    pending = AssistantMessage.create!(chat: @chat, content: "", ai_model: @message.ai_model, status: :pending)
-
-    @assistant.respond_to(@message, assistant_message: pending)
-
-    assert_not AssistantMessage.exists?(pending.id)
-    assert_includes @chat.reload.technical_error_message, "neither text nor tool calls"
-  end
-
-  test "for_chat returns Builtin by default" do
-    assert_instance_of Assistant::Builtin, Assistant.for_chat(@chat)
-  end
-
-  test "available_types includes builtin and external" do
-    assert_includes Assistant.available_types, "builtin"
-    assert_includes Assistant.available_types, "external"
-  end
-
-  test "for_chat returns External when family assistant_type is external" do
-    @chat.user.family.update!(assistant_type: "external")
-    assert_instance_of Assistant::External, Assistant.for_chat(@chat)
-  end
-
-  test "ASSISTANT_TYPE env override forces external regardless of DB value" do
-    assert_equal "builtin", @chat.user.family.assistant_type
-
-    with_env_overrides("ASSISTANT_TYPE" => "external") do
-      assert_instance_of Assistant::External, Assistant.for_chat(@chat)
-    end
-
-    assert_instance_of Assistant::Builtin, Assistant.for_chat(@chat)
-  end
-
-  test "external assistant responds with streamed text" do
-    @chat.user.family.update!(assistant_type: "external")
-    assistant = Assistant.for_chat(@chat)
-
-    sse_body = <<~SSE
-      data: {"choices":[{"delta":{"content":"Your net worth"}}],"model":"ext-agent:main"}
-
-      data: {"choices":[{"delta":{"content":" is $124,200."}}],"model":"ext-agent:main"}
-
-      data: [DONE]
-
-    SSE
-
-    mock_external_sse_response(sse_body)
-
-    with_env_overrides(
-      "EXTERNAL_ASSISTANT_URL" => "http://localhost:18789/v1/chat",
-      "EXTERNAL_ASSISTANT_TOKEN" => "test-token",
-      "EXTERNAL_ASSISTANT_MODEL" => "openclaw/main"
-    ) do
-      assistant_message = pending_assistant_message
-
-      assert_no_difference "AssistantMessage.count" do
-        assistant.respond_to(@message, assistant_message: assistant_message)
-      end
-
-      response_msg = assistant_message.reload
-      assert_equal "Your net worth is $124,200.", response_msg.content
-      assert_equal "ext-agent:main", response_msg.ai_model
-    end
-  end
-
-  test "external assistant adds error when not configured" do
-    @chat.user.family.update!(assistant_type: "external")
-    assistant = Assistant.for_chat(@chat)
-
-    with_env_overrides(
-      "EXTERNAL_ASSISTANT_URL" => nil,
-      "EXTERNAL_ASSISTANT_TOKEN" => nil,
-      "EXTERNAL_ASSISTANT_MODEL" => nil
-    ) do
-      # Ensure Settings are also cleared to avoid test pollution from
-      # other tests that may have set these values in the same process.
-      Setting.external_assistant_url = nil
-      Setting.external_assistant_token = nil
-      Setting.clear_cache
-
-      assert_no_difference "AssistantMessage.count" do
-        assistant.respond_to(@message)
-      end
-
-      @chat.reload
-      assert @chat.error.present?
-      assert_includes @chat.error, "not configured"
-    end
-  ensure
-    Setting.external_assistant_url = nil
-    Setting.external_assistant_token = nil
-  end
-
-  test "external assistant adds error on connection failure" do
-    @chat.user.family.update!(assistant_type: "external")
-    assistant = Assistant.for_chat(@chat)
-
-    Net::HTTP.any_instance.stubs(:request).raises(Errno::ECONNREFUSED, "Connection refused")
-
-    with_env_overrides(
-      "EXTERNAL_ASSISTANT_URL" => "http://localhost:18789/v1/chat",
-      "EXTERNAL_ASSISTANT_TOKEN" => "test-token",
-      "EXTERNAL_ASSISTANT_MODEL" => "openclaw/main"
-    ) do
-      assert_no_difference "AssistantMessage.count" do
-        assistant.respond_to(@message)
-      end
-
-      @chat.reload
-      assert @chat.error.present?
-    end
-  end
-
-  test "external assistant handles empty response gracefully" do
-    @chat.user.family.update!(assistant_type: "external")
-    assistant = Assistant.for_chat(@chat)
-
-    sse_body = <<~SSE
-      data: {"choices":[{"delta":{"role":"assistant"}}],"model":"ext-agent:main"}
-
-      data: {"choices":[{"delta":{}}],"model":"ext-agent:main"}
-
-      data: [DONE]
-
-    SSE
-
-    mock_external_sse_response(sse_body)
-
-    with_env_overrides(
-      "EXTERNAL_ASSISTANT_URL" => "http://localhost:18789/v1/chat",
-      "EXTERNAL_ASSISTANT_TOKEN" => "test-token",
-      "EXTERNAL_ASSISTANT_MODEL" => "openclaw/main"
-    ) do
-      assert_no_difference "AssistantMessage.count" do
-        assistant.respond_to(@message)
-      end
-
-      @chat.reload
-      assert @chat.error.present?
-      assert_includes @chat.error, "empty response"
-    end
-  end
-
-  test "external assistant sends conversation history" do
-    @chat.user.family.update!(assistant_type: "external")
-    assistant = Assistant.for_chat(@chat)
-
-    AssistantMessage.create!(chat: @chat, content: "I can help with that.", ai_model: "external")
-
-    sse_body = "data: {\"choices\":[{\"delta\":{\"content\":\"Sure!\"}}],\"model\":\"m\"}\n\ndata: [DONE]\n\n"
-    capture = mock_external_sse_response(sse_body)
-
-    with_env_overrides(
-      "EXTERNAL_ASSISTANT_URL" => "http://localhost:18789/v1/chat",
-      "EXTERNAL_ASSISTANT_TOKEN" => "test-token",
-      "EXTERNAL_ASSISTANT_MODEL" => "openclaw/main"
-    ) do
-      assistant.respond_to(@message)
-
-      body = JSON.parse(capture[0].body)
-      messages = body["messages"]
-
-      assert messages.size >= 2
-      assert_equal "user", messages.first["role"]
-    end
-  end
-
-  test "full external assistant flow: config check, stream, save, error recovery" do
-    @chat.user.family.update!(assistant_type: "external")
-
-    # Phase 1: Without config, errors gracefully
-    with_env_overrides("EXTERNAL_ASSISTANT_URL" => nil, "EXTERNAL_ASSISTANT_TOKEN" => nil, "EXTERNAL_ASSISTANT_MODEL" => nil) do
-      Setting.external_assistant_url = nil
-      Setting.external_assistant_token = nil
-      Setting.clear_cache
-
-      assistant = Assistant::External.new(@chat)
-      assistant.respond_to(@message)
-      @chat.reload
-      assert @chat.error.present?
-    end
-
-    # Phase 2: With config, streams response
-    @chat.update!(error: nil)
-
-    sse_body = <<~SSE
-      data: {"choices":[{"delta":{"content":"Based on your accounts, "}}],"model":"ext-agent:main"}
-
-      data: {"choices":[{"delta":{"content":"your net worth is $50,000."}}],"model":"ext-agent:main"}
-
-      data: [DONE]
-
-    SSE
-
-    mock_external_sse_response(sse_body)
-
-    with_env_overrides(
-      "EXTERNAL_ASSISTANT_URL" => "http://localhost:18789/v1/chat",
-      "EXTERNAL_ASSISTANT_TOKEN" => "test-token",
-      "EXTERNAL_ASSISTANT_MODEL" => "openclaw/main"
-    ) do
-      assistant = Assistant::External.new(@chat)
-      assistant_message = pending_assistant_message
-      assistant.respond_to(@message, assistant_message: assistant_message)
-
-      @chat.reload
-      assert_nil @chat.error
-
-      response = assistant_message.reload
-      assert_equal "Based on your accounts, your net worth is $50,000.", response.content
-      assert_equal "ext-agent:main", response.ai_model
-    end
-  end
-
-  test "ASSISTANT_TYPE env override with unknown value falls back to builtin" do
-    with_env_overrides("ASSISTANT_TYPE" => "nonexistent") do
-      assert_instance_of Assistant::Builtin, Assistant.for_chat(@chat)
-    end
-  end
-
-  test "external assistant sets user identifier with family_id" do
-    @chat.user.family.update!(assistant_type: "external")
-    assistant = Assistant.for_chat(@chat)
-
-    sse_body = "data: {\"choices\":[{\"delta\":{\"content\":\"OK\"}}],\"model\":\"m\"}\n\ndata: [DONE]\n\n"
-    capture = mock_external_sse_response(sse_body)
-
-    with_env_overrides(
-      "EXTERNAL_ASSISTANT_URL" => "http://localhost:18789/v1/chat",
-      "EXTERNAL_ASSISTANT_TOKEN" => "test-token",
-      "EXTERNAL_ASSISTANT_MODEL" => "openclaw/main"
-    ) do
-      assistant.respond_to(@message)
-
-      body = JSON.parse(capture[0].body)
-      assert_equal "sure-family-#{@chat.user.family_id}", body["user"]
-    end
-  end
-
-  test "external assistant updates ai_model from SSE response model field" do
-    @chat.user.family.update!(assistant_type: "external")
-    assistant = Assistant.for_chat(@chat)
-
-    sse_body = "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}],\"model\":\"ext-agent:custom\"}\n\ndata: [DONE]\n\n"
-    mock_external_sse_response(sse_body)
-
-    with_env_overrides(
-      "EXTERNAL_ASSISTANT_URL" => "http://localhost:18789/v1/chat",
-      "EXTERNAL_ASSISTANT_TOKEN" => "test-token",
-      "EXTERNAL_ASSISTANT_MODEL" => "openclaw/main"
-    ) do
-      assistant_message = pending_assistant_message
-      assistant.respond_to(@message, assistant_message: assistant_message)
-
-      response = assistant_message.reload
-      assert_equal "ext-agent:custom", response.ai_model
-    end
-  end
-
-  test "for_chat raises when chat is blank" do
-    assert_raises(Assistant::Error) { Assistant.for_chat(nil) }
-  end
-
-  test "builtin demotes a partially-streamed assistant message to failed on error" do
-    @assistant.expects(:get_model_provider).with("gpt-4.1").returns(@provider)
-
-    boom = StandardError.new("boom mid-stream")
-
-    @provider.expects(:chat_response).with do |_prompt, **options|
-      # Simulate a partial text chunk landing before the error propagates.
-      options[:streamer].call(provider_text_chunk("partial tokens "))
-      true
-    end.returns(provider_error_response(boom))
-
-    @assistant.respond_to(@message)
-
-    partial = @chat.messages.where(type: "AssistantMessage").order(:created_at).last
-    assert partial.present?, "partial assistant message should be persisted"
-    assert_equal "failed", partial.status
-    assert_equal "partial tokens ", partial.content
-  end
-
-  test "conversation_history excludes failed and pending messages" do
-    # Add a failed assistant turn; it must NOT leak into history.
-    AssistantMessage.create!(
-      chat: @chat,
-      content: "partial error response",
-      ai_model: "gpt-4.1",
-      status: "failed"
-    )
-
-    @assistant.expects(:get_model_provider).with("gpt-4.1").returns(@provider)
-
-    captured_history = nil
-    @provider.expects(:chat_response).with do |_prompt, **options|
-      captured_history = options[:messages]
-      options[:streamer].call(
-        provider_response_chunk(id: "1", model: "gpt-4.1", messages: [ provider_message(id: "1", text: "ok") ], function_requests: [])
-      )
-      true
-    end.returns(provider_success_response(
-      provider_response_chunk(id: "1", model: "gpt-4.1", messages: [ provider_message(id: "1", text: "ok") ], function_requests: []).data
-    ))
-
-    @assistant.respond_to(@message)
-
-    contents = captured_history.map { |m| m[:content] }
-    assert_not_includes contents, "partial error response"
-  end
-
-  test "conversation_history serializes assistant tool_calls with paired tool result" do
-    assistant_msg = AssistantMessage.create!(
-      chat: @chat,
-      content: "Looking that up",
-      ai_model: "gpt-4.1",
-      status: "complete"
-    )
-
-    ToolCall::Function.create!(
-      message: assistant_msg,
-      provider_id: "call_abc",
-      provider_call_id: "call_abc",
-      function_name: "get_net_worth",
-      function_arguments: { foo: "bar" },
-      function_result: { amount: 1000, currency: "USD" }
-    )
-
-    @assistant.expects(:get_model_provider).with("gpt-4.1").returns(@provider)
-
-    captured_history = nil
-    @provider.expects(:chat_response).with do |_prompt, **options|
-      captured_history = options[:messages]
-      options[:streamer].call(
-        provider_response_chunk(id: "1", model: "gpt-4.1", messages: [ provider_message(id: "1", text: "ok") ], function_requests: [])
-      )
-      true
-    end.returns(provider_success_response(
-      provider_response_chunk(id: "1", model: "gpt-4.1", messages: [ provider_message(id: "1", text: "ok") ], function_requests: []).data
-    ))
-
-    @assistant.respond_to(@message)
-
-    tool_call_entry = captured_history.find { |m| m[:role] == "assistant" && m[:tool_calls].present? }
-    tool_result_entry = captured_history.find { |m| m[:role] == "tool" }
-
-    assert_not_nil tool_call_entry, "tool_call message missing from history"
-    assert_not_nil tool_result_entry, "tool_result message missing from history"
-    assert_equal "call_abc", tool_call_entry[:tool_calls].first[:id]
-    assert_equal "call_abc", tool_result_entry[:tool_call_id]
-    assert_not tool_result_entry.key?(:name), "tool messages must not carry the deprecated `name` field"
-  end
-
   private
-
-    def mock_external_sse_response(sse_body)
-      capture = []
-      mock_response = stub("response")
-      mock_response.stubs(:code).returns("200")
-      mock_response.stubs(:is_a?).with(Net::HTTPSuccess).returns(true)
-      mock_response.stubs(:read_body).yields(sse_body)
-
-      mock_http = stub("http")
-      mock_http.stubs(:use_ssl=)
-      mock_http.stubs(:open_timeout=)
-      mock_http.stubs(:read_timeout=)
-      mock_http.stubs(:request).with do |req|
-        capture[0] = req
-        true
-      end.yields(mock_response)
-
-      Net::HTTP.stubs(:new).returns(mock_http)
-      capture
-    end
-
-    def pending_assistant_message
-      @chat.messages.where(type: "AssistantMessage", status: "pending").order(:created_at).last
-    end
-
     def provider_function_request(id:, call_id:, function_name:, function_args:)
       Provider::LlmConcept::ChatFunctionRequest.new(
         id: id,
@@ -708,26 +205,5 @@ class AssistantTest < ActiveSupport::TestCase
         ),
         usage: usage
       )
-    end
-
-    def expect_provider_rounds(*rounds, expected_function_result_ids: nil)
-      queued_rounds = rounds.dup
-      queued_result_ids = expected_function_result_ids&.dup
-      responses = rounds.map do |chunks|
-        response_chunk = chunks.find { |chunk| chunk.type == "response" }
-        provider_success_response(response_chunk.data)
-      end
-
-      @provider.expects(:chat_response).times(rounds.length).with do |_message, **options|
-        assert_equal @expected_session_id, options[:session_id]
-        assert_equal @expected_user_identifier, options[:user_identifier]
-        assert_equal @expected_conversation_history, options[:messages]
-        if queued_result_ids
-          assert_equal queued_result_ids.shift, options[:function_results].map { |result| result[:call_id] }
-        end
-        chunks = queued_rounds.shift
-        chunks.each { |chunk| options[:streamer].call(chunk) }
-        true
-      end.returns(*responses)
     end
 end

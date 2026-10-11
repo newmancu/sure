@@ -7,14 +7,6 @@ class SimplefinAccount::Investments::HoldingsProcessor
     return if holdings_data.empty?
     return unless [ "Investment", "Crypto" ].include?(account&.accountable_type)
 
-    # SimpleFIN reports one record per LOT, so a single position can arrive as
-    # several records sharing a security -- a 401k that splits employee deferral
-    # from employer match is the common case. `holdings` is uniquely indexed on
-    # (account_id, security_id, date, currency), so importing lots one at a time
-    # makes each overwrite the last and the account silently loses the value of
-    # every lot but one. Combine them into the position they represent first.
-    positions = {}
-
     holdings_data.each do |simplefin_holding|
       begin
         symbol = simplefin_holding["symbol"].presence
@@ -50,13 +42,9 @@ class SimplefinAccount::Investments::HoldingsProcessor
         end
 
         # Parse provider data with robust fallbacks across SimpleFin sources
-        # NOTE: "value" is intentionally excluded from the market_value fallback chain
-        # because some brokerages (e.g. Vanguard, Fidelity) use "value" to mean cost basis,
-        # which would cause the system to display average cost as current price. (GH #1182)
         qty = parse_decimal(any_of(simplefin_holding, %w[shares quantity qty units]))
-        market_value = parse_decimal(any_of(simplefin_holding, %w[market_value current_value]))
-        raw_cost_basis, cost_basis_source_key = cost_basis_from(simplefin_holding)
-        cost_basis = normalize_cost_basis(raw_cost_basis, qty, cost_basis_source_key, institution_reports_total_basis?)
+        market_value = parse_decimal(any_of(simplefin_holding, %w[market_value value current_value]))
+        cost_basis = parse_decimal(any_of(simplefin_holding, %w[cost_basis basis total_cost]))
 
         # Derive price from market_value when possible; otherwise fall back to any price field
         fallback_price = parse_decimal(any_of(simplefin_holding, %w[purchase_price price unit_price average_cost avg_cost]))
@@ -83,82 +71,25 @@ class SimplefinAccount::Investments::HoldingsProcessor
         # Skip zero positions with no value to avoid invisible rows
         next if qty.to_d.zero? && computed_amount.to_d.zero?
 
-        currency = simplefin_holding["currency"].presence || "USD"
-        position = positions[[ security.id, currency, holding_date ]] ||= {
+        saved = import_adapter.import_holding(
           security: security,
-          currency: currency,
+          quantity: qty,
+          amount: computed_amount,
+          currency: simplefin_holding["currency"].presence || "USD",
           date: holding_date,
-          qty: 0.to_d,
-          amount: 0.to_d,
-          # cost_basis is stored PER SHARE, so lots combine into a
-          # share-weighted average rather than a sum. That average is only
-          # meaningful if EVERY lot reported one -- see basis_complete.
-          basis_value: 0.to_d,
-          basis_qty: 0.to_d,
-          basis_complete: true,
-          fallback_price: nil,
-          external_ids: []
-        }
+          price: price,
+          cost_basis: cost_basis,
+          external_id: "simplefin_#{holding_id}",
+          account_provider_id: simplefin_account.account_provider&.id,
+          source: "simplefin",
+          delete_future_holdings: false  # SimpleFin tracks each holding uniquely
+        )
 
-        position[:qty] += qty.to_d
-        position[:amount] += computed_amount.to_d
-        position[:external_ids] << "simplefin_#{holding_id}"
-        position[:fallback_price] ||= price if price.to_d.positive?
-
-        if qty.to_d.positive?
-          if cost_basis.present?
-            position[:basis_value] += cost_basis.to_d * qty.to_d
-            position[:basis_qty] += qty.to_d
-          else
-            # Averaging over only the lots that reported a basis would apply
-            # that figure to shares whose cost is genuinely unknown, inventing
-            # cost and therefore inventing gain/loss. Unknown has to stay
-            # unknown for the whole position.
-            position[:basis_complete] = false
-          end
-        end
+        Rails.logger.debug({ event: "simplefin.holding.saved", account_id: account&.id, holding_id: saved.id, security_id: saved.security_id, qty: saved.qty.to_s, amount: saved.amount.to_s, currency: saved.currency, date: saved.date, external_id: saved.external_id }.to_json)
       rescue => e
         ctx = (defined?(symbol) && symbol.present?) ? " #{symbol}" : ""
         Rails.logger.error "Error processing SimpleFin holding#{ctx}: #{e.message}"
       end
-    end
-
-    positions.each_value do |position|
-      qty = position[:qty]
-      amount = position[:amount]
-
-      price = if qty.positive? && amount.positive?
-        amount / qty
-      else
-        position[:fallback_price] || 0
-      end
-
-      cost_basis = if position[:basis_complete] && position[:basis_qty].positive?
-        position[:basis_value] / position[:basis_qty]
-      end
-
-      # Sorted so the identifier stays stable across syncs when a provider
-      # reorders lots. If the chosen lot later disappears, import_holding falls
-      # back to matching on security/date/currency and updates the same row.
-      external_id = position[:external_ids].sort.first
-
-      saved = import_adapter.import_holding(
-        security: position[:security],
-        quantity: qty,
-        amount: amount,
-        currency: position[:currency],
-        date: position[:date],
-        price: price,
-        cost_basis: cost_basis,
-        external_id: external_id,
-        account_provider_id: simplefin_account.account_provider&.id,
-        source: "simplefin",
-        delete_future_holdings: false  # SimpleFin tracks each holding uniquely
-      )
-
-      Rails.logger.debug({ event: "simplefin.holding.saved", account_id: account&.id, holding_id: saved.id, security_id: saved.security_id, qty: saved.qty.to_s, amount: saved.amount.to_s, currency: saved.currency, date: saved.date, external_id: saved.external_id, lots: position[:external_ids].size }.to_json)
-    rescue => e
-      Rails.logger.error "Error importing SimpleFin position #{position[:security]&.ticker}: #{e.message}"
     end
   end
 
@@ -176,64 +107,6 @@ class SimplefinAccount::Investments::HoldingsProcessor
     def holdings_data
       # Use the dedicated raw_holdings_payload field
       simplefin_account.raw_holdings_payload || []
-    end
-
-    def cost_basis_from(simplefin_holding)
-      %w[cost_basis basis total_cost value].each do |key|
-        raw = simplefin_holding[key]
-        next if raw.nil? || raw.to_s.strip.empty?
-
-        return [ parse_decimal(raw), key ]
-      end
-
-      [ nil, nil ]
-    end
-
-    # Sure stores holding cost_basis as per-share average cost. SimpleFIN
-    # brokerages are inconsistent about which field carries which shape:
-    #
-    #   - total_cost / value: always a total position cost per the SimpleFIN
-    #     spec and observed payloads; divide by qty unconditionally.
-    #   - cost_basis / basis: the spec calls this per-share, and most
-    #     brokerages comply. Keep these values unchanged by default.
-    #
-    # Exception: a small allowlist of brokerages (Vanguard, Fidelity, Schwab)
-    # is known to populate cost_basis with the total position cost in
-    # violation of the spec (#1718, #1182, #2626). For those connections
-    # only, divide by qty.
-    #
-    # An earlier revision of this fix used a magnitude heuristic
-    # (share_price × √qty midpoint). It was withdrawn because a legitimate
-    # per-share basis on a holding with a large unrealized loss
-    # (e.g. 100 shares with basis $100 now worth $5) trips the midpoint and
-    # gets mis-divided to $1/share — corrupting compliant providers. The
-    # allowlist trades some manual maintenance for that safety.
-    def normalize_cost_basis(raw_cost_basis, qty, source_key, total_basis_institution = false)
-      return nil if raw_cost_basis.nil?
-
-      if %w[total_cost value].include?(source_key) ||
-         (total_basis_institution && %w[cost_basis basis].include?(source_key))
-        return nil unless qty.to_d.positive?
-        return raw_cost_basis / qty
-      end
-
-      raw_cost_basis
-    end
-
-    # Institutions known to populate the SimpleFIN `cost_basis` / `basis`
-    # field with the total position cost rather than the per-share value the
-    # spec requires. Matched as case-insensitive substrings against the
-    # account's stored org name and domain.
-    TOTAL_BASIS_INSTITUTIONS = %w[vanguard fidelity schwab etrade e*trade].freeze
-
-    def institution_reports_total_basis?
-      org = simplefin_account.respond_to?(:org_data) ? simplefin_account.org_data : nil
-      return false if org.blank?
-
-      candidates = [ org["name"], org[:name], org["domain"], org[:domain] ].compact.map(&:to_s).map(&:downcase)
-      return false if candidates.empty?
-
-      TOTAL_BASIS_INSTITUTIONS.any? { |needle| candidates.any? { |c| c.include?(needle) } }
     end
 
     def resolve_security(symbol, description)

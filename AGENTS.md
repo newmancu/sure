@@ -1,43 +1,65 @@
-# Repository guidance
+# Repository Guidelines
 
-## Working in the repository
+## Project Structure & Module Organization
+- Code: `app/` (Rails MVC, services, jobs, mailers, components), JS in `app/javascript/`, styles/assets in `app/assets/` (Tailwind, images, fonts).
+- Config: `config/`, environment examples in `.env.local.example` and `.env.test.example`.
+- Data: `db/` (migrations, seeds), fixtures in `test/fixtures/`.
+- Tests: `test/` mirroring `app/` (e.g., `test/models/*_test.rb`).
+- Tooling: `bin/` (project scripts), `docs/` (guides), `public/` (static), `lib/` (shared libs).
 
-- Read [architecture and conventions](docs/llm-guides/architecture.md) before changing code, and the relevant [task guides](docs/llm-guides/README.md).
-- Rails code lives in `app/`; keep business logic in models, concerns and POROs, with thin controllers. JavaScript is in `app/javascript/`, components in `app/components/`, assets in `app/assets/`, and configuration in `config/`.
-- Minitest tests mirror `app/` under `test/`; fixtures are in `test/fixtures/`. Migrations and schema are in `db/`, scripts in `bin/`, shared libraries in `lib/`.
-- Use `Current.user` and `Current.family`, never `current_user` or `current_family`. Preserve family tenancy and existing authorization boundaries.
-- Prefer built-in Rails patterns and established dependencies. New dependencies need a strong technical or business reason. Keep changes focused, readable and consistent with nearby code.
-- Ruby uses two-space indentation, `snake_case` methods/variables and `CamelCase` classes. JavaScript uses `lowerCamelCase` variables/functions and `PascalCase` classes; follow Biome. Keep domain logic out of ERB.
-- Never commit secrets; use environment variables and `.env.local` for local configuration.
-- Do not start `rails server`, touch `tmp/restart.txt`, run `rails credentials`, or automatically run migrations. Setup and database commands in the [development guide](docs/llm-guides/development.md) are for explicitly requested environment work.
-- New migrations use the current Rails migration version; leave historical migration versions intact.
+## Build, Test, and Development Commands
+- Setup: `cp .env.local.example .env.local && bin/setup` — install deps, set DB, prepare app.
+- Run app: `bin/dev` — starts Rails server and asset/watchers via `Procfile.dev`.
+- Test suite: `bin/rails test` — run all Minitest tests; add `TEST=test/models/user_test.rb` to target a file.
+- Lint Ruby: `bin/rubocop` — style checks; add `-A` to auto-correct safe cops.
+- Lint/format JS/CSS: `npm run lint` and `npm run format` — uses Biome.
+- Security scan: `bin/brakeman` — static analysis for common Rails issues.
 
-## Tests and pull requests
+## Coding Style & Naming Conventions
+- Ruby: 2-space indent, `snake_case` for methods/vars, `CamelCase` for classes/modules. Follow Rails conventions for folders and file names.
+- Views: ERB checked by `erb-lint` (see `.erb_lint.yml`). Avoid heavy logic in views; prefer helpers/components.
+- JavaScript: `lowerCamelCase` for vars/functions, `PascalCase` for classes/components. Let Biome format code.
+- Commit small, cohesive changes; keep diffs focused.
 
-- Use Minitest and fixtures for behavioral tests, with Mocha and VCR where needed. RSpec/rswag is for OpenAPI documentation only. Follow the [testing guide](docs/llm-guides/testing.md).
-- Run `bin/rails test` and ensure it is green before pushing. Before opening a PR, run **all** checks in the [pre-PR checklist](docs/llm-guides/development.md#before-opening-a-pull-request): full Rails tests, applicable system tests, Ruby and ERB lint, Biome and Brakeman. Only create the PR when all required checks pass.
-- Commits use imperative subjects of at most 72 characters, with rationale and issue references where relevant. Target `main` with small, cohesive changes.
-- PRs explain the problem, resulting behavior and validation; link issues and include screenshots for UI changes and migration notes when applicable. Ensure CI passes and the branch is up to date before requesting review; see [CONTRIBUTING.md](CONTRIBUTING.md).
+## Testing Guidelines
+- Framework: Minitest (Rails). Name files `*_test.rb` and mirror `app/` structure.
+- Run: `bin/rails test` locally and ensure green before pushing.
+- Fixtures/VCR: Use `test/fixtures` and existing VCR cassettes for HTTP. Prefer unit tests plus focused integration tests.
 
-## UI changes
+## Commit & Pull Request Guidelines
+- Commits: Imperative subject ≤ 72 chars (e.g., "Add account balance validation"). Include rationale in body and reference issues (`#123`).
+- PRs: Clear description, linked issues, screenshots for UI changes, and migration notes if applicable. Ensure CI passes, tests added/updated, and `rubocop`/Biome are clean.
 
-When touching ERB, view components or CSS, follow the [design system guide](docs/llm-guides/design-system.md):
+## Security & Configuration Tips
+- Never commit secrets. Start from `.env.local.example`; use `.env.local` for development only.
+- Run `bin/brakeman` before major PRs. Prefer environment variables over hard-coded values.
 
-- Use functional tokens from `app/assets/tailwind/sure-design-system.css`, such as `bg-container`, `text-primary`, `border-primary`, `bg-warning/10` and `text-destructive`. No raw Tailwind palette classes or hex literals.
-- Check `app/components/DS/` first for alerts, badges, buttons, disclosures, dialogs and inputs. Use existing `DS::*` primitives.
-- If the same hand-built shape appears at least twice in a diff with no DS equivalent, propose a new `DS::*` primitive before the second copy lands.
-- Use the `icon` helper, never `lucide_icon` directly; no raw SVG outside DS primitives. Use `t()` for user-facing strings and scale tokens instead of arbitrary pixel values when a scale token fits.
-- Adding styles to `app/assets/tailwind/sure-design-system.css` or `app/assets/tailwind/application.css` requires explicit permission.
-- Reviewers escalate DS reuse and repeated-shape violations to close/rewrite; token and icon/SVG/localization/scale violations are request-changes.
+## Providers: Pending Transactions and FX Metadata (SimpleFIN/Plaid/Lunchflow)
 
-## API changes
+- Pending detection
+  - SimpleFIN: pending when provider sends `pending: true`, or when `posted` is blank/0 and `transacted_at` is present.
+  - Plaid: pending when Plaid sends `pending: true` (stored at `transaction.extra["plaid"]["pending"]` for bank/credit transactions imported via `PlaidEntry::Processor`).
+  - Lunchflow: pending when API returns `isPending: true` in transaction response (stored at `transaction.extra["lunchflow"]["pending"]`).
+- Storage (extras)
+  - Provider metadata lives on `Transaction#extra`, namespaced (e.g., `extra["simplefin"]["pending"]`).
+  - SimpleFIN FX: `extra["simplefin"]["fx_from"]`, `extra["simplefin"]["fx_date"]`.
+- UI
+  - Shows a small “Pending” badge when `transaction.pending?` is true.
+- Variability
+  - Some providers don’t expose pendings; in that case nothing is shown.
+- Configuration (default-off)
+  - SimpleFIN runtime toggles live in `config/initializers/simplefin.rb` via `Rails.configuration.x.simplefin.*`.
+  - Lunchflow runtime toggles live in `config/initializers/lunchflow.rb` via `Rails.configuration.x.lunchflow.*`.
+  - ENV-backed keys:
+    - `SIMPLEFIN_INCLUDE_PENDING=1` (forces `pending=1` on SimpleFIN fetches when caller didn’t specify a `pending:` arg)
+    - `SIMPLEFIN_DEBUG_RAW=1` (logs raw payload returned by SimpleFIN)
+    - `LUNCHFLOW_INCLUDE_PENDING=1` (forces `include_pending=true` on Lunchflow API requests)
+    - `LUNCHFLOW_DEBUG_RAW=1` (logs raw payload returned by Lunchflow)
 
-Adding or modifying `app/controllers/api/v1/` endpoints requires Minitest behavioral coverage and corresponding **documentation-only** rswag specs in `spec/requests/api/v1/`. Reusable schemas belong in `spec/swagger_helper.rb`; regenerate `docs/api/openapi.yaml` with `RAILS_ENV=test bundle exec rake rswag:specs:swaggerize` after changes.
+### Provider support notes
 
-**Post-commit API consistency:** after every API endpoint commit, follow the [API checklist](docs/llm-guides/api-endpoint-consistency.md): Minitest coverage, no behavioral assertions in rswag, and the shared `X-Api-Key` authentication pattern in those tests/specs.
-
-## Provider and feature work
-
-- Read [provider sync guidance](docs/llm-guides/providers.md) when changing imports, pending transactions, FX metadata or diagnostics. Use `DebugLogEntry.capture(...)` for support-relevant failures and partial responses, with provider/source metadata and family/account-provider context where available.
-- For securities providers, follow [adding a securities provider](docs/llm-guides/adding-a-securities-provider.md).
-- For feature rollout, follow [preview-feature gating](docs/llm-guides/gating-a-preview-feature.md); for goals, read the [Goals guide](docs/llm-guides/goals.md).
+- SimpleFIN: supports pending + FX metadata; stored under `extra["simplefin"]`.
+- Plaid: supports pending when the upstream Plaid payload includes `pending: true`; stored under `extra["plaid"]`.
+- Plaid investments: investment transactions currently do not store pending metadata.
+- Lunchflow: supports pending via `include_pending` query parameter; stored under `extra["lunchflow"]`.
+- Manual/CSV imports: no pending concept.

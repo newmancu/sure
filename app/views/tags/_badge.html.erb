@@ -1,10 +1,10 @@
 <%# locals: (tag:) %>
 <% tag ||= null_category %>
-<span class="border text-sm font-medium px-3 py-1 rounded-full inline-flex items-center gap-2"
+
+<span class="border text-sm font-medium px-2.5 py-1 rounded-full content-center"
       style="
-        background-color: color-mix(in oklab, <%= tag.color %> 10%, transparent);
-        border-color: color-mix(in oklab, <%= tag.color %> 10%, transparent);
+      background-color: color-mix(in srgb, <%= tag.color %> 5%, white);
+        border-color: color-mix(in srgb, <%= tag.color %> 10%, white);
         color: <%= tag.color %>;">
-  <span class="size-1.5 rounded-full" style="background-color: <%= tag.color %>;"></span>
   <%= tag.name %>
 </span>

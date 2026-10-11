@@ -21,7 +21,7 @@ class Api::V1::SyncController < Api::V1::BaseController
 
     render json: {
       error: "internal_server_error",
-      message: "An unexpected error occurred"
+      message: "Error: #{e.message}"
     }, status: :internal_server_error
   end
 

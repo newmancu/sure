@@ -8,28 +8,21 @@ class OnboardingsTest < ApplicationSystemTestCase
     # Reset onboarding state
     @user.update!(set_onboarding_preferences_at: nil)
 
-    # Force English locale for tests
-    I18n.locale = :en
-
     sign_in @user
-  end
-
-  teardown do
-    I18n.locale = I18n.default_locale
   end
 
   test "can complete the full onboarding flow" do
     # Start at the main onboarding page
     visit onboarding_path
 
-    assert_text I18n.t("onboardings.show.title")
-    assert_button I18n.t("onboardings.show.submit")
+    assert_text "Let's set up your account"
+    assert_button "Continue"
 
     # Navigate to preferences
-    click_button I18n.t("onboardings.show.submit")
+    click_button "Continue"
 
     assert_current_path preferences_onboarding_path
-    assert_text I18n.t("onboardings.preferences.title")
+    assert_text "Configure your preferences"
 
     # Test that the chart renders without errors (this would catch the Series bug)
     assert_selector "[data-controller='time-series-chart']"
@@ -38,46 +31,14 @@ class OnboardingsTest < ApplicationSystemTestCase
     select "English (en)", from: "user_family_attributes_locale"
     select "United States Dollar (USD)", from: "user_family_attributes_currency"
     select "MM/DD/YYYY", from: "user_family_attributes_date_format"
-    select_theme("light")
+    select "Light", from: "user_theme"
 
     # Submit preferences
-    click_button I18n.t("onboardings.preferences.submit")
+    click_button "Complete"
 
     # Should redirect to goals page
     assert_current_path goals_onboarding_path
-    assert_text I18n.t("onboardings.goals.title")
-  end
-
-  test "browser locale defaults onboarding country and currency" do
-    @family.update!(country: "US", currency: "USD")
-    set_browser_language("en-CA")
-
-    visit onboarding_path
-
-    assert_equal "CA", find("#user_family_attributes_country").value
-
-    click_button I18n.t("onboardings.show.submit")
-    assert_current_path preferences_onboarding_path
-
-    assert_equal "CAD", find("#user_family_attributes_currency").value
-
-    click_button I18n.t("onboardings.preferences.submit")
-    assert_current_path goals_onboarding_path
-
-    @family.reload
-    assert_equal "CA", @family.country
-    assert_equal "CAD", @family.currency
-  end
-
-  test "saved currency stays authoritative after onboarding controller connects" do
-    @family.update!(country: "CA", currency: "USD")
-    @user.update!(set_onboarding_preferences_at: Time.current)
-    set_browser_language("en-CA")
-
-    visit preferences_onboarding_path
-
-    assert_selector "[data-onboarding-currency-override-value='true']"
-    assert_equal "USD", find("#user_family_attributes_currency").value
+    assert_text "What brings you here?"
   end
 
   test "preferences page renders chart without errors" do
@@ -98,7 +59,7 @@ class OnboardingsTest < ApplicationSystemTestCase
     end
 
     # Verify the preview example shows
-    assert_text I18n.t("onboardings.preferences.example")
+    assert_text "Example"
     assert_text "$2,325.25"
     assert_text "+$78.90"
   end
@@ -111,7 +72,7 @@ class OnboardingsTest < ApplicationSystemTestCase
 
     # The preview should update (this tests the JavaScript controller)
     # Note: This would require the onboarding controller to handle currency changes
-    assert_text I18n.t("onboardings.preferences.example")
+    assert_text "Example"
   end
 
   test "can change date format and see preview update" do
@@ -121,17 +82,17 @@ class OnboardingsTest < ApplicationSystemTestCase
     select "DD/MM/YYYY", from: "user_family_attributes_date_format"
 
     # The preview should update
-    assert_text I18n.t("onboardings.preferences.example")
+    assert_text "Example"
   end
 
   test "can change theme" do
     visit preferences_onboarding_path
 
-    # Change theme using value instead of label
-    select_theme("dark")
+    # Change theme
+    select "Dark", from: "user_theme"
 
     # Theme should be applied (this tests the JavaScript controller)
-    assert_text I18n.t("onboardings.preferences.example")
+    assert_text "Example"
   end
 
   test "preferences form validation" do
@@ -139,7 +100,7 @@ class OnboardingsTest < ApplicationSystemTestCase
 
     # Clear required fields and try to submit
     select "", from: "user_family_attributes_locale"
-    click_button I18n.t("onboardings.preferences.submit")
+    click_button "Complete"
 
     # Should stay on preferences page with validation errors (may have query params)
     assert_match %r{/onboarding/preferences}, current_path
@@ -152,7 +113,7 @@ class OnboardingsTest < ApplicationSystemTestCase
     select "Spanish (es)", from: "user_family_attributes_locale"
     select "Euro (EUR)", from: "user_family_attributes_currency"
     select "DD/MM/YYYY", from: "user_family_attributes_date_format"
-    select_theme("dark")
+    select "Dark", from: "user_theme"
 
     # Button text is in Spanish due to locale preview
     click_button I18n.t("onboardings.preferences.submit", locale: :es)
@@ -177,20 +138,20 @@ class OnboardingsTest < ApplicationSystemTestCase
 
     visit goals_onboarding_path
 
-    assert_text I18n.t("onboardings.goals.title")
-    assert_button I18n.t("onboardings.goals.submit")
+    assert_text "What brings you here?"
+    assert_button "Next"
   end
 
   test "trial page renders correctly" do
     visit trial_onboarding_path
 
-    assert_text "Sure"
+    assert_text "Try Sure"
   end
 
   test "navigation between onboarding steps" do
     # Start at main onboarding
     visit onboarding_path
-    click_button I18n.t("onboardings.show.submit")
+    click_button "Continue"
 
     # Should be at preferences
     assert_current_path preferences_onboarding_path
@@ -199,7 +160,7 @@ class OnboardingsTest < ApplicationSystemTestCase
     select "English (en)", from: "user_family_attributes_locale"
     select "United States Dollar (USD)", from: "user_family_attributes_currency"
     select "MM/DD/YYYY", from: "user_family_attributes_date_format"
-    click_button I18n.t("onboardings.preferences.submit")
+    click_button "Complete"
 
     # Should be at goals
     assert_current_path goals_onboarding_path
@@ -216,34 +177,17 @@ class OnboardingsTest < ApplicationSystemTestCase
     visit preferences_onboarding_path
 
     # Should have logout option (rendered as a button component)
-    assert_text I18n.t("onboardings.logout.sign_out")
+    assert_text "Sign out"
   end
 
   private
-    def select_theme(value)
-      find("#user_theme", visible: :all)
-        .find("option[value='#{value}']", visible: :all)
-        .select_option
-    end
-
-    def set_browser_language(language)
-      page.driver.browser.execute_cdp(
-        "Page.addScriptToEvaluateOnNewDocument",
-        source: <<~JS
-          Object.defineProperty(navigator, "language", {
-            get: () => "#{language}",
-            configurable: true
-          });
-        JS
-      )
-    end
 
     def sign_in(user)
       visit new_session_path
       within %(form[action='#{sessions_path}']) do
-        fill_in I18n.t("sessions.new.email"), with: user.email
-        fill_in I18n.t("sessions.new.password"), with: user_password_test
-        click_on I18n.t("sessions.new.submit")
+        fill_in "Email", with: user.email
+        fill_in "Password", with: user_password_test
+        click_on "Log in"
       end
 
       # Wait for successful login

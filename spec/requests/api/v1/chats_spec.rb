@@ -83,7 +83,11 @@ RSpec.describe 'API V1 Chats', type: :request do
       response '200', 'chats listed' do
         schema '$ref' => '#/components/schemas/ChatCollection'
 
-        run_test!
+        run_test! do |response|
+          payload = JSON.parse(response.body)
+          expect(payload.fetch('chats')).to be_present
+          expect(payload.fetch('pagination')).to include('page', 'per_page', 'total_count', 'total_pages')
+        end
       end
 
       response '403', 'AI features disabled' do
@@ -128,7 +132,11 @@ RSpec.describe 'API V1 Chats', type: :request do
       response '201', 'chat created' do
         schema '$ref' => '#/components/schemas/ChatDetail'
 
-        run_test!
+        run_test! do |response|
+          payload = JSON.parse(response.body)
+          chat_record = Chat.find(payload.fetch('id'))
+          expect(chat_record.messages.first.content).to eq('Can you help me plan a summer trip?')
+        end
       end
 
       response '422', 'validation error' do
@@ -154,7 +162,10 @@ RSpec.describe 'API V1 Chats', type: :request do
       response '200', 'chat retrieved' do
         schema '$ref' => '#/components/schemas/ChatDetail'
 
-        run_test!
+        run_test! do |response|
+          payload = JSON.parse(response.body)
+          expect(payload.fetch('messages').size).to be >= 1
+        end
       end
 
       response '404', 'chat not found' do
@@ -186,7 +197,10 @@ RSpec.describe 'API V1 Chats', type: :request do
       response '200', 'chat updated' do
         schema '$ref' => '#/components/schemas/ChatDetail'
 
-        run_test!
+        run_test! do |response|
+          payload = JSON.parse(response.body)
+          expect(payload.fetch('title')).to eq('Updated budget plan')
+        end
       end
 
       response '404', 'chat not found' do
@@ -255,7 +269,10 @@ RSpec.describe 'API V1 Chats', type: :request do
       response '201', 'message created' do
         schema '$ref' => '#/components/schemas/MessageResponse'
 
-        run_test!
+        run_test! do |response|
+          payload = JSON.parse(response.body)
+          expect(payload.fetch('ai_response_status')).to eq('pending')
+        end
       end
 
       response '404', 'chat not found' do
@@ -293,7 +310,10 @@ RSpec.describe 'API V1 Chats', type: :request do
           allow_any_instance_of(AssistantMessage).to receive(:valid?).and_return(true)
         end
 
-        run_test!
+        run_test! do |response|
+          payload = JSON.parse(response.body)
+          expect(payload.fetch('message')).to eq('Retry initiated')
+        end
       end
 
       response '404', 'chat not found' do

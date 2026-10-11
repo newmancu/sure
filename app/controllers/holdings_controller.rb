@@ -1,17 +1,11 @@
 class HoldingsController < ApplicationController
-  include StreamExtensions
-
-  before_action :set_holding, only: %i[show update destroy unlock_cost_basis remap_security reset_security sync_prices]
-  before_action :require_holding_write_permission!, only: %i[update destroy unlock_cost_basis remap_security reset_security sync_prices]
+  before_action :set_holding, only: %i[show update destroy unlock_cost_basis remap_security reset_security]
 
   def index
-    @account = accessible_accounts.find(params[:account_id])
-    @current_holdings = @account.current_holdings
-    @trade_republic_categories = trade_republic_categories_for(@account)
+    @account = Current.family.accounts.find(params[:account_id])
   end
 
   def show
-    @last_price_updated = @holding.security.prices.maximum(:updated_at)
   end
 
   def update
@@ -44,7 +38,7 @@ class HoldingsController < ApplicationController
       @holding.destroy_holding_and_entries!
       flash[:notice] = t(".success")
     else
-      flash[:alert] = t(".cannot_delete")
+      flash[:alert] = "You cannot delete this holding"
     end
 
     respond_to do |format|
@@ -54,87 +48,34 @@ class HoldingsController < ApplicationController
   end
 
   def remap_security
-    # Combobox returns "TICKER|EXCHANGE|PROVIDER" format
-    parsed = Security.parse_combobox_id(params[:security_id])
+    # Combobox returns "TICKER|EXCHANGE" format
+    ticker, exchange = params[:security_id].to_s.split("|")
 
     # Validate ticker is present (form has required: true, but can be bypassed)
-    if parsed[:ticker].blank?
+    if ticker.blank?
       flash[:alert] = t(".security_not_found")
       redirect_to account_path(@holding.account, tab: "holdings")
       return
     end
 
-    # The user explicitly selected this security from provider search results,
-    # so we use the combobox data directly — no need to re-resolve via provider APIs.
-    new_security = Security.find_or_initialize_by(
-      ticker: parsed[:ticker],
-      exchange_operating_mic: parsed[:exchange_operating_mic]
-    )
+    new_security = Security::Resolver.new(
+      ticker,
+      exchange_operating_mic: exchange,
+      country_code: Current.family.country
+    ).resolve
 
-    # Honor the user's provider choice (validated by model inclusion check on save)
-    new_security.price_provider = parsed[:price_provider] if parsed[:price_provider].present?
-
-    # Bring it online — user explicitly selected it from provider search results,
-    # so we know the provider can handle it.
-    new_security.offline = false
-    new_security.failed_fetch_count = 0
-    new_security.failed_fetch_at = nil
-
-    new_security.save!
+    if new_security.nil?
+      flash[:alert] = t(".security_not_found")
+      redirect_to account_path(@holding.account, tab: "holdings")
+      return
+    end
 
     @holding.remap_security!(new_security)
-
-    # Re-materialize holdings with the new security's prices.
-    # Reload account to avoid stale associations from remap_security!.
-    # The around_action :switch_timezone already sets the family timezone
-    # for this request, so Date.current is correct here.
-    account = Account.find(@holding.account_id)
-    strategy = account.linked? ? :reverse : :forward
-    Balance::Materializer.new(account, strategy: strategy, security_ids: [ new_security.id ]).materialize_balances
-
     flash[:notice] = t(".success")
 
     respond_to do |format|
       format.html { redirect_to account_path(@holding.account, tab: "holdings") }
       format.turbo_stream { render turbo_stream: turbo_stream.action(:redirect, account_path(@holding.account, tab: "holdings")) }
-    end
-  end
-
-  def sync_prices
-    security = @holding.security
-
-    if security.offline?
-      redirect_to account_path(@holding.account, tab: "holdings"),
-                  alert: t("holdings.sync_prices.unavailable")
-      return
-    end
-
-    prices_updated, @provider_error = security.import_provider_prices(
-      start_date: 31.days.ago.to_date,
-      end_date: Date.current,
-      clear_cache: true
-    )
-    security.import_provider_details
-
-    @last_price_updated = @holding.security.prices.maximum(:updated_at)
-
-    if prices_updated == 0
-      @provider_error = @provider_error.presence || t("holdings.sync_prices.provider_error")
-      respond_to do |format|
-        format.html { redirect_to account_path(@holding.account, tab: "holdings"), alert: @provider_error }
-        format.turbo_stream
-      end
-      return
-    end
-
-    strategy = @holding.account.linked? ? :reverse : :forward
-    Balance::Materializer.new(@holding.account, strategy: strategy, security_ids: [ @holding.security_id ]).materialize_balances
-    @holding.reload
-    @last_price_updated = @holding.security.prices.maximum(:updated_at)
-
-    respond_to do |format|
-      format.html { redirect_to account_path(@holding.account, tab: "holdings"), notice: t("holdings.sync_prices.success") }
-      format.turbo_stream
     end
   end
 
@@ -149,35 +90,8 @@ class HoldingsController < ApplicationController
   end
 
   private
-
-    def trade_republic_categories_for(account)
-      provider = account.account_providers.includes(:provider).map(&:provider).find do |candidate|
-        candidate.is_a?(TradeRepublicAccount) && candidate.portfolio?
-      end
-      return if provider.blank?
-
-      values = provider.positions.group_by { |position| position["category"].presence || "brokerage" }
-      TradeRepublicClientCategories::ALL.index_with do |category|
-        positions = values.fetch(category, [])
-        {
-          count: positions.size,
-          value: positions.sum do |position|
-            quantity = position["quantity"].presence&.to_d || BigDecimal("0")
-            price = position["price"].presence&.to_d || BigDecimal("0")
-            quantity * price
-          end
-        }
-      end
-    end
     def set_holding
-      @holding = Current.family.holdings
-                   .joins(:account)
-                   .merge(Account.accessible_by(Current.user))
-                   .find(params[:id])
-    end
-
-    def require_holding_write_permission!
-      require_account_permission!(@holding.account)
+      @holding = Current.family.holdings.find(params[:id])
     end
 
     def holding_params

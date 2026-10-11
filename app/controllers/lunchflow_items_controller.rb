@@ -1,6 +1,5 @@
 class LunchflowItemsController < ApplicationController
   before_action :set_lunchflow_item, only: [ :show, :edit, :update, :destroy, :sync, :setup_accounts, :complete_account_setup ]
-  before_action :require_admin!, only: [ :new, :create, :preload_accounts, :select_accounts, :link_accounts, :select_existing_account, :link_existing_account, :edit, :update, :destroy, :sync, :setup_accounts, :complete_account_setup ]
 
   def index
     @lunchflow_items = Current.family.lunchflow_items.active.ordered
@@ -120,7 +119,7 @@ class LunchflowItemsController < ApplicationController
              layout: false
     rescue StandardError => e
       Rails.logger.error("Unexpected error in select_accounts: #{e.class}: #{e.message}")
-      @error_message = t("lunchflow_items.api_error.unexpected_error")
+      @error_message = "An unexpected error occurred. Please try again later."
       @return_path = safe_return_to_path
       render partial: "lunchflow_items/api_error",
              locals: { error_message: @error_message, return_path: @return_path },
@@ -324,7 +323,7 @@ class LunchflowItemsController < ApplicationController
              layout: false
     rescue StandardError => e
       Rails.logger.error("Unexpected error in select_existing_account: #{e.class}: #{e.message}")
-      @error_message = t("lunchflow_items.api_error.unexpected_error")
+      @error_message = "An unexpected error occurred. Please try again later."
       render partial: "lunchflow_items/api_error",
              locals: { error_message: @error_message, return_path: accounts_path },
              layout: false
@@ -417,9 +416,32 @@ class LunchflowItemsController < ApplicationController
       # Trigger initial sync to fetch accounts
       @lunchflow_item.sync_later
 
-      redirect_to accounts_path, notice: t(".success"), status: :see_other
+      if turbo_frame_request?
+        flash.now[:notice] = t(".success")
+        @lunchflow_items = Current.family.lunchflow_items.ordered
+        render turbo_stream: [
+          turbo_stream.replace(
+            "lunchflow-providers-panel",
+            partial: "settings/providers/lunchflow_panel",
+            locals: { lunchflow_items: @lunchflow_items }
+          ),
+          *flash_notification_stream_items
+        ]
+      else
+        redirect_to accounts_path, notice: t(".success"), status: :see_other
+      end
     else
-      render_provider_panel("lunchflow", alert: @lunchflow_item.errors.full_messages.join(", "))
+      @error_message = @lunchflow_item.errors.full_messages.join(", ")
+
+      if turbo_frame_request?
+        render turbo_stream: turbo_stream.replace(
+          "lunchflow-providers-panel",
+          partial: "settings/providers/lunchflow_panel",
+          locals: { error_message: @error_message }
+        ), status: :unprocessable_entity
+      else
+        render :new, status: :unprocessable_entity
+      end
     end
   end
 
@@ -428,9 +450,32 @@ class LunchflowItemsController < ApplicationController
 
   def update
     if @lunchflow_item.update(lunchflow_params)
-      render_provider_panel("lunchflow", notice: t(".success"), fallback_path: accounts_path)
+      if turbo_frame_request?
+        flash.now[:notice] = t(".success")
+        @lunchflow_items = Current.family.lunchflow_items.ordered
+        render turbo_stream: [
+          turbo_stream.replace(
+            "lunchflow-providers-panel",
+            partial: "settings/providers/lunchflow_panel",
+            locals: { lunchflow_items: @lunchflow_items }
+          ),
+          *flash_notification_stream_items
+        ]
+      else
+        redirect_to accounts_path, notice: t(".success"), status: :see_other
+      end
     else
-      render_provider_panel("lunchflow", alert: @lunchflow_item.errors.full_messages.join(", "))
+      @error_message = @lunchflow_item.errors.full_messages.join(", ")
+
+      if turbo_frame_request?
+        render turbo_stream: turbo_stream.replace(
+          "lunchflow-providers-panel",
+          partial: "settings/providers/lunchflow_panel",
+          locals: { error_message: @error_message }
+        ), status: :unprocessable_entity
+      else
+        render :edit, status: :unprocessable_entity
+      end
     end
   end
 
@@ -488,17 +533,15 @@ class LunchflowItemsController < ApplicationController
     @account_type_options = [ [ t(".account_types.skip"), "skip" ] ] + all_account_type_options
 
     # Helper to translate subtype options
-    translate_subtypes = ->(type_key, accountable_class) {
-      accountable_class::SUBTYPES.keys.map do |key|
-        [ t(".subtypes.#{type_key}.#{key}", default: accountable_class.long_subtype_label_for(key)), key ]
-      end
+    translate_subtypes = ->(type_key, subtypes_hash) {
+      subtypes_hash.keys.map { |k| [ t(".subtypes.#{type_key}.#{k}"), k ] }
     }
 
     # Subtype options for each account type (only include supported types)
     all_subtype_options = {
       "Depository" => {
         label: t(".subtype_labels.depository"),
-        options: translate_subtypes.call("depository", Depository)
+        options: translate_subtypes.call("depository", Depository::SUBTYPES)
       },
       "CreditCard" => {
         label: t(".subtype_labels.credit_card"),
@@ -507,11 +550,11 @@ class LunchflowItemsController < ApplicationController
       },
       "Investment" => {
         label: t(".subtype_labels.investment"),
-        options: translate_subtypes.call("investment", Investment)
+        options: translate_subtypes.call("investment", Investment::SUBTYPES)
       },
       "Loan" => {
         label: t(".subtype_labels.loan"),
-        options: translate_subtypes.call("loan", Loan)
+        options: translate_subtypes.call("loan", Loan::SUBTYPES)
       },
       "OtherAsset" => {
         label: t(".subtype_labels.other_asset").presence,
@@ -598,7 +641,7 @@ class LunchflowItemsController < ApplicationController
     rescue StandardError => e
       Rails.logger.error("LunchFlow account setup failed unexpectedly: #{e.class} - #{e.message}")
       Rails.logger.error(e.backtrace.first(10).join("\n"))
-      flash[:alert] = t(".creation_failed", error: t(".unexpected_error"))
+      flash[:alert] = t(".creation_failed", error: "An unexpected error occurred")
       redirect_to accounts_path, status: :see_other
       return
     end

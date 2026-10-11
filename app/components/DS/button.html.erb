@@ -1,13 +1,13 @@
 <%= container do %>
   <% if icon && (icon_position != :right) %>
-    <%= helpers.icon(icon, size: size, color: icon_color, custom: icon_custom, class: icon_classes) %>
+    <%= helpers.icon(icon, size: size, color: icon_color, class: icon_classes) %>
   <% end %>
 
   <% unless icon_only? %>
-    <span class="min-w-0 truncate"><%= text %></span>
+    <%= text %>
   <% end %>
 
   <% if icon && icon_position == :right %>
-    <%= helpers.icon(icon, size: size, color: icon_color, custom: icon_custom) %>
+    <%= helpers.icon(icon, size: size, color: icon_color) %>
   <% end %>
 <% end %>

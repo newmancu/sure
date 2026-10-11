@@ -1,58 +1,23 @@
-import 'dart:async';
-
 import 'package:flutter/foundation.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import 'log_service.dart';
-import 'telemetry_service.dart';
 
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
   static Database? _database;
-  static final Map<String, Map<String, dynamic>> _memoryTransactions = {};
-  static final Map<String, Map<String, dynamic>> _memoryAccounts = {};
-  static bool _webStorageLogged = false;
   final LogService _log = LogService.instance;
 
   DatabaseHelper._init();
 
-  bool get _useInMemoryStore => kIsWeb;
-
-  void _ensureWebStoreReady() {
-    if (!_useInMemoryStore || _webStorageLogged) return;
-    _webStorageLogged = true;
-    _log.info(
-      'DatabaseHelper',
-      'Using in-memory storage on web (sqflite is not supported in browser builds).',
-    );
-  }
-
-  int _compareDesc(String? left, String? right) {
-    return (right ?? '').compareTo(left ?? '');
-  }
-
-  int _compareAsc(String? left, String? right) {
-    return (left ?? '').compareTo(right ?? '');
-  }
-
   Future<Database> get database async {
-    if (_useInMemoryStore) {
-      _ensureWebStoreReady();
-      throw StateError('sqflite database is not available on web.');
-    }
     if (_database != null) return _database!;
-
+    
     try {
       _database = await _initDB('sure_offline.db');
       return _database!;
     } catch (e, stackTrace) {
-      _log.error('DatabaseHelper',
-          'Error initializing local database sure_offline.db: ${e.runtimeType}');
-      unawaited(TelemetryService.instance.captureHandledException(
-        e,
-        stackTrace,
-        operation: 'database.open',
-      ));
+      _log.error('DatabaseHelper', 'Error initializing local database sure_offline.db: $e');
       FlutterError.reportError(
         FlutterErrorDetails(
           exception: e,
@@ -72,20 +37,11 @@ class DatabaseHelper {
 
       return await openDatabase(
         path,
-        version: 3,
+        version: 1,
         onCreate: _createDB,
-        onUpgrade: _upgradeDB,
       );
     } catch (e, stackTrace) {
-      _log.error(
-        'DatabaseHelper',
-        'Error opening database file "$filePath": ${e.runtimeType}',
-      );
-      unawaited(TelemetryService.instance.captureHandledException(
-        e,
-        stackTrace,
-        operation: 'database.initialize',
-      ));
+      _log.error('DatabaseHelper', 'Error opening database file "$filePath": $e');
       FlutterError.reportError(
         FlutterErrorDetails(
           exception: e,
@@ -112,12 +68,6 @@ class DatabaseHelper {
           currency TEXT NOT NULL,
           nature TEXT NOT NULL,
           notes TEXT,
-          category_id TEXT,
-          category_name TEXT,
-          merchant_id TEXT,
-          merchant_name TEXT,
-          tag_ids TEXT DEFAULT '[]',
-          tag_names TEXT DEFAULT '[]',
           sync_status TEXT NOT NULL,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
@@ -159,15 +109,7 @@ class DatabaseHelper {
         ON transactions(server_id)
       ''');
     } catch (e, stackTrace) {
-      _log.error(
-        'DatabaseHelper',
-        'Error creating local database schema: ${e.runtimeType}',
-      );
-      unawaited(TelemetryService.instance.captureHandledException(
-        e,
-        stackTrace,
-        operation: 'database.create_schema',
-      ));
+      _log.error('DatabaseHelper', 'Error creating local database schema: $e');
       FlutterError.reportError(
         FlutterErrorDetails(
           exception: e,
@@ -180,51 +122,10 @@ class DatabaseHelper {
     }
   }
 
-  Future<void> _upgradeDB(Database db, int oldVersion, int newVersion) async {
-    if (oldVersion < 2) {
-      final columns = await db.rawQuery('PRAGMA table_info(transactions)');
-      final columnNames = columns.map((c) => c['name'] as String).toSet();
-      if (!columnNames.contains('category_id')) {
-        await db
-            .execute('ALTER TABLE transactions ADD COLUMN category_id TEXT');
-      }
-      if (!columnNames.contains('category_name')) {
-        await db
-            .execute('ALTER TABLE transactions ADD COLUMN category_name TEXT');
-      }
-    }
-    if (oldVersion < 3) {
-      final columns = await db.rawQuery('PRAGMA table_info(transactions)');
-      final columnNames = columns.map((c) => c['name'] as String).toSet();
-      if (!columnNames.contains('merchant_id')) {
-        await db
-            .execute('ALTER TABLE transactions ADD COLUMN merchant_id TEXT');
-      }
-      if (!columnNames.contains('merchant_name')) {
-        await db
-            .execute('ALTER TABLE transactions ADD COLUMN merchant_name TEXT');
-      }
-      if (!columnNames.contains('tag_ids')) {
-        await db.execute(
-            "ALTER TABLE transactions ADD COLUMN tag_ids TEXT DEFAULT '[]'");
-      }
-      if (!columnNames.contains('tag_names')) {
-        await db.execute(
-            "ALTER TABLE transactions ADD COLUMN tag_names TEXT DEFAULT '[]'");
-      }
-    }
-  }
-
   // Transaction CRUD operations
   Future<String> insertTransaction(Map<String, dynamic> transaction) async {
-    if (_useInMemoryStore) {
-      _ensureWebStoreReady();
-      final localId = transaction['local_id'] as String;
-      _memoryTransactions[localId] = Map<String, dynamic>.from(transaction);
-      return localId;
-    }
     final db = await database;
-    _log.debug('DatabaseHelper', 'Inserting transaction into local database');
+    _log.debug('DatabaseHelper', 'Inserting transaction: local_id=${transaction['local_id']}, account_id="${transaction['account_id']}", server_id=${transaction['server_id']}');
     await db.insert(
       'transactions',
       transaction,
@@ -234,30 +135,11 @@ class DatabaseHelper {
     return transaction['local_id'] as String;
   }
 
-  Future<List<Map<String, dynamic>>> getTransactions(
-      {String? accountId}) async {
-    if (_useInMemoryStore) {
-      _ensureWebStoreReady();
-      final results = _memoryTransactions.values
-          .where((transaction) {
-            final storedAccountId = transaction['account_id'] as String?;
-            return accountId == null || storedAccountId == accountId;
-          })
-          .map((transaction) => Map<String, dynamic>.from(transaction))
-          .toList();
-      results.sort((a, b) {
-        final dateCompare =
-            _compareDesc(a['date'] as String?, b['date'] as String?);
-        if (dateCompare != 0) return dateCompare;
-        return _compareDesc(
-            a['created_at'] as String?, b['created_at'] as String?);
-      });
-      return results;
-    }
+  Future<List<Map<String, dynamic>>> getTransactions({String? accountId}) async {
     final db = await database;
 
     if (accountId != null) {
-      _log.debug('DatabaseHelper', 'Querying scoped transactions');
+      _log.debug('DatabaseHelper', 'Querying transactions WHERE account_id = "$accountId"');
       final results = await db.query(
         'transactions',
         where: 'account_id = ?',
@@ -278,13 +160,6 @@ class DatabaseHelper {
   }
 
   Future<Map<String, dynamic>?> getTransactionByLocalId(String localId) async {
-    if (_useInMemoryStore) {
-      _ensureWebStoreReady();
-      final transaction = _memoryTransactions[localId];
-      return transaction != null
-          ? Map<String, dynamic>.from(transaction)
-          : null;
-    }
     final db = await database;
     final results = await db.query(
       'transactions',
@@ -296,17 +171,7 @@ class DatabaseHelper {
     return results.isNotEmpty ? results.first : null;
   }
 
-  Future<Map<String, dynamic>?> getTransactionByServerId(
-      String serverId) async {
-    if (_useInMemoryStore) {
-      _ensureWebStoreReady();
-      for (final transaction in _memoryTransactions.values) {
-        if (transaction['server_id'] == serverId) {
-          return Map<String, dynamic>.from(transaction);
-        }
-      }
-      return null;
-    }
+  Future<Map<String, dynamic>?> getTransactionByServerId(String serverId) async {
     final db = await database;
     final results = await db.query(
       'transactions',
@@ -319,18 +184,6 @@ class DatabaseHelper {
   }
 
   Future<List<Map<String, dynamic>>> getPendingTransactions() async {
-    if (_useInMemoryStore) {
-      _ensureWebStoreReady();
-      final results = _memoryTransactions.values
-          .where((transaction) => transaction['sync_status'] == 'pending')
-          .map((transaction) => Map<String, dynamic>.from(transaction))
-          .toList();
-      results.sort(
-        (a, b) =>
-            _compareAsc(a['created_at'] as String?, b['created_at'] as String?),
-      );
-      return results;
-    }
     final db = await database;
     return await db.query(
       'transactions',
@@ -341,19 +194,6 @@ class DatabaseHelper {
   }
 
   Future<List<Map<String, dynamic>>> getPendingDeletes() async {
-    if (_useInMemoryStore) {
-      _ensureWebStoreReady();
-      final results = _memoryTransactions.values
-          .where(
-              (transaction) => transaction['sync_status'] == 'pending_delete')
-          .map((transaction) => Map<String, dynamic>.from(transaction))
-          .toList();
-      results.sort(
-        (a, b) =>
-            _compareAsc(a['updated_at'] as String?, b['updated_at'] as String?),
-      );
-      return results;
-    }
     final db = await database;
     return await db.query(
       'transactions',
@@ -363,18 +203,7 @@ class DatabaseHelper {
     );
   }
 
-  Future<int> updateTransaction(
-      String localId, Map<String, dynamic> transaction) async {
-    if (_useInMemoryStore) {
-      _ensureWebStoreReady();
-      if (!_memoryTransactions.containsKey(localId)) {
-        return 0;
-      }
-      final updated = Map<String, dynamic>.from(transaction);
-      updated['local_id'] = localId;
-      _memoryTransactions[localId] = updated;
-      return 1;
-    }
+  Future<int> updateTransaction(String localId, Map<String, dynamic> transaction) async {
     final db = await database;
     return await db.update(
       'transactions',
@@ -385,10 +214,6 @@ class DatabaseHelper {
   }
 
   Future<int> deleteTransaction(String localId) async {
-    if (_useInMemoryStore) {
-      _ensureWebStoreReady();
-      return _memoryTransactions.remove(localId) != null ? 1 : 0;
-    }
     final db = await database;
     return await db.delete(
       'transactions',
@@ -398,19 +223,6 @@ class DatabaseHelper {
   }
 
   Future<int> deleteTransactionByServerId(String serverId) async {
-    if (_useInMemoryStore) {
-      _ensureWebStoreReady();
-      String? localIdToRemove;
-      for (final entry in _memoryTransactions.entries) {
-        if (entry.value['server_id'] == serverId) {
-          localIdToRemove = entry.key;
-          break;
-        }
-      }
-      if (localIdToRemove == null) return 0;
-      _memoryTransactions.remove(localIdToRemove);
-      return 1;
-    }
     final db = await database;
     return await db.delete(
       'transactions',
@@ -420,30 +232,13 @@ class DatabaseHelper {
   }
 
   Future<void> clearTransactions() async {
-    if (_useInMemoryStore) {
-      _ensureWebStoreReady();
-      _memoryTransactions.clear();
-      return;
-    }
     final db = await database;
     await db.delete('transactions');
   }
 
   Future<void> clearSyncedTransactions() async {
-    if (_useInMemoryStore) {
-      _ensureWebStoreReady();
-      final keysToRemove = _memoryTransactions.entries
-          .where((entry) => entry.value['sync_status'] == 'synced')
-          .map((entry) => entry.key)
-          .toList();
-      for (final key in keysToRemove) {
-        _memoryTransactions.remove(key);
-      }
-      return;
-    }
     final db = await database;
-    _log.debug('DatabaseHelper',
-        'Clearing only synced transactions, keeping pending/failed');
+    _log.debug('DatabaseHelper', 'Clearing only synced transactions, keeping pending/failed');
     await db.delete(
       'transactions',
       where: 'sync_status = ?',
@@ -453,12 +248,6 @@ class DatabaseHelper {
 
   // Account CRUD operations (for caching)
   Future<void> insertAccount(Map<String, dynamic> account) async {
-    if (_useInMemoryStore) {
-      _ensureWebStoreReady();
-      final id = account['id'] as String;
-      _memoryAccounts[id] = Map<String, dynamic>.from(account);
-      return;
-    }
     final db = await database;
     await db.insert(
       'accounts',
@@ -468,14 +257,6 @@ class DatabaseHelper {
   }
 
   Future<void> insertAccounts(List<Map<String, dynamic>> accounts) async {
-    if (_useInMemoryStore) {
-      _ensureWebStoreReady();
-      for (final account in accounts) {
-        final id = account['id'] as String;
-        _memoryAccounts[id] = Map<String, dynamic>.from(account);
-      }
-      return;
-    }
     final db = await database;
     final batch = db.batch();
 
@@ -491,26 +272,11 @@ class DatabaseHelper {
   }
 
   Future<List<Map<String, dynamic>>> getAccounts() async {
-    if (_useInMemoryStore) {
-      _ensureWebStoreReady();
-      final results = _memoryAccounts.values
-          .map((account) => Map<String, dynamic>.from(account))
-          .toList();
-      results.sort(
-        (a, b) => _compareAsc(a['name'] as String?, b['name'] as String?),
-      );
-      return results;
-    }
     final db = await database;
     return await db.query('accounts', orderBy: 'name ASC');
   }
 
   Future<Map<String, dynamic>?> getAccountById(String id) async {
-    if (_useInMemoryStore) {
-      _ensureWebStoreReady();
-      final account = _memoryAccounts[id];
-      return account != null ? Map<String, dynamic>.from(account) : null;
-    }
     final db = await database;
     final results = await db.query(
       'accounts',
@@ -523,35 +289,18 @@ class DatabaseHelper {
   }
 
   Future<void> clearAccounts() async {
-    if (_useInMemoryStore) {
-      _ensureWebStoreReady();
-      _memoryAccounts.clear();
-      return;
-    }
     final db = await database;
     await db.delete('accounts');
   }
 
   // Utility methods
   Future<void> clearAllData() async {
-    if (_useInMemoryStore) {
-      _ensureWebStoreReady();
-      _memoryTransactions.clear();
-      _memoryAccounts.clear();
-      return;
-    }
     final db = await database;
     await db.delete('transactions');
     await db.delete('accounts');
   }
 
   Future<void> close() async {
-    if (_useInMemoryStore) {
-      _ensureWebStoreReady();
-      _memoryTransactions.clear();
-      _memoryAccounts.clear();
-      return;
-    }
     if (_database != null) {
       await _database!.close();
       _database = null;

@@ -15,9 +15,7 @@ nb:
       none: (ingen)
       note_label: Notater
       note_placeholder: Skriv et notat
-      create_tag: Opprett
       submit: Legg til transaksjon
-      tag_search_placeholder: Søk etter eller opprett tagg
       tags_label: Tagger
       transfer: Overføring
     new:
@@ -48,8 +46,6 @@ nb:
       edit_merchants: Rediger selgere
       edit_tags: Rediger tagger
       import: Importer
-    transaction:
-      linked_with_provider: Koblet med %{provider}
     index:
       transaction: transaksjon
       transactions: transaksjoner

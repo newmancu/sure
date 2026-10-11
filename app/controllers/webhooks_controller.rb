@@ -15,8 +15,7 @@ class WebhooksController < ApplicationController
     render json: { received: true }, status: :ok
   rescue => error
     Sentry.capture_exception(error)
-    Rails.logger.error("Webhook error: #{error.class} - #{error.message}")
-    render json: { error: "Invalid webhook" }, status: :bad_request
+    render json: { error: "Invalid webhook: #{error.message}" }, status: :bad_request
   end
 
   def plaid_eu
@@ -32,8 +31,7 @@ class WebhooksController < ApplicationController
     render json: { received: true }, status: :ok
   rescue => error
     Sentry.capture_exception(error)
-    Rails.logger.error("Webhook error: #{error.class} - #{error.message}")
-    render json: { error: "Invalid webhook" }, status: :bad_request
+    render json: { error: "Invalid webhook: #{error.message}" }, status: :bad_request
   end
 
   def stripe

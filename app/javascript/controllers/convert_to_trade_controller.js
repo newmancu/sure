@@ -1,5 +1,4 @@
 import { Controller } from "@hotwired/stimulus"
-import parseLocaleFloat from "utils/parse_locale_float"
 
 export default class extends Controller {
   static targets = ["customWrapper", "customField", "tickerSelect", "qtyField", "priceField", "priceWarning", "priceWarningMessage"]
@@ -43,8 +42,8 @@ export default class extends Controller {
 
     // Calculate the implied/entered price
     let enteredPriceCents = null
-    const qty = parseLocaleFloat(this.qtyFieldTarget?.value)
-    const enteredPrice = parseLocaleFloat(this.priceFieldTarget?.value)
+    const qty = Number.parseFloat(this.qtyFieldTarget?.value)
+    const enteredPrice = Number.parseFloat(this.priceFieldTarget?.value)
 
     if (enteredPrice && enteredPrice > 0) {
       // User entered a price directly
