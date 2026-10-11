@@ -67,8 +67,9 @@ class Entry < ApplicationRecord
   # Pending transaction scopes - check Transaction.extra for provider pending flags
   # Works with any provider that stores pending status in extra["provider_name"]["pending"]
   scope :pending, -> {
+    conditions = Transaction::PENDING_PROVIDERS.map { |p| "(transactions.extra -> '#{p}' ->> 'pending')::boolean = true" }
     joins("INNER JOIN transactions ON transactions.id = entries.entryable_id AND entries.entryable_type = 'Transaction'")
-      .where(Transaction.pending_sql)
+      .where(conditions.join(" OR "))
   }
 
   scope :excluding_pending, -> {
@@ -90,6 +91,10 @@ class Entry < ApplicationRecord
         SELECT 1 FROM entries ce WHERE ce.parent_entry_id = entries.id
       )
     SQL
+  }
+
+  scope :excluding_split_children, -> {
+    where(parent_entry_id: nil)
   }
 
   # Find stale pending transactions (pending for more than X days with no matching posted version)
@@ -143,7 +148,7 @@ class Entry < ApplicationRecord
   # @param days [Integer] Number of days after which pending is considered stale (default: 8)
   # @return [Integer] Number of entries excluded
   def self.auto_exclude_stale_pending(account:, days: 8)
-    stale_entries = account.entries.stale_pending(days: days).where(excluded: false)
+    stale_entries = account.entries.stale_pending(days: days).where(excluded: false).excluding_split_parents.excluding_split_children
     count = stale_entries.count
 
     if count > 0
@@ -165,10 +170,13 @@ class Entry < ApplicationRecord
   def self.reconcile_pending_duplicates(account: nil, dry_run: false, date_window: 8, amount_tolerance: 0.25)
     stats = { checked: 0, reconciled: 0, details: [] }
 
-    not_pending_sql = Transaction.not_pending_sql
+    not_pending_sql = Transaction::PENDING_PROVIDERS
+      .map { |p| "(transactions.extra -> '#{p}' ->> 'pending')::boolean IS NOT TRUE" }
+      .join(" AND ")
 
-    # Get pending entries to check
-    scope = Entry.pending.where(excluded: false)
+    # Get pending entries to check — skip split parents (already excluded) and split children
+    # (they inherit pending from parent and should stay pending until the parent reconciles)
+    scope = Entry.pending.where(excluded: false).excluding_split_parents.excluding_split_children
     scope = scope.where(account: account) if account
 
     scope.includes(:account, :entryable).find_each do |pending_entry|
@@ -462,12 +470,25 @@ class Entry < ApplicationRecord
       raise ActiveRecord::RecordInvalid.new(self), "Split amounts must sum to parent amount (expected #{amount}, got #{total})"
     end
 
+    # Propagate pending flags from the parent transaction so that split children
+    # are excluded from analytics and display the pending badge, just like the parent.
+    # Only the pending status is copied; provider-specific metadata (FX rates etc.) stays on the parent.
+    pending_extra = begin
+      parent_extra = entryable.try(:extra) || {}
+      Transaction::PENDING_PROVIDERS.each_with_object({}) do |provider, hash|
+        if parent_extra.is_a?(Hash) && ActiveModel::Type::Boolean.new.cast(parent_extra.dig(provider, "pending"))
+          hash[provider] = { "pending" => true }
+        end
+      end
+    end
+
     self.class.transaction do
       children = splits.map do |split_attrs|
         child_transaction = Transaction.new(
           category_id: split_attrs[:category_id],
           merchant_id: entryable.try(:merchant_id),
-          kind: entryable.try(:kind)
+          kind: entryable.try(:kind),
+          extra: pending_extra
         )
 
         child_entries.create!(
