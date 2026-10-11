@@ -15,9 +15,8 @@ en:
       success: You have signed up successfully.
     new:
       invitation_message: "%{inviter} has invited you to join as a %{role}"
-      join_family_title: Join %{family} %{moniker}
+      join_family_title: Join %{family}
       role_admin: administrator
-      role_guest: guest
       role_member: member
       submit: Create account
       title: Create your account
@@ -25,8 +24,3 @@ en:
         then be able to configure additional settings within the app.
       welcome_title: Welcome to Self Hosted %{product_name}!
       password_placeholder: Enter your password
-      password_requirements:
-        length: Minimum 8 characters
-        case: Upper and lowercase letters
-        number: A number (0-9)
-        special: "A special character (!, @, #, $, %, etc)"

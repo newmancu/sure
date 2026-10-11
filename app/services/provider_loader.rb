@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # Service class to load SSO provider configurations from either YAML or database
-# based on the AUTH_PROVIDERS_SOURCE environment setting.
+# based on the :db_sso_providers feature flag.
 #
 # Usage:
 #   providers = ProviderLoader.load_providers
@@ -38,7 +38,17 @@ class ProviderLoader
       def use_database_providers?
         return false if Rails.env.test?
 
-        FeatureFlags.db_sso_providers?
+        begin
+          # Check if feature exists, create if not (defaults to disabled)
+          unless Flipper.exist?(:db_sso_providers)
+            Flipper.add(:db_sso_providers)
+          end
+          Flipper.enabled?(:db_sso_providers)
+        rescue ActiveRecord::NoDatabaseError, ActiveRecord::StatementInvalid, StandardError => e
+          # Database not ready or other error, fall back to YAML
+          Rails.logger.warn("[ProviderLoader] Could not check feature flag (#{e.class}), falling back to YAML providers")
+          false
+        end
       end
 
       def load_from_database

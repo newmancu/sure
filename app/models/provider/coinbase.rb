@@ -1,7 +1,4 @@
 class Provider::Coinbase
-  include HTTParty
-  extend SslConfigurable
-
   class Error < StandardError; end
   class AuthenticationError < Error; end
   class RateLimitError < Error; end
@@ -9,9 +6,6 @@ class Provider::Coinbase
 
   # CDP API base URL
   API_BASE_URL = "https://api.coinbase.com".freeze
-
-  base_uri API_BASE_URL
-  default_options.merge!({ timeout: 30 }.merge(httparty_ssl_options))
 
   attr_reader :api_key, :api_secret
 
@@ -63,8 +57,7 @@ class Provider::Coinbase
   # Get spot price for a currency pair (e.g., "BTC-USD")
   # This is a public endpoint that doesn't require authentication
   def get_spot_price(currency_pair)
-    # Use self.class.get to inherit class-level SSL and timeout defaults
-    response = self.class.get("/v2/prices/#{currency_pair}/spot", timeout: 10)
+    response = HTTParty.get("#{API_BASE_URL}/v2/prices/#{currency_pair}/spot", timeout: 10)
     handle_response(response)["data"]
   rescue => e
     Rails.logger.warn("Coinbase: Failed to fetch spot price for #{currency_pair}: #{e.message}")
@@ -85,13 +78,13 @@ class Provider::Coinbase
   private
 
     def get(path, params: {})
-      url = path
+      url = "#{API_BASE_URL}#{path}"
       url += "?#{params.to_query}" if params.any?
 
-      # Use self.class.get to inherit class-level SSL and timeout defaults
-      response = self.class.get(
+      response = HTTParty.get(
         url,
-        headers: auth_headers("GET", path)
+        headers: auth_headers("GET", path),
+        timeout: 30
       )
 
       handle_response(response)
@@ -108,14 +101,16 @@ class Provider::Coinbase
           uri = URI.parse(next_uri)
           current_path = uri.path
           current_path += "?#{uri.query}" if uri.query
+          url = "#{API_BASE_URL}#{current_path}"
         else
           current_path = path
+          url = "#{API_BASE_URL}#{path}"
         end
 
-        # Use self.class.get to inherit class-level SSL and timeout defaults
-        response = self.class.get(
-          current_path,
-          headers: auth_headers("GET", current_path.split("?").first)
+        response = HTTParty.get(
+          url,
+          headers: auth_headers("GET", current_path.split("?").first),
+          timeout: 30
         )
 
         data = handle_response(response)
@@ -131,27 +126,21 @@ class Provider::Coinbase
       results.first(limit)
     end
 
-    # Parses a PEM EC private key, normalizing literal \n sequences to real
-    # newlines. Coinbase CDP keys are often stored or pasted as a single-line
-    # string with escaped newlines (e.g. copied directly from the JSON download
-    # file). Both forms are accepted.
-    def parse_ec_private_key(pem)
-      OpenSSL::PKey::EC.new(pem.to_s.gsub('\n', "\n"))
-    end
-
-    # Generate JWT token for CDP API authentication.
-    # Uses ES256 (ECDSA P-256) signing — matches the key format Coinbase CDP
-    # issues. api_secret must be a PEM EC private key
-    # (-----BEGIN EC PRIVATE KEY-----) either with real newlines or literal \n.
+    # Generate JWT token for CDP API authentication
+    # Uses Ed25519 signing algorithm
     def generate_jwt(method, path)
-      private_key = parse_ec_private_key(api_secret)
+      # Decode the base64 private key
+      private_key_bytes = Base64.decode64(api_secret)
+
+      # Create Ed25519 signing key
+      signing_key = Ed25519::SigningKey.new(private_key_bytes[0, 32])
 
       now = Time.now.to_i
       uri = "#{method} api.coinbase.com#{path}"
 
       # JWT header
       header = {
-        alg: "ES256",
+        alg: "EdDSA",
         kid: api_key,
         nonce: SecureRandom.hex(16),
         typ: "JWT"
@@ -170,15 +159,10 @@ class Provider::Coinbase
       encoded_header = Base64.urlsafe_encode64(header.to_json, padding: false)
       encoded_payload = Base64.urlsafe_encode64(payload.to_json, padding: false)
 
-      # Sign with ECDSA SHA-256
+      # Sign
       message = "#{encoded_header}.#{encoded_payload}"
-      der_sig = private_key.sign(OpenSSL::Digest::SHA256.new, message)
-
-      # Convert DER-encoded signature to raw r||s (required by JWT spec)
-      asn1 = OpenSSL::ASN1.decode(der_sig)
-      r = asn1.value[0].value.to_s(2).rjust(32, "\x00")[-32..]
-      s = asn1.value[1].value.to_s(2).rjust(32, "\x00")[-32..]
-      encoded_signature = Base64.urlsafe_encode64(r + s, padding: false)
+      signature = signing_key.sign(message)
+      encoded_signature = Base64.urlsafe_encode64(signature, padding: false)
 
       "#{message}.#{encoded_signature}"
     end

@@ -1,12 +1,10 @@
 class Settings::LlmUsagesController < ApplicationController
   layout "settings"
 
-  before_action :require_admin!
-
   def show
     @breadcrumbs = [
-      [ t("breadcrumbs.home"), root_path ],
-      [ t("breadcrumbs.llm_usage"), nil ]
+      [ "Home", root_path ],
+      [ "LLM Usage", nil ]
     ]
     @family = Current.family
 

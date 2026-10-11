@@ -1,11 +1,5 @@
 class MercuryAccount < ApplicationRecord
-  include CurrencyNormalizable, Encryptable
-
-  # Encrypt raw payloads if ActiveRecord encryption is configured
-  if encryption_ready?
-    encrypts :raw_payload
-    encrypts :raw_transactions_payload
-  end
+  include CurrencyNormalizable
 
   belongs_to :mercury_item
 
@@ -15,7 +9,6 @@ class MercuryAccount < ApplicationRecord
   has_one :linked_account, through: :account_provider, source: :account
 
   validates :name, :currency, presence: true
-  validates :account_id, uniqueness: { scope: :mercury_item_id }
 
   # Helper to get account using account_providers system
   def current_account

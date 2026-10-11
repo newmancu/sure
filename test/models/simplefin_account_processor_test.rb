@@ -28,46 +28,6 @@ class SimplefinAccountProcessorTest < ActiveSupport::TestCase
     assert_equal BigDecimal("123.45"), acct.reload.balance
   end
 
-  test "credit override preserves an ambiguous provider balance as a credit" do
-    sfin_acct = SimplefinAccount.create!(
-      simplefin_item: @item,
-      name: "Credit balance",
-      account_id: "cc_credit_override",
-      currency: "USD",
-      account_type: "credit",
-      current_balance: BigDecimal("-25"),
-      available_balance: BigDecimal("0"),
-      balance_sign_override: "credit"
-    )
-
-    acct = accounts(:credit_card)
-    acct.update!(simplefin_account: sfin_acct)
-
-    SimplefinAccount::Processor.new(sfin_acct).send(:process_account!)
-
-    assert_equal BigDecimal("-25"), acct.reload.balance
-  end
-
-  test "debt override preserves an ambiguous provider balance as debt" do
-    sfin_acct = SimplefinAccount.create!(
-      simplefin_item: @item,
-      name: "Debt balance",
-      account_id: "cc_debt_override",
-      currency: "USD",
-      account_type: "credit",
-      current_balance: BigDecimal("-25"),
-      available_balance: BigDecimal("0"),
-      balance_sign_override: "debt"
-    )
-
-    acct = accounts(:credit_card)
-    acct.update!(simplefin_account: sfin_acct)
-
-    SimplefinAccount::Processor.new(sfin_acct).send(:process_account!)
-
-    assert_equal BigDecimal("25"), acct.reload.balance
-  end
-
   test "does not invert balance for asset accounts (depository)" do
     sfin_acct = SimplefinAccount.create!(
       simplefin_item: @item,
@@ -94,32 +54,6 @@ class SimplefinAccountProcessorTest < ActiveSupport::TestCase
       currency: "USD",
       account_type: "mortgage",
       current_balance: BigDecimal("-50000")
-    )
-
-    acct = accounts(:loan)
-    acct.update!(simplefin_account: sfin_acct)
-
-    SimplefinAccount::Processor.new(sfin_acct).send(:process_account!)
-
-    assert_equal BigDecimal("50000"), acct.reload.balance
-  end
-
-  # Many banks (and most mortgage feeds) report the loan principal
-  # outstanding as a positive number from the bank's books. The old
-  # liability path ran every Loan through OverpaymentAnalyzer +
-  # normalize_liability_balance, and the latter's fallback for
-  # `:unknown` classifications returned `-observed`, flipping a
-  # bank-reported `+50000` into `-50000`. That bug made loans _add_ to
-  # net worth instead of subtracting, so this test pins the corrected
-  # behaviour.
-  test "preserves positive provider balance for loan liabilities" do
-    sfin_acct = SimplefinAccount.create!(
-      simplefin_item: @item,
-      name: "Mortgage",
-      account_id: "loan_2",
-      currency: "USD",
-      account_type: "mortgage",
-      current_balance: BigDecimal("50000")
     )
 
     acct = accounts(:loan)
@@ -224,43 +158,24 @@ class SimplefinAccountProcessorTest < ActiveSupport::TestCase
     assert_equal BigDecimal("-25"), acct.reload.balance
   end
 
-  test "linked depository account type takes precedence over mapper-inferred liability" do
+  test "mislinked as asset but mapper infers credit → normalize as liability" do
     sfin_acct = SimplefinAccount.create!(
       simplefin_item: @item,
       name: "Visa Signature",
-      account_id: "cc_mislinked_asset",
+      account_id: "cc_mislinked",
       currency: "USD",
       account_type: "credit",
       current_balance: BigDecimal("100.00"),
       available_balance: BigDecimal("5000.00")
     )
 
+    # Link to an asset account intentionally
     acct = accounts(:depository)
     acct.update!(simplefin_account: sfin_acct)
 
     SimplefinAccount::Processor.new(sfin_acct).send(:process_account!)
 
-    # Manual selection as depository; final should be the same
-    assert_equal BigDecimal("100.00"), acct.reload.balance
-  end
-
-  test "linked credit card account type takes precedence over mapper-inferred liability" do
-    sfin_acct = SimplefinAccount.create!(
-      simplefin_item: @item,
-      name: "Visa Signature",
-      account_id: "cc_mislinked_liability",
-      currency: "USD",
-      account_type: "credit",
-      current_balance: BigDecimal("100.00"),
-      available_balance: BigDecimal("5000.00")
-    )
-
-    acct = accounts(:credit_card)
-    acct.update!(simplefin_account: sfin_acct)
-
-    SimplefinAccount::Processor.new(sfin_acct).send(:process_account!)
-
-    # Liability has flipped sign; final should be negative
+    # Mapper should infer liability from name; final should be negative
     assert_equal BigDecimal("-100.00"), acct.reload.balance
   end
 

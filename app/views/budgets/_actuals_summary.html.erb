@@ -2,9 +2,9 @@
 
 <div>
   <div class="p-4 border-b border-secondary">
-    <h3 class="text-sm text-secondary mb-2"><%= t(".income") %></h3>
+    <h3 class="text-sm text-secondary mb-2">Income</h3>
 
-    <span class="inline-block mb-2 text-xl font-medium text-primary privacy-sensitive">
+    <span class="inline-block mb-2 text-xl font-medium text-primary">
       <%= budget.actual_income_money.format %>
     </span>
 
@@ -20,7 +20,7 @@
           <% budget.income_category_totals.each do |category_total| %>
             <div class="flex items-center gap-1.5">
               <div class="w-2.5 h-2.5 rounded-full shrink-0" style="background-color: <%= category_total.category.color %>"></div>
-              <span class="text-secondary"><%= category_total.category.display_name %></span>
+              <span class="text-secondary"><%= category_total.category.name %></span>
               <span class="text-primary"><%= number_to_percentage(category_total.weight, precision: 0) %></span>
             </div>
           <% end %>
@@ -30,9 +30,9 @@
   </div>
 
   <div class="p-4">
-    <h3 class="text-sm text-secondary mb-2"><%= t(".expenses") %></h3>
+    <h3 class="text-sm text-secondary mb-2">Expenses</h3>
 
-    <span class="inline-block mb-2 text-xl font-medium text-primary privacy-sensitive"><%= budget.actual_spending_money.format %></span>
+    <span class="inline-block mb-2 text-xl font-medium text-primary"><%= budget.actual_spending_money.format %></span>
 
     <% if budget.expense_category_totals.any? %>
       <div>
@@ -46,7 +46,7 @@
           <% budget.expense_category_totals.each do |category_total| %>
             <div class="flex items-center gap-1.5">
               <div class="w-2.5 h-2.5 rounded-full shrink-0" style="background-color: <%= category_total.category.color %>"></div>
-              <span class="text-secondary"><%= category_total.category.display_name %></span>
+              <span class="text-secondary"><%= category_total.category.name %></span>
               <span class="text-primary"><%= number_to_percentage(category_total.weight, precision: 0) %></span>
             </div>
           <% end %>

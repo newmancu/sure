@@ -1,28 +1,8 @@
 module Family::Subscribeable
   extend ActiveSupport::Concern
 
-  CLEANUP_GRACE_PERIOD = 14.days
-  ARCHIVE_TRANSACTION_THRESHOLD = 12
-  ARCHIVE_RECENT_ACTIVITY_WINDOW = 14.days
-
   included do
     has_one :subscription, dependent: :destroy
-    before_destroy :cancel_or_reject_active_subscription
-
-    scope :inactive_trial_for_cleanup, -> {
-      cutoff_with_sub = CLEANUP_GRACE_PERIOD.ago
-      cutoff_without_sub = (Subscription::TRIAL_DAYS.days + CLEANUP_GRACE_PERIOD).ago
-
-      expired_trial = left_joins(:subscription)
-        .where(subscriptions: { status: [ "paused", "trialing" ] })
-        .where(subscriptions: { trial_ends_at: ...cutoff_with_sub })
-
-      no_subscription = left_joins(:subscription)
-        .where(subscriptions: { id: nil })
-        .where(families: { created_at: ...cutoff_without_sub })
-
-      where(id: expired_trial).or(where(id: no_subscription))
-    }
   end
 
   def payment_email
@@ -105,30 +85,4 @@ module Family::Subscribeable
       subscription.update!(status: "paused")
     end
   end
-
-  def requires_data_archive?
-    return false unless transactions.count > ARCHIVE_TRANSACTION_THRESHOLD
-
-    trial_end = subscription&.trial_ends_at || (created_at + Subscription::TRIAL_DAYS.days)
-    recent_window_start = trial_end - ARCHIVE_RECENT_ACTIVITY_WINDOW
-
-    entries.where(date: recent_window_start..trial_end).exists?
-  end
-
-  private
-
-    def cancel_or_reject_active_subscription
-      return unless subscription&.stripe_id.present?
-      return if subscription.canceled? || subscription.incomplete_expired?
-      return if subscription.synthetic?
-
-      begin
-        Provider::Registry.get_provider(:stripe).cancel_subscription(subscription.stripe_id)
-      rescue => e
-        Sentry.capture_exception(e) if defined?(Sentry)
-        Rails.logger.error "Failed to cancel Stripe subscription before family deletion: #{e.message}"
-        errors.add(:base, :cannot_delete_with_active_subscription, message: "Could not cancel active Stripe subscription. Please cancel it manually before deleting the family.")
-        throw(:abort)
-      end
-    end
 end

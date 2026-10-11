@@ -28,37 +28,6 @@ class FamilyExportsControllerTest < ActionDispatch::IntegrationTest
     assert_select "h2", text: "Export your data"
   end
 
-  test "admin can mark a lost export as failed" do
-    export = @family.family_exports.create!
-    export.update_columns(status: "processing", updated_at: 2.hours.ago)
-
-    post cancel_family_export_path(export)
-
-    assert_redirected_to family_exports_path
-    assert_equal "failed", export.reload.status
-  end
-
-  test "cancel refuses an export that is not presumed lost" do
-    export = @family.family_exports.create!
-    export.update_columns(status: "processing", updated_at: 5.minutes.ago)
-
-    post cancel_family_export_path(export)
-
-    assert_equal I18n.t("family_exports.cancel.not_cancellable"), flash[:alert]
-    assert_equal "processing", export.reload.status
-  end
-
-  test "non-admin cannot cancel an export" do
-    export = @family.family_exports.create!
-    export.update_columns(status: "processing", updated_at: 2.hours.ago)
-
-    sign_in @non_admin
-    post cancel_family_export_path(export)
-
-    assert_redirected_to root_path
-    assert_equal "processing", export.reload.status
-  end
-
   test "admin can create export" do
     assert_enqueued_with(job: FamilyDataExportJob) do
       post family_exports_path
@@ -80,6 +49,16 @@ class FamilyExportsControllerTest < ActionDispatch::IntegrationTest
 
     assert_match export1.filename, response.body
     assert_match "Exporting...", response.body
+  end
+
+  test "admin can view export list as turbo_stream" do
+    export1 = @family.family_exports.create!(status: "completed")
+    export2 = @family.family_exports.create!(status: "processing")
+
+    get family_exports_path, as: :turbo_stream
+    assert_response :success
+    assert_match "turbo-stream", response.body
+    assert_match export1.filename, response.body
   end
 
   test "admin can download completed export" do
@@ -169,17 +148,6 @@ class FamilyExportsControllerTest < ActionDispatch::IntegrationTest
     # Note: Active Storage purges files asynchronously with `dependent: :purge_later`
     # In tests, we can check that the attachment record is gone
     assert_not ActiveStorage::Attachment.exists?(file_id)
-  end
-
-  test "index responds to html with settings layout" do
-    get family_exports_path
-    assert_response :success
-    assert_select "title" # rendered with layout
-  end
-
-  test "index responds to turbo_stream without raising MissingTemplate" do
-    get family_exports_path, headers: { "Accept" => "text/vnd.turbo-stream.html" }
-    assert_redirected_to family_exports_path
   end
 
   test "non-admin cannot delete export" do

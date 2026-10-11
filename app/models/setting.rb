@@ -10,53 +10,12 @@ class Setting < RailsSettings::Base
   field :openai_uri_base, type: :string, default: ENV["OPENAI_URI_BASE"]
   field :openai_model, type: :string, default: ENV["OPENAI_MODEL"]
   field :openai_json_mode, type: :string, default: ENV["LLM_JSON_MODE"]
-  field :openai_request_timeout, type: :integer, default: ENV["OPENAI_REQUEST_TIMEOUT"]&.to_i
-  field :anthropic_access_token, type: :string, default: ENV["ANTHROPIC_ACCESS_TOKEN"].presence || ENV["ANTHROPIC_API_KEY"].presence
-  field :anthropic_model, type: :string, default: ENV["ANTHROPIC_MODEL"]
-  field :anthropic_base_url, type: :string, default: ENV["ANTHROPIC_BASE_URL"]
-  field :llm_provider, type: :string, default: ENV.fetch("LLM_PROVIDER", "openai")
-
-  # Jev (TypeSafe) — a classification provider, not an LLM. Reachable either
-  # through OpenRouter's Decisions API (the default) or TypeSafe's own endpoint.
-  # Deliberately no OPENROUTER_API_KEY fallback: an operator holding that key
-  # for an unrelated purpose should not silently enable Jev.
-  field :jev_api_key, type: :string, default: ENV["JEV_API_KEY"]
-  field :jev_endpoint, type: :string, default: ENV["JEV_ENDPOINT"]
-  field :jev_model, type: :string, default: ENV["JEV_MODEL"]
-
-  # LLM token budget (applies to every outbound LLM call: chat, auto-categorize,
-  # merchant detection, enhance-merchants, PDF processing). Defaults track
-  # Ollama's historical 2048-token baseline so local small-context models work
-  # out of the box. ENV overrides Setting at read time in Provider::Openai.
-  field :llm_context_window, type: :integer, default: ENV["LLM_CONTEXT_WINDOW"]&.to_i
-  field :llm_max_response_tokens, type: :integer, default: ENV["LLM_MAX_RESPONSE_TOKENS"]&.to_i
-  field :llm_max_items_per_call, type: :integer, default: ENV["LLM_MAX_ITEMS_PER_CALL"]&.to_i
-
-  # How long the chat UI waits for an assistant response before treating it as
-  # undelivered. Self-hosted users running local models on slow hardware need
-  # this well above the 90s default — a local model that takes minutes to
-  # generate would otherwise always trip the watchdog. Read via
-  # `Chat.response_timeout`, which applies ENV > Setting > default precedence.
-  field :ai_response_timeout, type: :integer, default: ENV["AI_RESPONSE_TIMEOUT"]&.to_i
-  # Per-request bound for the admin "Run checks" AI probes on System Health.
-  # The PDF probes do a full extraction round trip, which cloud models often
-  # can't finish inside the 5s default. Read via `AiHealth::Probe.timeout`,
-  # which applies ENV > Setting > default precedence.
-  field :ai_health_probe_timeout, type: :integer, default: ENV["AI_HEALTH_PROBE_TIMEOUT"]&.to_i
-  field :external_assistant_url, type: :string
-  field :external_assistant_token, type: :string
-  field :external_assistant_model, type: :string
-  field :external_assistant_agent_id, type: :string
   field :brand_fetch_client_id, type: :string, default: ENV["BRAND_FETCH_CLIENT_ID"]
   field :brand_fetch_high_res_logos, type: :boolean, default: ENV.fetch("BRAND_FETCH_HIGH_RES_LOGOS", "false") == "true"
 
   BRAND_FETCH_LOGO_SIZE_STANDARD = 40
   BRAND_FETCH_LOGO_SIZE_HIGH_RES = 120
-  # Matches both legacy single-segment URLs (`/apple.com/icon/...`) and
-  # explicit type-routed URLs introduced 2026 (`/crypto/BTC/icon/...`,
-  # `/domain/apple.com/icon/...`). `[^?]+` reaches across the extra slash
-  # so transform_brand_fetch_url can rewrite the size params on both shapes.
-  BRAND_FETCH_URL_PATTERN = %r{(https://cdn\.brandfetch\.io/[^?]+/icon/fallback/lettermark/)w/\d+/h/\d+(\?c=.+)}
+  BRAND_FETCH_URL_PATTERN = %r{(https://cdn\.brandfetch\.io/[^/]+/icon/fallback/lettermark/)w/\d+/h/\d+(\?c=.+)}
 
   def self.brand_fetch_logo_size
     brand_fetch_high_res_logos ? BRAND_FETCH_LOGO_SIZE_HIGH_RES : BRAND_FETCH_LOGO_SIZE_STANDARD
@@ -70,110 +29,9 @@ class Setting < RailsSettings::Base
     url.gsub(BRAND_FETCH_URL_PATTERN, "\\1w/#{size}/h/#{size}\\2")
   end
 
-  def self.brand_fetch_icon_url(identifier, fallback: "lettermark", namespace: nil, width: nil, height: nil)
-    return nil if identifier.blank? || brand_fetch_client_id.blank?
-
-    w = width || brand_fetch_logo_size
-    h = height || brand_fetch_logo_size
-    path = [ namespace, identifier ].compact_blank.join("/")
-
-    "https://cdn.brandfetch.io/#{path}/icon/fallback/#{fallback}/w/#{w}/h/#{h}?c=#{brand_fetch_client_id}"
-  end
-
   # Provider selection
   field :exchange_rate_provider, type: :string, default: ENV.fetch("EXCHANGE_RATE_PROVIDER", "twelve_data")
   field :securities_provider, type: :string, default: ENV.fetch("SECURITIES_PROVIDER", "twelve_data")
-
-  # Multi-provider: comma-separated list of enabled securities providers
-  field :securities_providers, type: :string, default: ENV.fetch("SECURITIES_PROVIDERS", "")
-
-  # New provider API keys (encrypted at rest — see EncryptedSettingFields below)
-  field :tiingo_api_key, type: :string, default: ENV["TIINGO_API_KEY"]
-  field :eodhd_api_key, type: :string, default: ENV["EODHD_API_KEY"]
-  field :alpha_vantage_api_key, type: :string, default: ENV["ALPHA_VANTAGE_API_KEY"]
-  field :tinkoff_invest_api_key, type: :string, default: ENV["TINKOFF_INVEST_API_KEY"]
-  # Mansa API (mansaapi.com) — African exchanges, including NGX (Nigeria),
-  # which none of the providers above cover. See Provider::Mansa.
-  field :mansa_api_key, type: :string, default: ENV["MANSA_API_KEY"]
-
-  # Property valuation (AVM) provider API keys
-  field :rentcast_api_key, type: :string, default: ENV["RENTCAST_API_KEY"]
-  field :realie_api_key, type: :string, default: ENV["REALIE_API_KEY"]
-
-  # Transparent encryption for API key fields.  The `field` macro defines the
-  # raw getter/setter on the class.  By prepending this module we intercept
-  # reads (decrypt) and writes (encrypt) while `super` delegates to the
-  # original getter/setter generated by rails-settings-cached.
-  #
-  # Backward-compatible: if decryption fails (e.g. the value was stored before
-  # encryption was enabled) the raw value is returned as-is.
-  module EncryptedSettingFields
-    ENCRYPTED_FIELDS = %i[
-      twelve_data_api_key
-      tiingo_api_key
-      eodhd_api_key
-      alpha_vantage_api_key
-      tinkoff_invest_api_key
-      mansa_api_key
-      rentcast_api_key
-      realie_api_key
-      openai_access_token
-      anthropic_access_token
-      jev_api_key
-      external_assistant_token
-    ].freeze
-
-    ENCRYPTED_FIELDS.each do |field_name|
-      define_method(field_name) do
-        raw = super()
-        decrypt_setting(raw)
-      end
-
-      define_method(:"#{field_name}=") do |value|
-        super(encrypt_setting(value))
-      end
-    end
-
-    private
-
-      def setting_encryptor
-        @setting_encryptor ||= begin
-          key = ActiveSupport::KeyGenerator.new(
-            Rails.application.secret_key_base
-          ).generate_key("setting_encryption", 32)
-          ActiveSupport::MessageEncryptor.new(key)
-        end
-      end
-
-      def encrypt_setting(value)
-        return value if value.blank?
-        setting_encryptor.encrypt_and_sign(value)
-      end
-
-      def decrypt_setting(value)
-        return value if value.blank?
-        setting_encryptor.decrypt_and_verify(value)
-      rescue ActiveSupport::MessageVerifier::InvalidSignature,
-             ActiveSupport::MessageEncryptor::InvalidMessage
-        # Value was stored before encryption was enabled — return as-is.
-        # It will be re-encrypted on next write.
-        value
-      end
-  end
-
-  class << self
-    prepend EncryptedSettingFields
-  end
-
-  def self.enabled_securities_providers
-    plural = ENV["SECURITIES_PROVIDERS"].presence || securities_providers.presence
-    if plural.present?
-      plural.to_s.split(",").map(&:strip).reject(&:blank?)
-    else
-      # Backward compat: fall back to singular setting
-      [ ENV["SECURITIES_PROVIDER"].presence || securities_provider.presence ].compact
-    end
-  end
 
   # Sync settings - check both provider env vars for default
   # Only defaults to true if neither provider explicitly disables pending
@@ -212,10 +70,6 @@ class Setting < RailsSettings::Base
   field :onboarding_state, type: :string, default: DEFAULT_ONBOARDING_STATE
   field :require_invite_for_signup, type: :boolean, default: false
   field :require_email_confirmation, type: :boolean, default: ENV.fetch("REQUIRE_EMAIL_CONFIRMATION", "true") == "true"
-  field :invite_only_default_family_id, type: :string, default: nil
-  # Opt-in for self-hosted demo refresh. Managed hosting retains its scheduled behavior.
-  field :demo_family_refresh_enabled, type: :boolean, default: false
-  field :demo_family_refresh_family_id, type: :string, default: nil
 
   def self.validate_onboarding_state!(state)
     return if ONBOARDING_STATES.include?(state)
@@ -226,8 +80,6 @@ class Setting < RailsSettings::Base
   class << self
     alias_method :raw_onboarding_state, :onboarding_state
     alias_method :raw_onboarding_state=, :onboarding_state=
-    alias_method :raw_openai_model, :openai_model
-    alias_method :raw_openai_model=, :openai_model=
 
     def onboarding_state
       value = raw_onboarding_state
@@ -240,18 +92,6 @@ class Setting < RailsSettings::Base
       validate_onboarding_state!(state)
       self.require_invite_for_signup = state == "invite_only"
       self.raw_onboarding_state = state
-    end
-
-    def openai_model=(value)
-      old_value = raw_openai_model
-      self.raw_openai_model = value
-
-      if old_value != value && old_value.present?
-        Rails.logger.info("OpenAI model changed from #{old_value} to #{value}, clearing AI cache for all families")
-        Family.find_each do |family|
-          ClearAiCacheJob.perform_later(family)
-        end
-      end
     end
 
     # Support dynamic field access via bracket notation

@@ -10,7 +10,9 @@ class Money
       @to_currency = to_currency
       @date = date
 
-      super("Couldn't find exchange rate from #{from_currency} to #{to_currency} on #{date}")
+      error_message = message || "Couldn't find exchange rate from #{from_currency} to #{to_currency} on #{date}"
+
+      super(error_message)
     end
   end
 
@@ -37,38 +39,19 @@ class Money
     validate!
   end
 
-  # Exchange money to another currency
-  # Params:
-  #   other_currency: target currency code (e.g. "USD")
-  #   date: date for historical rates (default: Date.current)
-  #   custom_rate: explicit exchange rate to use (skips lookup if provided, including nil check)
-  # Priority:
-  #   1. Use custom_rate if explicitly provided (not nil)
-  #   2. Look up rate via store.find_or_fetch_rate
-  #   3. Raise ConversionError if no valid rate available
-  def exchange_to(other_currency, date: Date.current, custom_rate: nil)
+  def exchange_to(other_currency, date: Date.current, fallback_rate: nil)
     iso_code = currency.iso_code
     other_iso_code = Money::Currency.new(other_currency).iso_code
 
     if iso_code == other_iso_code
       self
     else
-      # Use custom rate if provided, otherwise look it up
-      if custom_rate.present?
-        exchange_rate = custom_rate.to_d
-      else
-        exchange_rate = store.find_or_fetch_rate(from: iso_code, to: other_iso_code, date: date)&.rate
-      end
+      exchange_rate = store.find_or_fetch_rate(from: iso_code, to: other_iso_code, date: date)&.rate || fallback_rate
 
-      raise ConversionError.new(from_currency: iso_code, to_currency: other_iso_code, date: date) unless exchange_rate && exchange_rate > 0
+      raise ConversionError.new(from_currency: iso_code, to_currency: other_iso_code, date: date) unless exchange_rate
 
       Money.new(amount * exchange_rate, other_iso_code)
     end
-  end
-
-  # Rounded to the precision `format` actually prints.
-  def for_display
-    self.class.new(amount.round(currency.default_precision), currency)
   end
 
   def as_json

@@ -6,8 +6,9 @@ class Security::PriceTest < ActiveSupport::TestCase
 
   setup do
     @provider = mock
+    Security.stubs(:provider).returns(@provider)
+
     @security = securities(:aapl)
-    @security.stubs(:price_data_provider).returns(@provider)
   end
 
   test "finds single security price in DB" do
@@ -33,32 +34,6 @@ class Security::PriceTest < ActiveSupport::TestCase
       fetched_price = @security.find_or_fetch_price(date: price_date, cache: true)
       assert_equal expected_price.price, fetched_price.price
     end
-  end
-
-  test "reuses a price inserted while the provider request is in flight" do
-    price_date = 30.years.ago.to_date
-    existing_price = Security::Price.create!(
-      security: @security,
-      date: price_date,
-      price: 300,
-      currency: "USD"
-    )
-    provider_price = Security::Price.new(
-      security: @security,
-      date: price_date,
-      price: 314.34,
-      currency: "USD"
-    )
-
-    # Simulate the initial lookup losing a race to another price insert.
-    @security.prices.expects(:find_by).with(date: price_date).returns(nil)
-    expect_provider_price(security: @security, price: provider_price, date: price_date)
-
-    assert_no_difference "Security::Price.count" do
-      fetched_price = @security.find_or_fetch_price(date: price_date, cache: true)
-      assert_equal provider_price.price, fetched_price.price
-    end
-    assert_equal 300, existing_price.reload.price
   end
 
   test "returns nil if no price found in DB or from provider" do

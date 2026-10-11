@@ -1,12 +1,8 @@
-[![Ask DeepWiki](https://img.shields.io/badge/Ask-DeepWiki-blue)](https://deepwiki.com/we-promise/sure)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/we-promise/sure)
 [![View performance data on Skylight](https://badges.skylight.io/typical/s6PEZSKwcklL.svg)](https://oss.skylight.io/app/applications/s6PEZSKwcklL)
 [![Dosu](https://raw.githubusercontent.com/dosu-ai/assets/main/dosu-badge.svg)](https://app.dosu.dev/a72bdcfd-15f5-4edc-bd85-ea0daa6c3adc/ask)
-[![Pipelock Security Scan](https://github.com/we-promise/sure/actions/workflows/pipelock.yml/badge.svg)](https://github.com/we-promise/sure/actions/workflows/pipelock.yml)
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/we-promise/sure/main/docs/screenshots/dashboard-dark.webp">
-  <img alt="The Sure dashboard in two columns (cashflow, net worth, spending and outflows) beside the AI assistant answering a question about savings" src="https://raw.githubusercontent.com/we-promise/sure/main/docs/screenshots/dashboard-light.webp">
-</picture>
+<img width="1270" height="1140" alt="sure_shot" src="https://github.com/user-attachments/assets/9c6e03cc-3490-40ab-9a68-52e042c51293" />
 
 <p align="center">
   <!-- Keep these links. Translations will automatically update with the README. -->
@@ -31,7 +27,7 @@ involved: [Discord](https://discord.gg/36ZGBsxYEK) • [Website](https://sure.am
 
 ## Backstory
 
-The [Maybe Finance](https://github.com/maybe-finance/maybe) (archived/abandoned repo) team spent most of 2021–2022 building a full-featured personal finance and wealth management app. It even included an “Ask an Advisor” feature that connected users with a real CFP/CFA — all included with your subscription.
+The Maybe Finance team spent most of 2021–2022 building a full-featured personal finance and wealth management app. It even included an “Ask an Advisor” feature that connected users with a real CFP/CFA — all included with your subscription.
 
 The business end of things didn't work out, and so they stopped developing the app in mid-2023.
 
@@ -46,8 +42,6 @@ Join us!
 ## Hosting Sure
 
 Sure is a fully working personal finance app that can be [self hosted with Docker](docs/hosting/docker.md).
-Sure can be accessed from a browser, the macOS desktop app, the mobile app, API
-clients, and LLM agents. See [Sure Clients](docs/clients.md) for an overview.
 
 ## Forking and Attribution
 
@@ -63,7 +57,7 @@ To stay compliant and avoid trademark issues:
 
 With data-heavy apps, inevitably, there are performance issues. We've set up a public dashboard showing the problematic requests seen on the demo site, along with the stacktraces to help debug them.
 
-[https://www.skylight.io/app/applications/s6PEZSKwcklL/recent/6h/endpoints](https://oss.skylight.io/app/applications/s6PEZSKwcklL/recent/6h/endpoints)
+https://www.skylight.io/app/applications/s6PEZSKwcklL/recent/6h/endpoints
 
 Any contributions that help improve performance are very much welcome.
 
@@ -106,19 +100,12 @@ For further instructions, see guides below.
 - [Windows dev setup](https://github.com/we-promise/sure/wiki/Windows-Dev-Setup-Guide)
 - Dev containers - visit [this guide](https://code.visualstudio.com/docs/devcontainers/containers)
 
-### One-click Install
-
-Render expects each button target branch to have a `render.yaml` at the repository root. The branch-ready Blueprint files live in `branches/<branch-name>/render.yaml` in a separate repo and can be copied to each corresponding branch root.
-
-| Option | What it deploys | `latest` | `stable` |
-| --- | --- | --- | --- |
-| **Sure - No AI** | Sure web, Sidekiq worker, Render Postgres, and Render Key Value. AI tokens are intentionally blank. | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/we-promise/sure-render-templates/tree/sure-no-ai-latest) | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/we-promise/sure-render-templates/tree/sure-no-ai) |
-| **Sure - Simple AI** | Sure with OpenAI-backed AI settings, pgvector-ready Postgres, Sidekiq, and Render Key Value. Render prompts for the OpenAI token. | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/we-promise/sure-render-templates/tree/sure-simple-ai-latest) | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/we-promise/sure-render-templates/tree/sure-simple-ai) |
-| **Sure - External AI** | Sure with external assistant settings plus AlphaClaw, which manages the OpenClaw gateway on Render. | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/we-promise/sure-render-templates/tree/sure-external-ai-latest) | [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/we-promise/sure-render-templates/tree/sure-external-ai) |
+### One-click
 
 [![Run on PikaPods](https://www.pikapods.com/static/run-button.svg)](https://www.pikapods.com/pods?run=sure)
 
-[![Deploy on Hostim](https://hostim.dev/img/deploy-button.svg)](https://console.hostim.dev/dashboard?preview=1&modal=1&template=sure)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/T_draF?referralCode=CW_fPQ)
+
 
 ## License and Trademarks
 

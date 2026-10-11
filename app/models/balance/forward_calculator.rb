@@ -1,22 +1,11 @@
 class Balance::ForwardCalculator < Balance::BaseCalculator
-  def initialize(account, window_start_date: nil)
-    super(account)
-    @window_start_date = window_start_date
-    @fell_back = nil  # unknown until calculate is called
-  end
-
-  # True only when we are actually running in incremental mode (i.e. window_start_date
-  # was provided and we successfully found a valid prior balance to seed from).
-  #
-  # Must not be called before calculate — @fell_back is nil until resolve_starting_balances runs.
-  def incremental?
-    raise "incremental? must not be called before calculate" if @window_start_date.present? && @fell_back.nil?
-    @window_start_date.present? && @fell_back == false
-  end
-
   def calculate
     Rails.logger.tagged("Balance::ForwardCalculator") do
-      start_cash_balance, start_non_cash_balance = resolve_starting_balances
+      start_cash_balance = derive_cash_balance_on_date_from_total(
+        total_balance: account.opening_anchor_balance,
+        date: account.opening_anchor_date
+      )
+      start_non_cash_balance = account.opening_anchor_balance - start_cash_balance
 
       calc_start_date.upto(calc_end_date).map do |date|
         valuation = sync_cache.get_valuation(date)
@@ -63,79 +52,12 @@ class Balance::ForwardCalculator < Balance::BaseCalculator
   end
 
   private
-    # Returns [start_cash_balance, start_non_cash_balance] for the first iteration.
-    #
-    # In incremental mode: load the persisted end-of-day balance for window_start_date - 1
-    # from the DB and use that as the seed. Falls back to full recalculation when:
-    #   - No prior balance record exists in the DB, or
-    #   - The prior balance has a non-zero non-cash component (e.g. investment holdings)
-    #     because Holding::Materializer always does a full recalc, which could make the
-    #     persisted non-cash seed stale relative to freshly-computed holding prices.
-    def resolve_starting_balances
-      if @window_start_date.present?
-        if multi_currency_account?
-          Rails.logger.info("Account has multi-currency entries or is foreign, falling back to full recalculation")
-          @fell_back = true
-          return opening_starting_balances
-        end
-
-        prior = prior_balance
-
-        if prior && (prior.end_non_cash_balance || 0).zero?
-          Rails.logger.info("Incremental sync from #{@window_start_date}, seeding from persisted balance on #{prior.date}")
-          @fell_back = false
-          return [ prior.end_cash_balance, prior.end_non_cash_balance ]
-        elsif prior
-          Rails.logger.info("Prior balance has non-cash component, falling back to full recalculation")
-        else
-          Rails.logger.info("No persisted balance found for #{@window_start_date - 1}, falling back to full recalculation")
-        end
-
-        @fell_back = true
-      end
-
-      opening_starting_balances
-    end
-
-    # Returns true when the account has entries in currencies other than the
-    # account currency, or when the account currency differs from the family
-    # currency. In either case, balance calculations depend on exchange rates
-    # that may have been missing (fallback_rate: 1) on a prior sync and later
-    # imported — so we must do a full recalculation to pick them up.
-    def multi_currency_account?
-      account.entries.excluding_pending.where.not(currency: account.currency).exists? ||
-        account.currency != account.family.currency
-    end
-
-    def opening_starting_balances
-      # When the window starts before the opening anchor (a reconciliation or
-      # other entry was backfilled with a date earlier than the anchor), we have
-      # no known balance for that earlier start date. Seed flat at zero — the
-      # earliest reconciliation and the opening anchor each reset the absolute
-      # balance on their own dates via the valuation-override path, so the seed
-      # only affects the pre-anchor opening day's adjustment, not later totals.
-      return [ 0, 0 ] if calculation_start_date < account.opening_anchor_date
-
-      cash = derive_cash_balance_on_date_from_total(
-        total_balance: account.opening_anchor_balance,
-        date: account.opening_anchor_date
-      )
-      [ cash, account.opening_anchor_balance - cash ]
-    end
-
-    # The balance record for the day immediately before the incremental window.
-    def prior_balance
-      account.balances
-        .where(currency: account.currency)
-        .find_by(date: @window_start_date - 1)
-    end
-
     def calc_start_date
-      incremental? ? @window_start_date : calculation_start_date
+      account.opening_anchor_date
     end
 
     def calc_end_date
-      [ account.entries.excluding_pending.maximum(:date), account.holdings.maximum(:date) ].compact.max || Date.current
+      [ account.entries.order(:date).last&.date, account.holdings.order(:date).last&.date ].compact.max || Date.current
     end
 
     # Negative entries amount on an "asset" account means, "account value has increased"
@@ -155,5 +77,9 @@ class Balance::ForwardCalculator < Balance::BaseCalculator
     # Derives non-cash balance, starting from the start-of-day, applying entries in forward to get the end-of-day balance
     def derive_end_non_cash_balance(start_non_cash_balance:, date:)
       derive_non_cash_balance(start_non_cash_balance, date, direction: :forward)
+    end
+
+    def flows_factor
+      account.asset? ? 1 : -1
     end
 end

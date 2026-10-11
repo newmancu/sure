@@ -3,14 +3,6 @@
 class Api::V1::BaseController < ApplicationController
   include Doorkeeper::Rails::Helpers
 
-  InvalidFilterError = Class.new(StandardError)
-
-  class << self
-    def valid_uuid?(value)
-      UuidFormat.valid?(value)
-    end
-  end
-
   # Skip regular session-based authentication for API
   skip_authentication
 
@@ -24,10 +16,6 @@ class Api::V1::BaseController < ApplicationController
   before_action :force_json_format
   # Use our custom authentication that supports both OAuth and API keys
   before_action :authenticate_request!
-  # Localize registers this before API authentication in ApplicationController.
-  # Resolve the family zone only after the API identity has populated Current.
-  skip_around_action :switch_timezone
-  around_action :switch_timezone
   before_action :check_api_key_rate_limit
   before_action :log_api_access
 
@@ -42,7 +30,6 @@ class Api::V1::BaseController < ApplicationController
   rescue_from ActiveRecord::RecordNotFound, with: :handle_not_found
   rescue_from Doorkeeper::Errors::DoorkeeperError, with: :handle_unauthorized
   rescue_from ActionController::ParameterMissing, with: :handle_bad_request
-  rescue_from InvalidFilterError, with: :handle_invalid_filter
 
   private
 
@@ -69,7 +56,7 @@ class Api::V1::BaseController < ApplicationController
       # Check token validity and scope (read_write includes read access)
       has_sufficient_scope = access_token&.scopes&.include?("read") || access_token&.scopes&.include?("read_write")
 
-      unless access_token&.accessible? && has_sufficient_scope
+      unless access_token && !access_token.expired? && has_sufficient_scope
         render_json({ error: "unauthorized", message: "Access token is invalid, expired, or missing required scope" }, status: :unauthorized)
         return false
       end
@@ -84,11 +71,6 @@ class Api::V1::BaseController < ApplicationController
         unless @current_user
           Rails.logger.warn "API OAuth Token Invalid: Access token resource_owner_id #{doorkeeper_token.resource_owner_id} does not exist"
           render_json({ error: "unauthorized", message: "Access token is invalid - user not found" }, status: :unauthorized)
-          return false
-        end
-
-        unless @current_user.active?
-          render_json({ error: "unauthorized", message: "Account has been deactivated" }, status: :unauthorized)
           return false
         end
       else
@@ -114,11 +96,6 @@ class Api::V1::BaseController < ApplicationController
       return false unless @api_key && @api_key.active?
 
       @current_user = @api_key.user
-      unless @current_user.active?
-        render_json({ error: "unauthorized", message: "Account has been deactivated" }, status: :unauthorized)
-        return false
-      end
-
       @api_key.update_last_used!
       @authentication_method = :api_key
       @rate_limiter = ApiRateLimiter.limit(@api_key)
@@ -217,39 +194,9 @@ class Api::V1::BaseController < ApplicationController
       true
     end
 
-    def ensure_read_scope
-      authorize_scope!(:read)
-    end
-
     # Consistent JSON response method
     def render_json(data, status: :ok)
       render json: data, status: status
-    end
-
-    def valid_uuid?(value)
-      self.class.valid_uuid?(value)
-    end
-
-    def safe_page_param
-      page = params[:page].to_i
-      page > 0 ? page : 1
-    end
-
-    def safe_per_page_param
-      per_page = params[:per_page].to_i
-      case per_page
-      when 1..100   then per_page
-      when (101..)  then 100
-      else               25
-      end
-    end
-
-    def render_validation_error(message)
-      render_json({
-        error: "validation_failed",
-        message: message,
-        errors: [ message ]
-      }, status: :unprocessable_entity)
     end
 
     # Error handlers
@@ -266,16 +213,6 @@ class Api::V1::BaseController < ApplicationController
     def handle_bad_request(exception)
       Rails.logger.warn "API Bad Request: #{exception.message}"
       render_json({ error: "bad_request", message: "Required parameters are missing or invalid" }, status: :bad_request)
-    end
-
-    def handle_invalid_filter(exception)
-      render_validation_error(exception.message)
-    end
-
-    def parse_date_param(key)
-      Date.iso8601(params[key].to_s)
-    rescue ArgumentError
-      raise InvalidFilterError, "#{key} must be an ISO 8601 date"
     end
 
     # Log API access for monitoring and debugging
@@ -314,15 +251,23 @@ class Api::V1::BaseController < ApplicationController
 
     # Set up Current context for API requests since we don't use session-based auth
     def setup_current_context_for_api
-      return unless @current_user
-
-      # Build a fresh unsaved session so API requests never reuse an existing
-      # web session that may already carry impersonation state.
-      Current.session = @current_user.sessions.build(
-        user_agent: request.user_agent,
-        ip_address: request.ip
-      )
-      Current.session.active_impersonator_session = nil
+      # For API requests, we need to create a minimal session-like object
+      # or find/create an actual session for this user to make Current.user work
+      if @current_user
+        # Try to find an existing session for this user, or create a temporary one
+        session = @current_user.sessions.first
+        if session
+          Current.session = session
+        else
+          # Create a temporary session for this API request
+          # This won't be persisted but will allow Current.user to work
+          session = @current_user.sessions.build(
+            user_agent: request.user_agent,
+            ip_address: request.ip
+          )
+          Current.session = session
+        end
+      end
     end
 
     # Check if AI features are enabled for the current user

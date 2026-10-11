@@ -3,9 +3,9 @@ module Money::Formatting
 
   # Locale groups by formatting pattern
   # European style: dot as thousands delimiter, comma as decimal separator, symbol after number
-  EUROPEAN_SYMBOL_AFTER = %i[de es it tr ca ro pt-PT].freeze
+  EUROPEAN_SYMBOL_AFTER = %i[de es it tr ca ro].freeze
   # Scandinavian/Eastern European: space as thousands delimiter, comma as decimal separator, symbol after number
-  SPACE_DELIMITER_SYMBOL_AFTER = %i[pl nb hu].freeze
+  SPACE_DELIMITER_SYMBOL_AFTER = %i[pl nb].freeze
   # European style: dot as thousands delimiter, comma as decimal separator, symbol before number
   EUROPEAN_SYMBOL_BEFORE = %i[nl pt-BR].freeze
 
@@ -13,7 +13,7 @@ module Money::Formatting
     locale = options[:locale] || I18n.locale
     default_opts = format_options(locale)
 
-    number_to_currency(amount, default_opts.merge(options.except(:locale)))
+    number_to_currency(amount, default_opts.merge(options))
   end
   alias_method :to_s, :format
 
@@ -40,8 +40,6 @@ module Money::Formatting
 
     def locale_options(locale)
       locale_sym = (locale || I18n.locale || :en).to_sym
-
-      return { format: "%n %u" } if currency.iso_code == "MXN" && locale_sym == :es
 
       # French locale: uses non-breaking spaces (unique formatting)
       if locale_sym == :fr

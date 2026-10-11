@@ -1,34 +1,20 @@
 <%= content_for :page_title, t(".page_title") %>
 
-<% if @encryption_unconfigured %>
-  <div class="mb-4">
-    <%= render DS::Alert.new(variant: :warning, title: t(".encryption_warning.title")) do %>
-      <p><%= t(".encryption_warning.intro") %></p>
-      <ul class="list-disc pl-5">
-        <% t(".encryption_warning.keys").each do |key| %>
-          <li><%= key %></li>
-        <% end %>
-      </ul>
-      <p><%= t(".encryption_warning.generate") %></p>
-    <% end %>
-  </div>
-<% end %>
-
 <%= settings_section title: t(".mfa_title"), subtitle: t(".mfa_description") do %>
   <div class="space-y-4">
     <div class="p-3 shadow-border-xs bg-container rounded-lg md:flex md:justify-between md:items-center">
       <div class="flex items-center gap-3">
-        <div class="w-9 h-9 rounded-full bg-surface-inset flex justify-center items-center">
+        <div class="w-9 h-9 rounded-full bg-gray-25 flex justify-center items-center">
           <%= icon "shield-check" %>
         </div>
 
         <div class="text-sm space-y-1">
           <% if Current.user.otp_required? %>
-            <p class="text-primary"><%= t(".mfa_enabled_status_html") %></p>
-            <p class="text-secondary"><%= t(".mfa_enabled_description") %></p>
+            <p class="text-primary">Two-factor authentication is <span class="font-medium text-green-600">enabled</span></p>
+            <p class="text-secondary">Your account is protected with an additional layer of security.</p>
           <% else %>
-            <p class="text-primary"><%= t(".mfa_disabled_status_html") %></p>
-            <p class="text-secondary"><%= t(".mfa_disabled_description") %></p>
+            <p class="text-primary">Two-factor authentication is <span class="font-medium text-red-600">disabled</span></p>
+            <p class="text-secondary">Enable 2FA to add an extra layer of security to your account.</p>
           <% end %>
         </div>
       </div>
@@ -59,82 +45,6 @@
   </div>
 <% end %>
 
-<% if Current.user.otp_required? %>
-  <%= settings_section title: t(".webauthn_title"), subtitle: t(".webauthn_description") do %>
-    <div class="space-y-4">
-      <% if @webauthn_credentials.any? %>
-        <div class="space-y-2">
-          <% @webauthn_credentials.each do |credential| %>
-            <div class="flex items-center justify-between bg-container p-4 shadow-border-xs rounded-lg">
-              <div class="flex items-center gap-3">
-                <div class="w-9 h-9 shrink-0 bg-surface rounded-full flex items-center justify-center">
-                  <%= icon "fingerprint", class: "w-5 h-5 text-secondary" %>
-                </div>
-                <div>
-                  <p class="font-medium text-primary"><%= credential.nickname %></p>
-                  <p class="text-sm text-secondary">
-                    <%= t(".webauthn_added", date: l(credential.created_at.to_date)) %>
-                    <% if credential.last_used_at.present? %>
-                      <span><%= t(".webauthn_last_used", time_ago: time_ago_in_words(credential.last_used_at)) %></span>
-                    <% end %>
-                  </p>
-                </div>
-              </div>
-
-              <%= render DS::Button.new(
-                text: t(".webauthn_remove"),
-                variant: "outline_destructive",
-                size: "sm",
-                href: settings_webauthn_credential_path(credential),
-                method: :delete,
-                confirm: CustomConfirm.new(
-                  title: t(".webauthn_remove_confirm"),
-                  body: t(".webauthn_remove_confirm_body"),
-                  btn_text: t(".webauthn_remove"),
-                  destructive: true
-                )
-              ) %>
-            </div>
-          <% end %>
-        </div>
-      <% else %>
-        <div class="bg-surface-inset rounded-lg p-4">
-          <p class="text-sm text-secondary"><%= t(".webauthn_empty") %></p>
-        </div>
-      <% end %>
-
-      <%= styled_form_with scope: :webauthn_credential,
-                           url: settings_webauthn_credentials_path,
-                           method: :post,
-                           class: "space-y-3",
-                           data: {
-                             controller: "webauthn-registration",
-                             action: "submit->webauthn-registration#register",
-                             webauthn_registration_options_url_value: options_settings_webauthn_credentials_path,
-                             webauthn_registration_create_url_value: settings_webauthn_credentials_path,
-                             webauthn_registration_unsupported_message_value: t(".webauthn_unsupported"),
-                             webauthn_registration_error_fallback_value: t("webauthn_credentials.failure")
-                           } do |form| %>
-        <%= form.text_field :nickname,
-                            placeholder: t(".webauthn_name_placeholder"),
-                            label: t(".webauthn_name_label"),
-                            data: { webauthn_registration_target: "nickname" } %>
-
-        <p class="text-sm text-destructive" role="alert" aria-live="assertive" aria-atomic="true" aria-hidden="true" hidden data-webauthn-registration-target="error"></p>
-
-        <div>
-          <%= render DS::Button.new(
-            text: t(".webauthn_add"),
-            variant: "secondary",
-            icon: "fingerprint",
-            type: "submit"
-          ) %>
-        </div>
-      <% end %>
-    </div>
-  <% end %>
-<% end %>
-
 <% if @oidc_identities.any? || AuthConfig.sso_providers.any? %>
   <%= settings_section title: t(".sso_title"), subtitle: t(".sso_subtitle") do %>
     <% if @oidc_identities.any? %>
@@ -143,8 +53,7 @@
           <div class="flex items-center justify-between bg-container p-4 shadow-border-xs rounded-lg">
             <div class="flex items-center gap-3">
               <div class="w-9 h-9 shrink-0 bg-surface rounded-full flex items-center justify-center">
-                <% icon_name = identity.provider_config&.dig(:icon).presence || "key" %>
-                <%= icon icon_name, class: "w-5 h-5 text-secondary" %>
+                <%= icon identity.provider_config&.dig(:icon) || "key", class: "w-5 h-5 text-secondary" %>
               </div>
               <div>
                 <p class="font-medium text-primary"><%= identity.provider_config&.dig(:label) || identity.provider.titleize %></p>
@@ -174,8 +83,11 @@
         <% end %>
       </div>
       <% if @oidc_identities.count == 1 && Current.user.password_digest.blank? %>
-        <div class="mt-4">
-          <%= render DS::Alert.new(message: t(".sso_warning_message"), variant: :warning) %>
+        <div class="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+          <div class="flex items-start gap-2">
+            <%= icon "alert-triangle", class: "w-5 h-5 text-amber-600 shrink-0 mt-0.5" %>
+            <p class="text-sm text-amber-800"><%= t(".sso_warning_message") %></p>
+          </div>
         </div>
       <% end %>
     <% else %>

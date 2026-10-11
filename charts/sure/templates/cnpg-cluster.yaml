@@ -74,10 +74,6 @@ spec:
   tolerations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
-  {{- with .Values.cnpg.cluster.resources }}
-  resources:
-    {{- toYaml . | nindent 4 }} 
-  {{- end }}
   {{- with .Values.cnpg.cluster.topologySpreadConstraints }}
   topologySpreadConstraints:
     {{- toYaml . | nindent 4 }}

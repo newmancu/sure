@@ -2,33 +2,33 @@
 
 <div class="flex flex-col gap-2">
   <%= form.text_field :name,
-                  label: t(".name_label"),
-                  placeholder: t(".name_placeholder"),
+                  label: "Name",
+                  placeholder: "Vacation home",
                   required: true %>
+
+  <%= form.select :subtype,
+                Property::SUBTYPES.map { |k, v| [v[:long], k] },
+                { prompt: "Select type", label: "Property type" }, required: true %>
 
   <%= form.hidden_field :accountable_type, value: "Property" %>
 
   <%= form.fields_for :accountable do |property_form| %>
-    <%= property_form.select :subtype,
-                Property.subtype_options_for_select,
-                { prompt: t(".subtype_prompt"), label: t(".property_type_label") }, required: true %>
-
     <div class="flex items-center gap-2">
       <%= property_form.number_field :year_built,
-                    label: t(".year_built_label"),
-                    placeholder: t(".year_built_placeholder"),
+                    label: "Year Built (optional)",
+                    placeholder: "1990",
                     min: 1500,
                     max: Time.current.year %>
     </div>
 
     <div class="flex items-center gap-2">
       <%= property_form.number_field :area_value,
-                      label: t(".area_label"),
-                      placeholder: t(".area_placeholder"),
+                      label: "Area (optional)",
+                      placeholder: "1200",
                       min: 0 %>
       <%= property_form.select :area_unit,
-                      [[t(".square_feet"), "sqft"], [t(".square_meters"), "sqm"]],
-                      { label: t(".area_unit_label") } %>
+                      [["Square Feet", "sqft"], ["Square Meters", "sqm"]],
+                      { label: "Area Unit" } %>
     </div>
   <% end %>
 

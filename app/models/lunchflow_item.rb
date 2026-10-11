@@ -1,7 +1,5 @@
 class LunchflowItem < ApplicationRecord
-  include Syncable, Provided, Unlinking, Encryptable, DestroyableLater
-
-  DEFAULT_BASE_URL = "https://lunchflow.app/api/v1".freeze
+  include Syncable, Provided, Unlinking, Encryptable
 
   enum :status, { good: "good", requires_update: "requires_update" }, default: :good
 
@@ -16,15 +14,19 @@ class LunchflowItem < ApplicationRecord
   validates :api_key, presence: true, on: :create
 
   belongs_to :family
-  has_one_attached :logo, dependent: :purge_later
+  has_one_attached :logo
 
   has_many :lunchflow_accounts, dependent: :destroy
   has_many :accounts, through: :lunchflow_accounts
 
   scope :active, -> { where(scheduled_for_deletion: false) }
-  scope :syncable, -> { active }
   scope :ordered, -> { order(created_at: :desc) }
   scope :needs_update, -> { where(status: :requires_update) }
+
+  def destroy_later
+    update!(scheduled_for_deletion: true)
+    DestroyJob.perform_later(self)
+  end
 
   def import_latest_lunchflow_data
     provider = lunchflow_provider
@@ -101,16 +103,11 @@ class LunchflowItem < ApplicationRecord
     unlinked_count = unlinked_accounts_count
 
     if total_accounts == 0
-      I18n.t("lunchflow_items.lunchflow_item.sync_status.no_accounts")
+      "No accounts found"
     elsif unlinked_count == 0
-      I18n.t("lunchflow_items.lunchflow_item.sync_status.synced", count: linked_count)
+      "#{linked_count} #{'account'.pluralize(linked_count)} synced"
     else
-      I18n.t(
-        "lunchflow_items.lunchflow_item.sync_status.partial_setup",
-        count: unlinked_count,
-        linked: linked_count,
-        unlinked: unlinked_count
-      )
+      "#{linked_count} synced, #{unlinked_count} need setup"
     end
   end
 
@@ -156,17 +153,6 @@ class LunchflowItem < ApplicationRecord
   end
 
   def effective_base_url
-    return DEFAULT_BASE_URL if base_url.blank?
-
-    uri = URI.parse(base_url)
-    return DEFAULT_BASE_URL unless uri.is_a?(URI::HTTPS)
-    return DEFAULT_BASE_URL unless uri.host == "lunchflow.app"
-    return DEFAULT_BASE_URL unless [ "", "/", "/api/v1", "/api/v1/" ].include?(uri.path)
-    return DEFAULT_BASE_URL unless uri.query.blank?
-    return DEFAULT_BASE_URL unless uri.fragment.blank?
-
-    DEFAULT_BASE_URL
-  rescue URI::InvalidURIError
-    DEFAULT_BASE_URL
+    base_url.presence || "https://lunchflow.app/api/v1"
   end
 end

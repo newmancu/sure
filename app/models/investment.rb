@@ -9,7 +9,6 @@ class Investment < ApplicationRecord
   SUBTYPES = {
     # === United States ===
     "brokerage" => { short: "Brokerage", long: "Brokerage", region: "us", tax_treatment: :taxable },
-    "cash_management" => { short: "CMA", long: "Cash Management Account", region: "us", tax_treatment: :taxable },
     "401k" => { short: "401(k)", long: "401(k)", region: "us", tax_treatment: :tax_deferred },
     "roth_401k" => { short: "Roth 401(k)", long: "Roth 401(k)", region: "us", tax_treatment: :tax_exempt },
     "403b" => { short: "403(b)", long: "403(b)", region: "us", tax_treatment: :tax_deferred },
@@ -31,65 +30,25 @@ class Investment < ApplicationRecord
     "workplace_pension_uk" => { short: "Pension", long: "Workplace Pension", region: "uk", tax_treatment: :tax_deferred },
 
     # === Canada ===
-    "tfsa" => { short: "TFSA", long: "Tax-Free Savings Account", region: "ca", tax_treatment: :tax_exempt },
     "rrsp" => { short: "RRSP", long: "Registered Retirement Savings Plan", region: "ca", tax_treatment: :tax_deferred },
-    "non-registered" => { short: "Non-Registered", long: "Non-Registered Investment Account", region: "ca", tax_treatment: :taxable },
-    "fhsa" => { short: "FHSA", long: "First Home Savings Account", region: "ca", tax_treatment: :tax_exempt },
-    "rdsp" => { short: "RDSP", long: "Registered Disability Savings Plan", region: "ca", tax_treatment: :tax_advantaged },
+    "tfsa" => { short: "TFSA", long: "Tax-Free Savings Account", region: "ca", tax_treatment: :tax_exempt },
     "resp" => { short: "RESP", long: "Registered Education Savings Plan", region: "ca", tax_treatment: :tax_advantaged },
-    "dpsp" => { short: "DPSP", long: "Deferred Profit Sharing Plan", region: "ca", tax_treatment: :tax_deferred },
-    "prpp" => { short: "PRPP", long: "Pooled Registered Pension Plan", region: "ca", tax_treatment: :tax_deferred },
     "lira" => { short: "LIRA", long: "Locked-In Retirement Account", region: "ca", tax_treatment: :tax_deferred },
     "rrif" => { short: "RRIF", long: "Registered Retirement Income Fund", region: "ca", tax_treatment: :tax_deferred },
-    "lif" => { short: "LIF", long: "Life Income Fund", region: "ca", tax_treatment: :tax_deferred },
-    "lrif" => { short: "LRIF", long: "Locked-In Retirement Income Fund", region: "ca", tax_treatment: :tax_deferred },
-    "prif" => { short: "PRIF", long: "Prescribed Registered Retirement Income Fund", region: "ca", tax_treatment: :tax_deferred },
-    "rlif" => { short: "RLIF", long: "Restricted Life Income Fund", region: "ca", tax_treatment: :tax_deferred },
 
     # === Australia ===
     "super" => { short: "Super", long: "Superannuation", region: "au", tax_treatment: :tax_deferred },
     "smsf" => { short: "SMSF", long: "Self-Managed Super Fund", region: "au", tax_treatment: :tax_deferred },
 
     # === Europe ===
-    "assurance_vie" => { short: "AV", long: "Assurance Vie", region: "eu", tax_treatment: :tax_advantaged },
     "pea" => { short: "PEA", long: "Plan d'Épargne en Actions", region: "eu", tax_treatment: :tax_advantaged },
     "pillar_3a" => { short: "Pillar 3a", long: "Private Pension (Pillar 3a)", region: "eu", tax_treatment: :tax_deferred },
     "riester" => { short: "Riester", long: "Riester-Rente", region: "eu", tax_treatment: :tax_deferred },
-
-    # === India ===
-    # Pensions & insurance
-    "nps" => { short: "NPS", long: "National Pension System", region: "in", tax_treatment: :tax_advantaged },
-    "apy" => { short: "APY", long: "Atal Pension Yojana", region: "in", tax_treatment: :tax_advantaged },
-    "life_insurance" => { short: "Life Insurance", long: "Life Insurance", region: "in", tax_treatment: :tax_advantaged },
-    # Equity / market-linked
-    "indian_stocks" => { short: "Indian Stocks", long: "Indian Stocks (Demat)", region: "in", tax_treatment: :taxable },
-    "indian_equity" => { short: "Indian Equity", long: "Indian Equity", region: "in", tax_treatment: :taxable },
-    "indian_etf" => { short: "Indian ETF", long: "Indian ETF", region: "in", tax_treatment: :taxable },
-    # Fixed-income / small-savings
-    "ppf" => { short: "PPF", long: "Public Provident Fund", region: "in", tax_treatment: :tax_exempt },
-    "ssy" => { short: "SSY", long: "Sukanya Samriddhi Yojana", region: "in", tax_treatment: :tax_exempt },
-    "nsc" => { short: "NSC", long: "National Savings Certificate", region: "in", tax_treatment: :tax_advantaged },
-    "scss" => { short: "SCSS", long: "Senior Citizens' Savings Scheme", region: "in", tax_treatment: :taxable },
-    "fd" => { short: "FD", long: "Fixed Deposit", region: "in", tax_treatment: :taxable },
-    "rd" => { short: "RD", long: "Recurring Deposit", region: "in", tax_treatment: :taxable },
-    "pomis" => { short: "POMIS", long: "Post Office Monthly Income Scheme", region: "in", tax_treatment: :taxable },
-    "kvp" => { short: "KVP", long: "Kisan Vikas Patra", region: "in", tax_treatment: :taxable },
-    # Bonds
-    "g_sec" => { short: "G-Sec", long: "Government Securities (G-Secs)", region: "in", tax_treatment: :taxable },
-    "sdl" => { short: "SDL", long: "State Development Loans (SDLs)", region: "in", tax_treatment: :taxable },
-    "corporate_bond" => { short: "Corporate Bond", long: "Corporate Bond", region: "in", tax_treatment: :taxable },
-    "infrastructure_bond" => { short: "Infra Bond", long: "Infrastructure Bond", region: "in", tax_treatment: :tax_advantaged },
-    "tax_free_bond" => { short: "Tax-Free Bond", long: "Tax-Free Bond", region: "in", tax_treatment: :tax_exempt },
-    # India-specific gold instruments
-    "gold_etf" => { short: "Gold ETF", long: "Gold ETF", region: "in", tax_treatment: :taxable },
-    "gold_mf" => { short: "Gold MF", long: "Gold Mutual Fund", region: "in", tax_treatment: :taxable },
-    "sgb" => { short: "SGB", long: "Sovereign Gold Bond", region: "in", tax_treatment: :tax_advantaged },
 
     # === Generic (available everywhere) ===
     "pension" => { short: "Pension", long: "Pension", region: nil, tax_treatment: :tax_deferred },
     "retirement" => { short: "Retirement", long: "Retirement Account", region: nil, tax_treatment: :tax_deferred },
     "mutual_fund" => { short: "Mutual Fund", long: "Mutual Fund", region: nil, tax_treatment: :taxable },
-    "gold" => { short: "Gold", long: "Gold (physical or digital)", region: nil, tax_treatment: :taxable },
     "angel" => { short: "Angel", long: "Angel Investment", region: nil, tax_treatment: :taxable },
     "trust" => { short: "Trust", long: "Trust", region: nil, tax_treatment: :taxable },
     "other" => { short: "Other", long: "Other Investment", region: nil, tax_treatment: :taxable }
@@ -123,8 +82,7 @@ class Investment < ApplicationRecord
       "CAD" => "ca",
       "AUD" => "au",
       "EUR" => "eu",
-      "CHF" => "eu",
-      "INR" => "in"
+      "CHF" => "eu"
     }.freeze
 
     # Returns subtypes grouped by region for use with grouped_options_for_select
@@ -134,16 +92,12 @@ class Investment < ApplicationRecord
       grouped = SUBTYPES.group_by { |_, v| v[:region] }
 
       # Build region order: user's region first (if known), then Generic, then others
-      other_regions = %w[us uk ca au eu in] - [ user_region ].compact
-      region_order = if user_region
-        [ user_region, nil, *other_regions ].uniq
-      else
-        [ nil, *other_regions ].uniq
-      end
+      other_regions = %w[us uk ca au eu] - [ user_region ].compact
+      region_order = [ user_region, nil, *other_regions ].compact.uniq
 
       region_order.filter_map do |region|
         next unless grouped[region]
-        [ region_label_for(region), grouped[region].map { |k, _v| [ long_subtype_label_for(k), k ] } ]
+        [ region_label_for(region), grouped[region].map { |k, v| [ v[:long], k ] } ]
       end
     end
   end

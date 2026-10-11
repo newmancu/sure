@@ -6,7 +6,7 @@ A Flutter mobile application for [Sure](https://github.com/we-promise/sure) pers
 
 This app is a mobile companion to the [Sure personal finance management system](https://github.com/we-promise/sure). It provides basic functionality to:
 
-- **Login** - Authenticate with your Sure Finances server
+- **Login** - Authenticate with your Sure Finance server
 - **View Balance** - See all your accounts and their balances
 
 For more detailed technical documentation, see [docs/TECHNICAL_GUIDE.md](docs/TECHNICAL_GUIDE.md).
@@ -54,7 +54,7 @@ This step generates the app icons for all platforms based on the source icon in 
 
 ### 4. Configure API Endpoint
 
-Edit `lib/services/api_config.dart` to point to your Sure Finances server:
+Edit `lib/services/api_config.dart` to point to your Sure Finance server:
 
 ```dart
 // For local development with Android emulator
@@ -74,9 +74,7 @@ static String _baseUrl = 'https://your-sure-server.com';
 flutter run -d android
 
 # For iOS
-flutter run -d <simulator-device-UDID>
-# or
-flutter run -d "iPhone 17 Pro"
+flutter run -d ios
 
 # For web (development only)
 flutter run -d chrome
@@ -113,7 +111,7 @@ flutter run -d chrome
 
 ## API Integration
 
-This app integrates with the Sure Finances Rails API:
+This app integrates with the Sure Finance Rails API:
 
 ### Authentication
 - `POST /api/v1/auth/login` - User authentication
@@ -151,9 +149,6 @@ The app includes automated CI/CD via GitHub Actions (`.github/workflows/flutter-
 - **Android Build**: Generates release APK and AAB artifacts
 - **iOS Build**: Generates iOS release build (unsigned)
 - **Quality Checks**: Code analysis and tests run before building
-- **TestFlight**: `mobile-release` (mobile tags) triggers `.github/workflows/ios-testflight.yml` for signed App Store Connect uploads as part of one release flow
-
-See [mobile/docs/iOS_TESTFLIGHT.md](mobile/docs/iOS_TESTFLIGHT.md) for required secrets and setup.
 
 ### Downloading Build Artifacts
 
@@ -171,8 +166,6 @@ flutter build apk --release
 # or for App Bundle
 flutter build appbundle --release
 ```
-
-Android release metadata comes from `pubspec.yaml` (`version: <name>+<code>`). Keep the numeric build code increasing for every release so Android can install upgrades over older APKs.
 
 ### iOS
 

@@ -3,23 +3,9 @@
 json.id transaction.id
 json.date transaction.entry.date
 json.amount transaction.entry.amount_money.format
-
-# Agent/automation-friendly numeric fields (avoid localized parsing and clarify sign)
-# `amount` in v1 is a localized string and may follow an accounting sign convention.
-# Expose minor units (cents) as integers to make the API agent-friendly.
-# Uses currency.minor_unit_conversion (e.g. 100 for USD/EUR, 1 for JPY, 1000 for KWD).
-amount_money = transaction.entry.amount_money
-conversion_factor = amount_money.currency.minor_unit_conversion
-amount_cents = (amount_money.amount * conversion_factor).round(0).to_i.abs
-json.amount_cents amount_cents
-json.signed_amount_cents(transaction.entry.classification == "income" ? amount_cents : -amount_cents)
-
 json.currency transaction.entry.currency
 json.name transaction.entry.name
 json.notes transaction.entry.notes
-json.external_id transaction.entry.external_id
-json.source transaction.entry.source
-json.user_modified transaction.entry.user_modified
 json.classification transaction.entry.classification
 
 # Account information
@@ -34,6 +20,7 @@ if transaction.category.present?
   json.category do
     json.id transaction.category.id
     json.name transaction.category.name
+    json.classification transaction.category.classification
     json.color transaction.category.color
     json.icon transaction.category.lucide_icon
   end
@@ -59,23 +46,18 @@ json.tags transaction.tags do |tag|
 end
 
 # Transfer information (if this transaction is part of a transfer)
-transfer = transaction.transfer
-if transfer.present?
+if transaction.transfer.present?
   json.transfer do
-    json.id transfer.id
+    json.id transaction.transfer.id
+    json.amount transaction.transfer.amount_abs.format
+    json.currency transaction.transfer.inflow_transaction.entry.currency
 
     # Other transaction in the transfer
-    if transfer.inflow_transaction_id == transaction.id
-      inflow_transaction = transaction
-      other_transaction = transfer.outflow_transaction
+    if transaction.transfer.inflow_transaction == transaction
+      other_transaction = transaction.transfer.outflow_transaction
     else
-      inflow_transaction = transfer.inflow_transaction
-      # When rendering the outflow, the inflow is the counterparty transaction.
-      other_transaction = inflow_transaction
+      other_transaction = transaction.transfer.inflow_transaction
     end
-
-    json.amount inflow_transaction.entry.amount_money.abs.format
-    json.currency inflow_transaction.entry.currency
 
     if other_transaction.present?
       json.other_account do

@@ -22,24 +22,9 @@
 # Troubleshooting:
 # ----------------
 #
-# Problems? Swing by our Discord or open a Discussion here:
+# If you run into problems, you should open a Discussion here:
 #
 # https://github.com/we-promise/sure/discussions/categories/general
-#
-# IPv6 Note (Yahoo Finance Sync, others?):
-# ----------------------------------------
-# If you encounter "Failed to open TCP connection" errors to hosts like
-# fc.yahoo.com in your environment, the issue may be that DNS resolves
-# to an IPv6 address first. Since IPv6 may not be configured in the container,
-# the connection hangs. To work around this, you can hardcode the IPv4
-# addresses in your container's /etc/hosts or set custom DNS:
-#
-#   extra_hosts:
-#     - "fc.yahoo.com:173.223.12.81"
-#     - "query1.finance.yahoo.com:98.136.48.169"
-#     - "query2.finance.yahoo.com:98.136.48.169"
-#
-# Or use explicit DNS servers that prefer IPv4 (already configured below).
 #
 
 x-db-env: &db_env
@@ -58,25 +43,6 @@ x-rails-env: &rails_env
   REDIS_URL: redis://redis:6379/1
   # NOTE: enabling OpenAI will incur costs when you use AI-related features in the app (chat, rules).  Make sure you have set appropriate spend limits on your account before adding this.
   OPENAI_ACCESS_TOKEN: ${OPENAI_ACCESS_TOKEN}
-  OPENAI_MODEL: ${OPENAI_MODEL:-}
-  OPENAI_URI_BASE: ${OPENAI_URI_BASE:-}
-  LLM_CONTEXT_WINDOW: ${LLM_CONTEXT_WINDOW:-}
-  OPENAI_REQUEST_TIMEOUT: ${OPENAI_REQUEST_TIMEOUT:-60}
-  # Health-check probes (System Health → AI Status → "Run checks") bound each
-  # probe call. Distinct from OPENAI_REQUEST_TIMEOUT, which bounds real LLM
-  # calls the app makes; the probe default is 5s. AI_HEALTH_PROBE_CACHE_TTL
-  # controls how long probe results are cached (default 60s).
-  AI_HEALTH_PROBE_TIMEOUT: ${AI_HEALTH_PROBE_TIMEOUT:-}
-  AI_HEALTH_PROBE_CACHE_TTL: ${AI_HEALTH_PROBE_CACHE_TTL:-}
-  # Seconds the chat waits for an assistant response before showing a "no response"
-  # error. This covers the whole turn, so its worst case is a sum:
-  #   (1 + ASSISTANT_MAX_TOOL_CALL_ITERATIONS) * OPENAI_REQUEST_TIMEOUT
-  #     + tool execution + queue wait
-  # 90 is sized for typical cloud latency, not that bound — raise it (or lower the
-  # tool-call cap) once per-call latency approaches OPENAI_REQUEST_TIMEOUT, which
-  # is what happens with a local model. See compose.example.ai.yml.
-  AI_RESPONSE_TIMEOUT: ${AI_RESPONSE_TIMEOUT:-90}
-  ASSISTANT_MAX_TOOL_CALL_ITERATIONS: ${ASSISTANT_MAX_TOOL_CALL_ITERATIONS:-}
 
 services:
   web:
@@ -85,22 +51,14 @@ services:
       - app-storage:/rails/storage
     ports:
       - ${PORT:-3000}:3000
-      # To also publish on IPv6 (dual-stack), uncomment the line below AND
-      # set BINDING=:: in the environment block. See docs/hosting/docker.md
-      # "Binding to IPv6" for details.
-      # - "[::]:${PORT:-3000}:3000"
     restart: unless-stopped
     environment:
       <<: *rails_env
-      # BINDING: "::"  # Uncomment for IPv6 dual-stack inside the container
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
     networks:
       - sure_net
 
@@ -115,9 +73,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    dns:
-      - 8.8.8.8
-      - 1.1.1.1
     environment:
       <<: *rails_env
     networks:
@@ -141,32 +96,19 @@ services:
   backup:
     profiles:
       - backup
-    image: alpine:3.20
+    image: prodrigestivill/postgres-backup-local
     restart: unless-stopped
     volumes:
-      - ./bin/db-backup.sh:/usr/local/bin/db-backup.sh:ro
+      - /opt/sure-data/backups:/backups # Change this path to your desired backup location on the host machine
     environment:
       - POSTGRES_HOST=db
-      - POSTGRES_DB
-      - POSTGRES_USER
-      - POSTGRES_PASSWORD # pipelock:ignore
-      - BACKUP_SCHEDULE
-      - BACKUP_OVERWRITE
-      - BACKUP_KEEP_DAYS
-      - BACKUP_DESTINATION
-      - INSTANCE_ID
-      # Rclone Provider Config
-      # By default we map the S3 variables. If you use a different provider (e.g., gdrive), 
-      # replace these with the equivalent variables you added to your .env file.
-      - RCLONE_CONFIG_S3_TYPE
-      - RCLONE_CONFIG_S3_PROVIDER
-      - RCLONE_CONFIG_S3_ACCESS_KEY_ID
-      - RCLONE_CONFIG_S3_SECRET_ACCESS_KEY
-      - RCLONE_CONFIG_S3_ENDPOINT
-    command: >
-      sh -c "apk add --no-cache postgresql16-client~=16 rclone~=1.66 gzip~=1 &&
-             echo \"$${BACKUP_SCHEDULE:-0 2 * * *} /usr/local/bin/db-backup.sh\" > /etc/crontabs/root &&
-             crond -f -d 8"
+      - POSTGRES_DB=${POSTGRES_DB:-sure_production}
+      - POSTGRES_USER=${POSTGRES_USER:-sure_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-sure_password}
+      - SCHEDULE=@daily # Runs once a day at midnight
+      - BACKUP_KEEP_DAYS=7 # Keeps the last 7 days of backups
+      - BACKUP_KEEP_WEEKS=4 # Keeps 4 weekly backups
+      - BACKUP_KEEP_MONTHS=6 # Keeps 6 monthly backups
     depends_on:
       - db
     networks:

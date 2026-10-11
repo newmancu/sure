@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Sure Finances</string>
+	<string>Sure Finance</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -47,8 +47,6 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
-	<key>NSFaceIDUsageDescription</key>
-	<string>Authenticate with Face ID to unlock the app</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

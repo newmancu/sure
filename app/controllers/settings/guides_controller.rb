@@ -3,8 +3,8 @@ class Settings::GuidesController < ApplicationController
 
   def show
     @breadcrumbs = [
-      [ t("breadcrumbs.home"), root_path ],
-      [ t("breadcrumbs.guides"), nil ]
+      [ "Home", root_path ],
+      [ "Guides", nil ]
     ]
     markdown = Redcarpet::Markdown.new(Redcarpet::Render::HTML,
       autolink: true,
@@ -13,11 +13,6 @@ class Settings::GuidesController < ApplicationController
       strikethrough: true,
       superscript: true
     )
-    guide_source = File.read(Rails.root.join("docs/onboarding/guide.md"))
-    guide_source.gsub!(/src="assets\/([^"]+)"/) do
-      %(src="#{helpers.asset_path(Regexp.last_match(1))}")
-    end
-
-    @guide_content = markdown.render(guide_source)
+    @guide_content = markdown.render(File.read(Rails.root.join("docs/onboarding/guide.md")))
   end
 end

@@ -3,7 +3,6 @@ import { Controller } from "@hotwired/stimulus";
 // Connects to data-controller="dialog"
 export default class extends Controller {
   static targets = ["leftSidebar", "rightSidebar", "mobileSidebar"];
-  static values = { userId: String };
   static classes = [
     "expandedSidebar",
     "collapsedSidebar",
@@ -22,37 +21,22 @@ export default class extends Controller {
   toggleLeftSidebar() {
     const isOpen = this.leftSidebarTarget.classList.contains("w-full");
     this.#updateUserPreference("show_sidebar", !isOpen);
-    this.#toggleSidebarWidth(this.leftSidebarTarget, isOpen, "left");
+    this.#toggleSidebarWidth(this.leftSidebarTarget, isOpen);
   }
 
   toggleRightSidebar() {
     const isOpen = this.rightSidebarTarget.classList.contains("w-full");
     this.#updateUserPreference("show_ai_sidebar", !isOpen);
-    this.#toggleSidebarWidth(this.rightSidebarTarget, isOpen, "right");
+    this.#toggleSidebarWidth(this.rightSidebarTarget, isOpen);
   }
 
-  // For actions that send content into the chat sidebar (quick prompts,
-  // AI review): make sure it is visible, and never close it.
-  openRightSidebar() {
-    const isOpen = this.rightSidebarTarget.classList.contains("w-full");
-    if (isOpen) return;
-
-    this.#updateUserPreference("show_ai_sidebar", true);
-    this.#toggleSidebarWidth(this.rightSidebarTarget, false, "right");
-  }
-
-  #toggleSidebarWidth(el, isCurrentlyOpen, side) {
-    const expandedClasses = side === "left" ? [...this.expandedSidebarClasses, "border-r"] : [...this.expandedSidebarClasses, "border-l"];
-    const collapsedClasses = side === "left" ? [...this.collapsedSidebarClasses, "border-r-0"] : [...this.collapsedSidebarClasses, "border-l-0"];
-
+  #toggleSidebarWidth(el, isCurrentlyOpen) {
     if (isCurrentlyOpen) {
-      el.classList.remove(...expandedClasses);
-      el.classList.add(...collapsedClasses);
-      el.inert = true;
+      el.classList.remove(...this.expandedSidebarClasses);
+      el.classList.add(...this.collapsedSidebarClasses);
     } else {
-      el.classList.add(...expandedClasses);
-      el.classList.remove(...collapsedClasses);
-      el.inert = false;
+      el.classList.add(...this.expandedSidebarClasses);
+      el.classList.remove(...this.collapsedSidebarClasses);
     }
   }
 

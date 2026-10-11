@@ -1,7 +1,7 @@
 # Represents a CoinStats API connection for a family.
-# Stores credentials and manages associated wallet and exchange portfolio accounts.
+# Stores credentials and manages associated crypto wallet accounts.
 class CoinstatsItem < ApplicationRecord
-  include Syncable, Provided, Unlinking, DestroyableLater
+  include Syncable, Provided, Unlinking
 
   enum :status, { good: "good", requires_update: "requires_update" }, default: :good
 
@@ -20,18 +20,22 @@ class CoinstatsItem < ApplicationRecord
 
   validates :name, presence: true
   validates :api_key, presence: true
-  validates :exchange_portfolio_id, uniqueness: { scope: :family_id, allow_nil: true }
 
   belongs_to :family
-  has_one_attached :logo, dependent: :purge_later
+  has_one_attached :logo
 
   has_many :coinstats_accounts, dependent: :destroy
   has_many :accounts, through: :coinstats_accounts
 
   scope :active, -> { where(scheduled_for_deletion: false) }
-  scope :syncable, -> { active }
   scope :ordered, -> { order(created_at: :desc) }
   scope :needs_update, -> { where(status: :requires_update) }
+
+  # Schedules this item for async deletion.
+  def destroy_later
+    update!(scheduled_for_deletion: true)
+    DestroyJob.perform_later(self)
+  end
 
   # Fetches latest wallet data from CoinStats API and updates local records.
   # @raise [StandardError] if provider is not configured or import fails
@@ -136,15 +140,11 @@ class CoinstatsItem < ApplicationRecord
 
   # @return [String] Display name for the CoinStats connection
   def institution_display_name
-    institution_name.presence || name.presence || "CoinStats"
+    name.presence || "CoinStats"
   end
 
   # @return [Boolean] true if API key is set
   def credentials_configured?
     api_key.present?
-  end
-
-  def exchange_configured?
-    exchange_portfolio_id.present? && exchange_connection_id.present?
   end
 end

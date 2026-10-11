@@ -1,7 +1,7 @@
-<span id="category_name_mobile_<%= transaction.id %>" class="text-secondary lg:hidden min-w-0 truncate">
-  <% if transaction.category_editable? %>
-    <%= transaction.category&.display_name || Category.uncategorized.display_name %>
+<span id="category_name_mobile_<%= transaction.id %>" class="text-secondary lg:hidden">
+  <% if transaction.transfer&.categorizable? || transaction.transfer.nil? %>
+    <%= transaction.category&.name || Category.uncategorized.name %>
   <% else %>
-    <%= read_only_category(transaction).display_name %>
+    <%= transaction.transfer&.payment? ? payment_category.name :  transfer_category.name %>
   <% end %>
 </span>

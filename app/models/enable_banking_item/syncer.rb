@@ -1,6 +1,4 @@
 class EnableBankingItem::Syncer
-  include SyncStats::Collector
-
   attr_reader :enable_banking_item
 
   def initialize(enable_banking_item)
@@ -8,46 +6,29 @@ class EnableBankingItem::Syncer
   end
 
   def perform_sync(sync)
-    # An expired/missing session is an expected state that needs user action, not a
-    # hard failure. Mark the connection requires_update and finish the sync
-    # gracefully so the UI surfaces the "Reconnect" CTA instead of a red sync error.
+    # Check if session is valid before syncing
     unless enable_banking_item.session_valid?
       sync.update!(status_text: "Session expired - re-authorization required") if sync.respond_to?(:status_text)
       enable_banking_item.update!(status: :requires_update)
-      collect_health_stats(sync, errors: nil)
-      return
+      raise StandardError.new("Enable Banking session has expired. Please re-authorize.")
     end
 
     # Phase 1: Import data from Enable Banking API
     sync.update!(status_text: "Importing accounts from Enable Banking...") if sync.respond_to?(:status_text)
     import_result = enable_banking_item.import_latest_enable_banking_data
 
-    unless import_result[:success]
-      # A session-level auth failure detected mid-import flips the item to
-      # requires_update — surface that as a graceful reconnect state, not a red
-      # error. Transient/per-account failures leave status good and fall through
-      # to a normal sync error that retries next time.
-      if enable_banking_item.requires_update?
-        sync.update!(status_text: "Re-authorization required") if sync.respond_to?(:status_text)
-        collect_health_stats(sync, errors: nil)
-        return
-      end
-
-      error_msg = import_result[:error]
-      if error_msg.blank? && (import_result[:accounts_failed].to_i > 0 || import_result[:transactions_failed].to_i > 0)
-        parts = []
-        parts << "#{import_result[:accounts_failed]} #{'account'.pluralize(import_result[:accounts_failed])} failed" if import_result[:accounts_failed].to_i > 0
-        parts << "#{import_result[:transactions_failed]} #{'transaction'.pluralize(import_result[:transactions_failed])} failed" if import_result[:transactions_failed].to_i > 0
-        error_msg = parts.join(", ")
-      end
-      raise StandardError.new(error_msg.presence || "Import failed")
-    end
-
     # Phase 2: Check account setup status and collect sync statistics
     sync.update!(status_text: "Checking account configuration...") if sync.respond_to?(:status_text)
-    collect_setup_stats(sync, provider_accounts: enable_banking_item.enable_banking_accounts.includes(:account_provider, :account))
+    total_accounts = enable_banking_item.enable_banking_accounts.count
 
+    linked_accounts = enable_banking_item.enable_banking_accounts.joins(:account_provider).joins(:account).merge(Account.visible)
     unlinked_accounts = enable_banking_item.enable_banking_accounts.left_joins(:account_provider).where(account_providers: { id: nil })
+
+    sync_stats = {
+      total_accounts: total_accounts,
+      linked_accounts: linked_accounts.count,
+      unlinked_accounts: unlinked_accounts.count
+    }
 
     if unlinked_accounts.any?
       enable_banking_item.update!(pending_account_setup: true)
@@ -56,19 +37,10 @@ class EnableBankingItem::Syncer
       enable_banking_item.update!(pending_account_setup: false)
     end
 
-    # Phase 3: Process transactions for linked and visible accounts only
-    linked_account_ids = enable_banking_item.enable_banking_accounts
-      .joins(:account_provider)
-      .joins(:account)
-      .merge(Account.visible)
-      .pluck("accounts.id")
-
-    if linked_account_ids.any?
+    # Phase 3: Process transactions for linked accounts only
+    if linked_accounts.any?
       sync.update!(status_text: "Processing transactions...") if sync.respond_to?(:status_text)
       enable_banking_item.process_accounts
-
-      # Collect transaction statistics
-      collect_transaction_stats(sync, account_ids: linked_account_ids, source: "enable_banking")
 
       # Phase 4: Schedule balance calculations for linked accounts
       sync.update!(status_text: "Calculating balances...") if sync.respond_to?(:status_text)
@@ -79,10 +51,9 @@ class EnableBankingItem::Syncer
       )
     end
 
-    collect_health_stats(sync, errors: nil)
-  rescue => e
-    collect_health_stats(sync, errors: [ { message: e.message, category: "sync_error" } ])
-    raise
+    if sync.respond_to?(:sync_stats)
+      sync.update!(sync_stats: sync_stats)
+    end
   end
 
   def perform_post_sync

@@ -6,23 +6,20 @@ class EnableBankingItem::SyncCompleteEvent
   end
 
   def broadcast
-    enable_banking_item.reload
-
     # Update UI with latest account data
     enable_banking_item.accounts.each do |account|
       account.broadcast_sync_complete
     end
 
-    family = enable_banking_item.family
-    return unless family
-
-    # Neither the connection card nor the Settings > Providers panel is
-    # streamed here: every family member subscribes to this stream, the card
-    # lists every account on the connection, and the panel is admin-only and
-    # holds the connection's credentials. The sync toast below makes each
-    # browser re-fetch its own page.
+    # Update the Enable Banking item view
+    enable_banking_item.broadcast_replace_to(
+      enable_banking_item.family,
+      target: "enable_banking_item_#{enable_banking_item.id}",
+      partial: "enable_banking_items/enable_banking_item",
+      locals: { enable_banking_item: enable_banking_item }
+    )
 
     # Let family handle sync notifications
-    family.broadcast_sync_complete
+    enable_banking_item.family.broadcast_sync_complete
   end
 end

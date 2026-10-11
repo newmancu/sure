@@ -4,12 +4,11 @@ class Rule::ActionExecutor::SetTransactionCategory < Rule::ActionExecutor
   end
 
   def options
-    Category::Group.select_options(family.categories, indent: false)
+    family.categories.alphabetically.pluck(:name, :id)
   end
 
   def execute(transaction_scope, value: nil, ignore_attribute_locks: false, rule_run: nil)
     category = family.categories.find_by_id(value)
-    return 0 unless category
 
     scope = transaction_scope
 
@@ -22,8 +21,7 @@ class Rule::ActionExecutor::SetTransactionCategory < Rule::ActionExecutor
       txn.enrich_attribute(
         :category_id,
         category.id,
-        source: "rule",
-        ignore_locks: ignore_attribute_locks
+        source: "rule"
       )
     end
   end

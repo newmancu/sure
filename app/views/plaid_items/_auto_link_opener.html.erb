@@ -1,16 +1,13 @@
 <%# locals: (link_token:, region:, item_id:, is_update: false) %>
 
+<% content_for :plaid_link, flush: true do %>
+  <%= javascript_include_tag "https://cdn.plaid.com/link/v2/stable/link-initialize.js" %>
+<% end %>
+
 <%= tag.div data: {
               controller: "plaid",
               plaid_link_token_value: link_token,
               plaid_region_value: region,
               plaid_item_id_value: item_id,
               plaid_is_update_value: is_update
-            } do %>
-  <%# The alert the controller shows if the request that adds a connection fails
-      outright, rendered here because the controller can't render a partial. A
-      template stays inert until then. %>
-  <template data-plaid-target="createFailed">
-    <%= render "shared/notifications/alert", message: t(".create_failed") %>
-  </template>
-<% end %>
+            } %>
