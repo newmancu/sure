@@ -397,11 +397,10 @@ class ReportsController < ApplicationController
       family_currency = Current.family.currency
 
       # Helper to initialize a category group hash
-      init_category_group = ->(id, name, color, icon, type, filter_value) do
+      init_category_group = ->(id, name, color, icon, type) do
         {
           category_id: id,
           category_name: name,
-          category_filter_value: filter_value,
           category_color: color,
           category_icon: icon,
           type: type,
@@ -417,7 +416,6 @@ class ReportsController < ApplicationController
         {
           category_id: category.id,
           category_name: category.name,
-          category_filter_value: category.filter_value,
           category_color: category.color,
           category_icon: category.lucide_icon,
           total: 0,
@@ -439,16 +437,16 @@ class ReportsController < ApplicationController
           # Uncategorized or Other Investments (for trades)
           if is_trade
             parent_key = [ :other_investments, type ]
-            grouped_data[parent_key] ||= init_category_group.call(:other_investments, Category.other_investments.name, Category.other_investments.color, Category.other_investments.lucide_icon, type, Category.other_investments.name)
+            grouped_data[parent_key] ||= init_category_group.call(:other_investments, Category.other_investments.name, Category.other_investments.color, Category.other_investments.lucide_icon, type)
           else
             parent_key = [ :uncategorized, type ]
-            grouped_data[parent_key] ||= init_category_group.call(:uncategorized, Category.uncategorized.name, Category.uncategorized.color, Category.uncategorized.lucide_icon, type, Category.uncategorized.filter_value)
+            grouped_data[parent_key] ||= init_category_group.call(:uncategorized, Category.uncategorized.name, Category.uncategorized.color, Category.uncategorized.lucide_icon, type)
           end
         elsif category.parent_id.present?
           # This is a subcategory - group under parent
           parent = category.parent
           parent_key = [ parent.id, type ]
-          grouped_data[parent_key] ||= init_category_group.call(parent.id, parent.name, parent.color || Category::UNCATEGORIZED_COLOR, parent.lucide_icon, type, parent.filter_value)
+          grouped_data[parent_key] ||= init_category_group.call(parent.id, parent.name, parent.color || Category::UNCATEGORIZED_COLOR, parent.lucide_icon, type)
 
           # Add to subcategory
           grouped_data[parent_key][:subcategories][category.id] ||= init_subcategory.call(category)
@@ -458,7 +456,7 @@ class ReportsController < ApplicationController
         else
           # This is a root category (no parent)
           parent_key = [ category.id, type ]
-          grouped_data[parent_key] ||= init_category_group.call(category.id, category.name, category.color || Category::UNCATEGORIZED_COLOR, category.lucide_icon, type, category.filter_value)
+          grouped_data[parent_key] ||= init_category_group.call(category.id, category.name, category.color || Category::UNCATEGORIZED_COLOR, category.lucide_icon, type)
         end
 
         grouped_data[parent_key][:count] += 1
@@ -545,10 +543,6 @@ class ReportsController < ApplicationController
         trade.instance_variable_set(:@preloaded_holdings, holdings_by_account[trade.entry.account_id] || [])
       end
 
-      # The rates the proceeds conversion needs, in one query rather than one
-      # per foreign disposal.
-      Trade.preload_exchange_rates(sell_trades)
-
       trades_by_treatment = sell_trades.group_by { |t| t.entry.account.tax_treatment || :taxable }
 
       # Unwrap helper: Trend#value / realized_gain_loss#value are Money objects,
@@ -568,17 +562,7 @@ class ReportsController < ApplicationController
       # Realized gains are locked at trade time, so convert each at its own
       # entry-date FX. Mirrors InvestmentStatement::Totals, which also uses
       # entry-date rates for contributions/withdrawals on this same card.
-      # A realised figure arrives in the currency the POSITION is held in, not
-      # the one the disposal was priced in: Trade#realized_gain_loss converts
-      # the proceeds into the basis's currency before subtracting, so that the
-      # two sides are comparable. All three sets are needed -- the accounts',
-      # which is what a gain usually carries, the trades' own, and the
-      # holdings', for a position carried in a third currency.
-      foreign_trade_currencies = (
-        sell_trades.map(&:currency) +
-        sell_trades.map { |t| t.entry.account.currency } +
-        holdings_by_account.values.flatten.map(&:currency)
-      ).compact.uniq.reject { |c| c == currency }
+      foreign_trade_currencies = sell_trades.map(&:currency).compact.uniq.reject { |c| c == currency }
       rates_by_trade_date = sell_trades.map { |t| t.entry.date }.uniq.each_with_object({}) do |date, memo|
         memo[date] = ExchangeRate.rates_for(foreign_trade_currencies, to: currency, date: date)
       end
@@ -598,17 +582,11 @@ class ReportsController < ApplicationController
           trend ? convert_current.call(trend.value, h.currency) : 0
         end
 
-        # Sum realized gains from sell trades, each converted from the currency
-        # its own figure carries.
-        realized_by_trade = trades.each_with_object({}) do |t, memo|
+        # Sum realized gains from sell trades
+        realized = trades.sum do |t|
           gain = t.realized_gain_loss
-          next if gain.nil?
-
-          converted = convert_trade.call(gain.value, gain.value.currency.iso_code, t.entry.date)
-          memo[t.id] = Money.new(converted, currency)
+          gain ? convert_trade.call(gain.value, t.currency, t.entry.date) : 0
         end
-
-        realized = realized_by_trade.values.sum(Money.new(0, currency)).amount
 
         # Only include treatment groups that have some activity
         next if holdings.empty? && trades.empty?
@@ -618,10 +596,6 @@ class ReportsController < ApplicationController
           sell_trades: trades,
           unrealized_gain: Money.new(unrealized, currency),
           realized_gain: Money.new(realized, currency),
-          # Per-trade figures in family currency, so the lines under the card
-          # and the card's own total are the same arithmetic. The partial used
-          # to re-label `gain.value` as family currency without converting it.
-          realized_gain_by_trade: realized_by_trade,
           total_gain: Money.new(unrealized + realized, currency)
         }
       end
