@@ -22,16 +22,10 @@ class Assistant::Function::GetCategories < Assistant::Function
 
         - `total_pages`: The total number of pages of results
         - `page`: The current page of results
-        - `page_size`: The number of results per page (defaults to #{default_page_size})
+        - `page_size`: The number of results per page (this will always be #{default_page_size})
         - `total_results`: The total number of results
       INSTRUCTIONS
     end
-  end
-
-  # Optional params are incompatible with strict function calling, which
-  # requires every declared property to be listed in `required`.
-  def strict_mode?
-    false
   end
 
   def params_schema
@@ -40,14 +34,7 @@ class Assistant::Function::GetCategories < Assistant::Function
       properties: {
         page: {
           type: "integer",
-          minimum: 1,
           description: "Page number (defaults to 1)"
-        },
-        page_size: {
-          type: "integer",
-          minimum: 1,
-          maximum: MAX_PAGE_SIZE,
-          description: "Results per page (defaults to #{self.class.default_page_size})"
         }
       }
     )
@@ -55,8 +42,7 @@ class Assistant::Function::GetCategories < Assistant::Function
 
   def call(params = {})
     categories_scope = family.categories.alphabetically_by_hierarchy
-    page_size = resolved_page_size(params)
-    pagy = Pagy.new(count: categories_scope.count, page: resolved_page(params), limit: page_size)
+    pagy = Pagy.new(count: categories_scope.count, page: params["page"] || 1, limit: default_page_size)
     categories = categories_scope.offset(pagy.offset).limit(pagy.limit)
 
     {
@@ -73,8 +59,13 @@ class Assistant::Function::GetCategories < Assistant::Function
       },
       total_results: pagy.count,
       page: pagy.page,
-      page_size: page_size,
+      page_size: default_page_size,
       total_pages: pagy.pages
     }
   end
+
+  private
+    def default_page_size
+      self.class.default_page_size
+    end
 end
