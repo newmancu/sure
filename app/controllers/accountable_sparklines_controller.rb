@@ -16,21 +16,19 @@ class AccountableSparklinesController < ApplicationController
 
   private
     def family
-      @family ||= Current.family
+      Current.family
     end
 
-    def account_scope
-      @account_scope ||= family.accounts.visible.where(accountable_type: @accountable.name)
+    def accountable
+      Accountable.from_type(params[:accountable_type]&.classify)
     end
 
     def account_ids
-      @account_ids ||= account_identity_rows.map(&:first).uniq
+      family.accounts.visible.where(accountable_type: accountable.name).pluck(:id)
     end
 
-    def account_identity_rows
-      @account_identity_rows ||= account_scope
-        .left_outer_joins(:account_providers)
-        .pluck(:id, :plaid_account_id, :simplefin_account_id, Arel.sql("account_providers.id"))
+    def accounts
+      @accounts ||= family.accounts.visible.where(accountable_type: accountable.name)
     end
 
     def build_series
@@ -52,14 +50,12 @@ class AccountableSparklinesController < ApplicationController
     def requires_normalized_aggregation?
       return false unless %w[Investment Crypto].include?(@accountable.name)
 
-      account_identity_rows.any? do |_account_id, plaid_account_id, simplefin_account_id, account_provider_id|
-        plaid_account_id.present? || simplefin_account_id.present? || account_provider_id.present?
-      end
+      accounts.linked.exists?
     end
 
     def aggregate_normalized_series
-      Balance::LinkedInvestmentSeriesNormalizer.aggregate_account_ids(
-        account_ids: account_ids,
+      Balance::LinkedInvestmentSeriesNormalizer.aggregate_accounts(
+        accounts: accounts,
         currency: family.currency,
         period: Period.last_30_days,
         favorable_direction: @accountable.favorable_direction,

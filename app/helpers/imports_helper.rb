@@ -25,9 +25,7 @@ module ImportsHelper
       entity_type: I18n.t("imports.column_labels.entity_type"),
       category_parent: I18n.t("imports.column_labels.category_parent"),
       category_color: I18n.t("imports.column_labels.category_color"),
-      category_icon: I18n.t("imports.column_labels.category_icon"),
-      merchant_color: I18n.t("imports.column_labels.merchant_color"),
-      merchant_website: I18n.t("imports.column_labels.merchant_website")
+      category_icon: I18n.t("imports.column_labels.category_icon")
     }[key]
   end
 
@@ -82,7 +80,7 @@ module ImportsHelper
 
   private
     def permitted_import_types
-      %w[transaction_import trade_import account_import mint_import actual_import ynab_import category_import rule_import merchant_import]
+      %w[transaction_import trade_import account_import mint_import actual_import category_import rule_import]
     end
 
     DryRunResource = Struct.new(:label, :icon, :text_class, :bg_class, keyword_init: true)
