@@ -19,7 +19,6 @@ json.name transaction.entry.name
 json.notes transaction.entry.notes
 json.external_id transaction.entry.external_id
 json.source transaction.entry.source
-json.user_modified transaction.entry.user_modified
 json.classification transaction.entry.classification
 
 # Account information
@@ -59,23 +58,18 @@ json.tags transaction.tags do |tag|
 end
 
 # Transfer information (if this transaction is part of a transfer)
-transfer = transaction.transfer
-if transfer.present?
+if transaction.transfer.present?
   json.transfer do
-    json.id transfer.id
+    json.id transaction.transfer.id
+    json.amount transaction.transfer.amount_abs.format
+    json.currency transaction.transfer.inflow_transaction.entry.currency
 
     # Other transaction in the transfer
-    if transfer.inflow_transaction_id == transaction.id
-      inflow_transaction = transaction
-      other_transaction = transfer.outflow_transaction
+    if transaction.transfer.inflow_transaction == transaction
+      other_transaction = transaction.transfer.outflow_transaction
     else
-      inflow_transaction = transfer.inflow_transaction
-      # When rendering the outflow, the inflow is the counterparty transaction.
-      other_transaction = inflow_transaction
+      other_transaction = transaction.transfer.inflow_transaction
     end
-
-    json.amount inflow_transaction.entry.amount_money.abs.format
-    json.currency inflow_transaction.entry.currency
 
     if other_transaction.present?
       json.other_account do

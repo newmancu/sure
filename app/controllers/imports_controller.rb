@@ -1,9 +1,7 @@
 class ImportsController < ApplicationController
   include SettingsHelper
 
-  before_action :set_import, only: %i[show update publish destroy revert apply_template cancel summary]
-  before_action :require_statement_import_permission!, only: %i[update publish destroy revert apply_template cancel]
-  before_action :require_writable_import_accounts!, only: %i[publish revert]
+  before_action :set_import, only: %i[show update publish destroy revert apply_template]
 
   def update
     # Handle both pdf_import[account_id] and import[account_id] param formats
@@ -15,19 +13,7 @@ class ImportsController < ApplicationController
         redirect_back_or_to import_path(@import), alert: t("imports.update.invalid_account", default: "Account not found.")
         return
       end
-      return if @import.account_statement.present? && !require_account_permission!(account)
-
-      if @import.is_a?(PdfImport)
-        # Refused for an import whose data already landed -- see
-        # PdfImport#reassignable?. A replayed or back-button PATCH gets the
-        # explanation rather than a silent unwind.
-        unless @import.assign_account!(account)
-          redirect_back_or_to import_path(@import), alert: t("imports.update.account_locked")
-          return
-        end
-      else
-        @import.update!(account: account)
-      end
+      @import.update!(account: account)
     end
 
     redirect_to import_path(@import), notice: t("imports.update.account_saved", default: "Account saved.")
@@ -41,31 +27,13 @@ class ImportsController < ApplicationController
     redirect_back_or_to import_path(@import), alert: t(".max_rows_exceeded", max: @import.max_row_count)
   end
 
-  # Statement imports only: what became of each extracted transaction. Without it
-  # a statement whose lines all matched finishes on the generic complete screen,
-  # which cannot distinguish "everything was already recorded" from "nothing was
-  # found".
-  def summary
-    raise ActiveRecord::RecordNotFound unless @import.is_a?(PdfImport)
-  end
-
-  def cancel
-    if @import.force_fail!
-      redirect_to imports_path, notice: t(".cancelled")
-    else
-      redirect_to imports_path, alert: t(".not_cancellable")
-    end
-  end
-
   def index
     @pagy, @imports = pagy(Current.family.imports.where(type: Import::TYPES).ordered, limit: safe_per_page)
     @breadcrumbs = [
       [ t("breadcrumbs.home"), root_path ],
       [ t("breadcrumbs.imports"), imports_path ]
     ]
-    respond_to do |format|
-      format.html { render layout: "settings" }
-    end
+    render layout: "settings"
   end
 
   def new
@@ -83,12 +51,6 @@ class ImportsController < ApplicationController
 
     if file.present? && sure_import_request?
       create_sure_import(file)
-      return
-    end
-
-    # These types require a file; without one (e.g. a dropped multipart part) don't fall through to a bogus TransactionImport.
-    if file.blank? && (document_upload_request? || sure_import_request?)
-      redirect_to new_import_path, alert: t("imports.create.missing_upload")
       return
     end
 
@@ -133,8 +95,6 @@ class ImportsController < ApplicationController
     else
       redirect_to import_upload_path(import)
     end
-  rescue ActionController::ParameterMissing
-    redirect_to new_import_path, alert: t("imports.create.missing_upload")
   end
 
   def show
@@ -146,8 +106,7 @@ class ImportsController < ApplicationController
     if !@import.uploaded?
       redirect_to import_upload_path(@import), alert: t("imports.show.finalize_upload")
     elsif !@import.publishable?
-      next_path = @import.mapping_steps.empty? ? import_clean_path(@import) : import_confirm_path(@import)
-      redirect_to next_path, alert: t("imports.show.finalize_mappings")
+      redirect_to import_confirm_path(@import), alert: t("imports.show.finalize_mappings")
     end
   end
 
@@ -173,41 +132,24 @@ class ImportsController < ApplicationController
 
   private
     def set_import
-      @import = Current.family.imports.includes(:account, :account_statement).find(params[:id])
-      raise ActiveRecord::RecordNotFound if @import.account_statement.present? && !@import.account_statement.viewable_by?(Current.user)
+      @import = Current.family.imports.includes(:account).find(params[:id])
     end
 
     def import_params
       params.require(:import).permit(:import_file)
     end
 
-    def require_statement_import_permission!
-      return if @import.account_statement.blank? || @import.account_statement.manageable_by?(Current.user)
-
-      redirect_target = @import.account || @import.account_statement
-      redirect_back_or_to redirect_target, alert: t("accounts.not_authorized")
-    end
-
-    # Imports are family-scoped, so a member can reach an import configured by
-    # someone else, or one whose target account was unshared since. Publishing
-    # or reverting writes into its accounts, so require write access to all.
-    def require_writable_import_accounts!
-      return if @import.accounts_writable_by?(Current.user)
-
-      redirect_back_or_to import_path(@import), alert: t("accounts.not_authorized")
-    end
-
     def create_pdf_import(file)
-      return redirect_to new_import_path, alert: t("accounts.not_authorized") unless AccountStatement.statement_manager?(Current.user)
-      return redirect_to new_import_path, alert: t("imports.create.pdf_too_large", max_size: Import::MAX_PDF_SIZE / 1.megabyte) if file.size > Import::MAX_PDF_SIZE
+      if file.size > Import::MAX_PDF_SIZE
+        redirect_to new_import_path, alert: t("imports.create.pdf_too_large", max_size: Import::MAX_PDF_SIZE / 1.megabyte)
+        return
+      end
 
-      pdf_import = PdfImport.create_from_upload!(family: Current.family, file: file, user: Current.user)
+      pdf_import = Current.family.imports.create!(type: "PdfImport")
+      pdf_import.pdf_file.attach(file)
       pdf_import.process_with_ai_later
+
       redirect_to import_path(pdf_import), notice: t("imports.create.pdf_processing")
-    rescue AccountStatement::DuplicateUploadError
-      redirect_to new_import_path, alert: t("imports.create.duplicate_pdf_unavailable")
-    rescue AccountStatement::InvalidUploadError
-      redirect_to new_import_path, alert: t("imports.create.invalid_pdf")
     end
 
     def create_document_import(file)
@@ -269,8 +211,8 @@ class ImportsController < ApplicationController
     end
 
     def create_sure_import(file)
-      if file.size > SureImport.max_ndjson_size
-        redirect_to new_import_path, alert: t("imports.create.file_too_large", max_size: SureImport.max_ndjson_size / 1.megabyte)
+      if file.size > SureImport::MAX_NDJSON_SIZE
+        redirect_to new_import_path, alert: t("imports.create.file_too_large", max_size: SureImport::MAX_NDJSON_SIZE / 1.megabyte)
         return
       end
 

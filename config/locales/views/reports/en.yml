@@ -20,7 +20,6 @@ en:
       showing_period: "Showing data from %{start} to %{end}"
       previous_period: "Previous period"
       next_period: "Next period"
-      shortcut_hint: "%{action} (%{key})"
       today: "Today"
       period_label:
         quarterly: "Q%{quarter} %{year}"
@@ -143,7 +142,6 @@ en:
       title: Investment Performance
       portfolio_value: Portfolio Value
       total_return: Total Return
-      period_return: Period Return
       contributions: Period Contributions
       withdrawals: Period Withdrawals
       top_holdings: Top Holdings
@@ -230,7 +228,6 @@ en:
         title: Investments
         portfolio_value: Portfolio Value
         total_return: Total Return
-        period_return: Period Return
         contributions: Contributions
         withdrawals: Withdrawals
         this_period: this period

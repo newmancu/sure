@@ -35,14 +35,14 @@ class Api::V1::ImportsController < Api::V1::BaseController
 
   rescue StandardError => e
     Rails.logger.error "ImportsController#index error: #{e.message}"
-    render json: { error: "internal_server_error", message: "An unexpected error occurred." }, status: :internal_server_error
+    render json: { error: "internal_server_error", message: e.message }, status: :internal_server_error
   end
 
   def show
     render :show
   rescue StandardError => e
     Rails.logger.error "ImportsController#show error: #{e.message}"
-    render json: { error: "internal_server_error", message: "An unexpected error occurred." }, status: :internal_server_error
+    render json: { error: "internal_server_error", message: e.message }, status: :internal_server_error
   end
 
   def rows
@@ -58,7 +58,7 @@ class Api::V1::ImportsController < Api::V1::BaseController
     render :rows
   rescue StandardError => e
     Rails.logger.error "ImportsController#rows error: #{e.message}"
-    render json: { error: "internal_server_error", message: "An unexpected error occurred." }, status: :internal_server_error
+    render json: { error: "internal_server_error", message: e.message }, status: :internal_server_error
   end
 
   def create
@@ -110,8 +110,16 @@ class Api::V1::ImportsController < Api::V1::BaseController
         begin
           @import.generate_rows_from_csv
           @import.reload
+          @import.sync_mappings
         rescue StandardError => e
-          Rails.logger.error "Row generation failed for import #{@import.id}: #{e.message}"
+          Rails.logger.error "Row generation or mapping sync failed for import #{@import.id}: #{e.message}"
+          @import.update!(status: :failed, error: e.message)
+          render json: {
+            error: "processing_failed",
+            message: "Import was uploaded but could not be processed.",
+            import_id: @import.id
+          }, status: :internal_server_error
+          return
         end
       end
 
@@ -133,7 +141,7 @@ class Api::V1::ImportsController < Api::V1::BaseController
 
   rescue StandardError => e
     Rails.logger.error "ImportsController#create error: #{e.message}"
-    render json: { error: "internal_server_error", message: "An unexpected error occurred." }, status: :internal_server_error
+    render json: { error: "internal_server_error", message: e.message }, status: :internal_server_error
   end
 
   def preflight
@@ -156,7 +164,7 @@ class Api::V1::ImportsController < Api::V1::BaseController
 
     render json: {
       error: "internal_server_error",
-      message: "Import preflight could not be completed."
+      message: "Error: #{e.message}"
     }, status: :internal_server_error
   end
 
@@ -242,27 +250,11 @@ class Api::V1::ImportsController < Api::V1::BaseController
       end
 
       begin
-        @import.publish_later if params[:publish] == "true"
+        @import.publish_later if @import.publishable? && params[:publish] == "true"
       rescue Import::MaxRowCountExceededError
         render json: {
           error: "max_row_count_exceeded",
           message: "Import was uploaded but has too many rows to publish automatically.",
-          import_id: @import.id
-        }, status: :unprocessable_entity
-        return
-      rescue SureImport::PreflightError
-        render json: {
-          error: "preflight_failed",
-          message: "Import was uploaded but did not pass Sure NDJSON preflight.",
-          errors: sure_import_error_lines,
-          import_id: @import.id
-        }, status: :unprocessable_entity
-        return
-      rescue SureImport::NotPublishableError => e
-        Rails.logger.warn "Sure import not publishable for import #{@import.id}: #{e.message}"
-        render json: {
-          error: "not_publishable",
-          message: "Import was uploaded but has no publishable records.",
           import_id: @import.id
         }, status: :unprocessable_entity
         return
@@ -299,8 +291,6 @@ class Api::V1::ImportsController < Api::V1::BaseController
       # Import#publish_later flips status to importing before enqueueing the job.
       @import.update_column(:status, "pending") if @import&.persisted? && @import.importing?
     end
-
-    def sure_import_error_lines = @import.error.to_s.lines.map(&:strip).reject(&:blank?)
 
     def clean_up_failed_sure_import(import)
       return unless import
