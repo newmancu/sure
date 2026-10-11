@@ -3,7 +3,6 @@ require "application_system_test_case"
 class AccountsSyncUiTest < ApplicationSystemTestCase
   setup do
     @user = users(:family_admin)
-    Sync.for_family(@user.family).incomplete.destroy_all
     sign_in @user
   end
 

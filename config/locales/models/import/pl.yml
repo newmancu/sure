@@ -3,10 +3,6 @@ pl:
   activerecord:
     attributes:
       import:
-        col_sep: Separator kolumn
-        col_seps:
-          comma: Przecinek (,)
-          semicolon: Średnik (;)
         currency: Waluta
         number_format: Format liczby
     errors:
@@ -15,5 +11,3 @@ pl:
           attributes:
             raw_file_str:
               invalid_csv_format: nie jest prawidłowym formatem CSV
-          duplicate_headers: 'Nagłówki CSV po normalizacji dają zduplikowane kolumny:
-            %{columns}'
