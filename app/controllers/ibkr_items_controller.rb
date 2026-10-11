@@ -9,9 +9,30 @@ class IbkrItemsController < ApplicationController
     if @ibkr_item.save
       @ibkr_item.sync_later
 
-      redirect_to accounts_path, notice: t(".success"), status: :see_other
+      if turbo_frame_request?
+        flash.now[:notice] = t(".success")
+        render turbo_stream: [
+          turbo_stream.replace(
+            "ibkr-providers-panel",
+            partial: "settings/providers/ibkr_panel"
+          ),
+          *flash_notification_stream_items
+        ]
+      else
+        redirect_to accounts_path, notice: t(".success"), status: :see_other
+      end
     else
-      render_provider_panel("ibkr", alert: @ibkr_item.errors.full_messages.join(", "))
+      @error_message = @ibkr_item.errors.full_messages.join(", ")
+
+      if turbo_frame_request?
+        render turbo_stream: turbo_stream.replace(
+          "ibkr-providers-panel",
+          partial: "settings/providers/ibkr_panel",
+          locals: { error_message: @error_message }
+        ), status: :unprocessable_entity
+      else
+        redirect_to settings_providers_path, alert: @error_message, status: :see_other
+      end
     end
   end
 
@@ -23,9 +44,30 @@ class IbkrItemsController < ApplicationController
     if @ibkr_item.update(attrs.merge(status: :good))
       @ibkr_item.sync_later unless @ibkr_item.syncing?
 
-      render_provider_panel("ibkr", notice: t(".success"), fallback_path: accounts_path)
+      if turbo_frame_request?
+        flash.now[:notice] = t(".success")
+        render turbo_stream: [
+          turbo_stream.replace(
+            "ibkr-providers-panel",
+            partial: "settings/providers/ibkr_panel"
+          ),
+          *flash_notification_stream_items
+        ]
+      else
+        redirect_to accounts_path, notice: t(".success"), status: :see_other
+      end
     else
-      render_provider_panel("ibkr", alert: @ibkr_item.errors.full_messages.join(", "))
+      @error_message = @ibkr_item.errors.full_messages.join(", ")
+
+      if turbo_frame_request?
+        render turbo_stream: turbo_stream.replace(
+          "ibkr-providers-panel",
+          partial: "settings/providers/ibkr_panel",
+          locals: { error_message: @error_message }
+        ), status: :unprocessable_entity
+      else
+        redirect_to settings_providers_path, alert: @error_message, status: :see_other
+      end
     end
   end
 
@@ -42,7 +84,6 @@ class IbkrItemsController < ApplicationController
 
   def sync
     @ibkr_item.sync_later unless @ibkr_item.syncing?
-    return render_provider_panel("ibkr", notice: t("settings.providers.sync_provider_in_progress")) if provider_panel_form?
 
     respond_to do |format|
       format.html { redirect_back_or_to accounts_path }
