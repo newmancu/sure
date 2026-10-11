@@ -1,4 +1,3 @@
-pub mod attachments;
 pub mod badge;
 pub mod commands;
 pub mod deep_link;

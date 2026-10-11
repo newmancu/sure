@@ -31,25 +31,6 @@ RSpec.configure do |config|
             name: 'X-Api-Key',
             in: :header,
             description: 'API key for authentication. Generate one from your account settings.'
-          },
-          financekitPublisher: {
-            type: :http,
-            scheme: :bearer,
-            bearerFormat: 'opaque publisher credential',
-            description: 'Revocable credential restricted to one FinanceKit publisher upload URL.'
-          },
-          oauth2: {
-            type: :oauth2,
-            flows: {
-              authorizationCode: {
-                authorizationUrl: '/oauth/authorize',
-                tokenUrl: '/oauth/token',
-                scopes: {
-                  read: 'Read access',
-                  read_write: 'Read and write access'
-                }
-              }
-            }
           }
         },
         schemas: {
@@ -267,8 +248,7 @@ RSpec.configure do |config|
           PushSubscriptionRegistration: {
             type: :object, required: %w[token environment platform],
             properties: {
-              token: { type: :string, maxLength: 2048, pattern: "^(?:[0-9a-fA-F]{2})+$" },
-              environment: { type: :string, enum: %w[sandbox production] },
+              token: { type: :string }, environment: { type: :string, enum: %w[sandbox production] },
               platform: { type: :string, enum: %w[ios] },
               device_key: { type: :string, pattern: '^[0-9a-f]{64}$', description: 'Optional 256-bit installation secret, unique per server and kept in device secure storage. Required proof to replace another user’s registration for this device. Never returned.' }
             }
@@ -1760,13 +1740,13 @@ RSpec.configure do |config|
             type: :object, required: %w[basis income spending net_savings nodes links],
             description: 'Refunds net within each category. Parent direct amounts exclude child totals before partitioning by direction. Graph income/spending may differ from gross monthly totals; net savings agrees. Decimal strings retain FX precision. Empty flow has empty nodes and links.',
             properties: {
-              basis: { type: :string, enum: %w[net_by_category net_by_account], description: 'net_by_account (group_by=account) replaces the Cash Flow node with one account node per account, each balanced by Surplus or Deficit' },
+              basis: { type: :string, enum: [ 'net_by_category' ] },
               income: { type: :string }, spending: { type: :string }, net_savings: { type: :string },
               nodes: { type: :array, items: {
                 type: :object, required: %w[id name kind value percentage category_id filter_value color],
                 properties: {
                   id: { type: :string, description: 'Stable direction-prefixed category identifier or structural identifier' },
-                  name: { type: :string }, kind: { type: :string, enum: %w[income expense cash_flow account surplus deficit] },
+                  name: { type: :string }, kind: { type: :string, enum: %w[income expense cash_flow surplus deficit] },
                   value: { type: :string, description: 'Nonnegative decimal in envelope currency' },
                   percentage: { type: :string, description: 'Percentage of parent, or side total for root categories; structural balancing nodes use central capacity' },
                   category_id: { type: :string, format: :uuid, nullable: true },
@@ -1872,10 +1852,6 @@ RSpec.configure do |config|
       }
     }
   }
-
-  config.openapi_specs["openapi.yaml"][:components][:schemas].merge!(
-    JSON.parse(Rails.root.join("docs/api/financekit/schemas.json").read)
-  )
 
   config.openapi_format = :yaml
 end
