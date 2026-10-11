@@ -3,7 +3,7 @@ class SplitsController < ApplicationController
   before_action :require_split_write_permission!, only: %i[create update destroy]
 
   def new
-    @categories = grouped_categories
+    @categories = Current.family.categories.alphabetically
   end
 
   def create
@@ -35,7 +35,7 @@ class SplitsController < ApplicationController
       return
     end
 
-    @categories = grouped_categories
+    @categories = Current.family.categories.alphabetically
     @children = @entry.child_entries.includes(:entryable)
   end
 
@@ -96,9 +96,5 @@ class SplitsController < ApplicationController
 
     def split_params
       params.require(:split).permit(splits: [ :name, :amount, :category_id, :excluded ])
-    end
-
-    def grouped_categories
-      Current.family.categories.alphabetically_by_hierarchy
     end
 end

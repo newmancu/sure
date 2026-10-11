@@ -4,7 +4,7 @@ class Rule::ConditionFilter::TransactionCategory < Rule::ConditionFilter
   end
 
   def options
-    Category::Group.select_options(family.categories, indent: false)
+    family.categories.alphabetically.pluck(:name, :id)
   end
 
   def prepare(scope)
