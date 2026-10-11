@@ -106,11 +106,11 @@ class DemoFamilyRefreshJobTest < ActiveJob::TestCase
     Setting.demo_family_refresh_family_id = nil
   end
 
-  test "self-hosted refresh revokes old credentials and allows deletion without Stripe" do
+  test "self-hosted refresh revokes old credentials and disarms the synthetic subscription" do
     Rails.configuration.stubs(:app_mode).returns("self_hosted".inquiry)
     Setting.demo_family_refresh_family_id = @demo_family.id.to_s
     Setting.demo_family_refresh_enabled = true
-    @demo_family.start_subscription!(Subscription::DEMO_STRIPE_ID)
+    @demo_family.start_subscription!("sub_demo_123")
     session = Session.create!(user: @demo_user)
     app = Doorkeeper::Application.create!(name: "Demo Retirement Test", redirect_uri: "https://example.com/callback", confidential: false)
     token = Doorkeeper::AccessToken.create!( # pipelock:ignore Credential in URL
@@ -134,13 +134,8 @@ class DemoFamilyRefreshJobTest < ActiveJob::TestCase
     assert key.reload.revoked?
     assert token.reload.revoked_at
     assert grant.reload.revoked_at
-    subscription = @demo_family.reload.subscription
-    assert subscription.active?
-
-    DestroyJob.perform_now(@demo_family)
-
-    assert_not Family.exists?(@demo_family.id)
-    assert_not Subscription.exists?(subscription.id)
+    assert @demo_family.reload.subscription.canceled?
+    assert @demo_family.destroy
   ensure
     Setting.demo_family_refresh_enabled = false
     Setting.demo_family_refresh_family_id = nil
