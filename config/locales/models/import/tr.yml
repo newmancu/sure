@@ -3,10 +3,6 @@ tr:
   activerecord:
     attributes:
       import:
-        col_sep: Sütun ayracı
-        col_seps:
-          comma: Virgül (,)
-          semicolon: Noktalı virgül (;)
         currency: Para Birimi
         number_format: Sayı Formatı
     errors:
@@ -15,5 +11,3 @@ tr:
           attributes:
             raw_file_str:
               invalid_csv_format: Geçerli bir CSV formatı değil
-          duplicate_headers: 'CSV başlıkları normalleştirildiğinde yinelenen sütunlara
-            dönüşüyor: %{columns}'
