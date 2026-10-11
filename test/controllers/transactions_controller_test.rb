@@ -72,6 +72,82 @@ class TransactionsControllerTest < ActionDispatch::IntegrationTest
       "the preview-gated bill link must not render for a user without the flag"
   end
 
+  test "create rule link is prefilled with the merchant name and merchant id when a merchant is set" do
+    entry = create_transaction(account: accounts(:depository), name: "Payee String", merchant: merchants(:netflix))
+
+    get transaction_url(entry), headers: { "Turbo-Frame" => "drawer" }
+
+    assert_response :success
+    assert_select "a[href=?]", new_rule_path(resource_type: "transaction", name: merchants(:netflix).name, merchant_id: merchants(:netflix).id)
+  end
+
+  test "create rule link is refreshed after an update that changes the merchant" do
+    entry = create_transaction(account: accounts(:depository), name: "Payee String", merchant: merchants(:netflix))
+
+    patch transaction_url(entry), params: {
+      entry: { entryable_type: "Transaction", entryable_attributes: { id: entry.entryable_id, merchant_id: merchants(:amazon).id } }
+    }, as: :turbo_stream
+
+    assert_response :success
+    assert_select "turbo-stream[target='#{dom_id(entry, :create_rule)}']" do
+      assert_select "a[href=?]", new_rule_path(resource_type: "transaction", name: merchants(:amazon).name, merchant_id: merchants(:amazon).id)
+      assert_select "a[href=?]", new_rule_path(resource_type: "transaction", name: merchants(:netflix).name, merchant_id: merchants(:netflix).id), false
+    end
+  end
+
+  test "create rule link is repopulated when an update fails validation" do
+    entry = create_transaction(account: accounts(:depository), name: "Payee String", merchant: merchants(:netflix))
+
+    patch transaction_url(entry), params: { entry: { name: "" } }, as: :turbo_stream
+
+    assert_response :unprocessable_entity
+    assert_select "a[href=?]", new_rule_path(resource_type: "transaction", name: merchants(:netflix).name, merchant_id: merchants(:netflix).id)
+  end
+
+  test "create rule link falls back to the transaction name without a merchant" do
+    entry = create_transaction(account: accounts(:depository), name: "Payee String")
+
+    get transaction_url(entry), headers: { "Turbo-Frame" => "drawer" }
+
+    assert_response :success
+    assert_select "a[href=?]", new_rule_path(resource_type: "transaction", name: "Payee String")
+  end
+
+  test "create rule section is localized in German" do
+    entry = create_transaction(account: accounts(:depository), name: "Payee String")
+
+    get transaction_url(entry, locale: "de"), headers: { "Turbo-Frame" => "drawer" }
+
+    assert_response :success
+    assert_select "##{dom_id(entry, :create_rule)}" do
+      assert_select "h4", text: "Regel erstellen"
+      assert_select "p", text: "Künftige Transaktionen wie diese automatisch bearbeiten."
+      assert_select "a", text: /Regel erstellen/
+    end
+  end
+
+  test "create rule link is hidden for split child transactions" do
+    parent = create_transaction(account: accounts(:depository), amount: 100)
+    parent.split!([ { name: "Part 1", amount: 60, category_id: nil }, { name: "Part 2", amount: 40, category_id: nil } ])
+    child = parent.child_entries.first
+
+    get transaction_url(child), headers: { "Turbo-Frame" => "drawer" }
+
+    assert_response :success
+    assert_select "a[href^='#{rules_path}']", false
+  end
+
+  test "create rule link is hidden without edit permission" do
+    # credit_card is shared read-only with family_member, see fixtures/account_shares.yml
+    entry = create_transaction(account: accounts(:credit_card), name: "Payee String", merchant: merchants(:netflix))
+
+    sign_in users(:family_member)
+    get transaction_url(entry), headers: { "Turbo-Frame" => "drawer" }
+
+    assert_response :success
+    assert_select "a[href^='#{rules_path}']", false
+  end
+
   test "index groups subcategories immediately after their parent in the category filter" do
     get transactions_url
     assert_response :success
@@ -1389,9 +1465,6 @@ end
     # Transfer#categorizable? / #payment? walk to_account via
     # transfer.inflow_transaction.entry.account. Without nested includes those
     # become one lookup triad per transfer row during list render.
-    # categorizable? also walks from_account via the outflow leg, which is only
-    # loaded through the inverse_of on Transaction::Transferable; dropping it
-    # makes the transactions.id assertion below fail.
     normalized_queries = queries.map { |sql| normalize_sql_query(sql) }
     assert_empty single_record_lookups(normalized_queries, table: "transactions", column: "id"),
                  "Expected transfer counterparty transactions to be preloaded"
@@ -1752,54 +1825,6 @@ end
     assert_response :redirect
     assert_includes response.location, "filter_cleared=1"
     assert_no_match(/ai_status/, response.location)
-  end
-
-  test "update drops a category sent for a matched transfer's inflow leg" do
-    outflow = Transaction.create!(kind: "investment_contribution")
-    Entry.create!(account: accounts(:depository), entryable: outflow, name: "Contribution", amount: 500, currency: "USD", date: Date.current)
-    inflow = Transaction.create!(kind: "funds_movement")
-    inflow_entry = Entry.create!(account: accounts(:investment), entryable: inflow, name: "Contribution", amount: -500, currency: "USD", date: Date.current)
-    Transfer.create!(inflow_transaction: inflow, outflow_transaction: outflow, status: "confirmed")
-
-    patch transaction_url(inflow_entry), params: {
-      entry: {
-        notes: "Monthly savings",
-        entryable_type: "Transaction",
-        entryable_attributes: { id: inflow.id, category_id: categories(:income).id }
-      }
-    }
-
-    assert_nil inflow.reload.category_id
-    assert_equal "Monthly savings", inflow_entry.reload.notes
-  end
-
-  test "update drops a category for a matched inflow leg whose kind was edited to standard" do
-    outflow = Transaction.create!(kind: "investment_contribution")
-    Entry.create!(account: accounts(:depository), entryable: outflow, name: "Contribution", amount: 500, currency: "USD", date: Date.current)
-    inflow = Transaction.create!(kind: "standard")
-    inflow_entry = Entry.create!(account: accounts(:investment), entryable: inflow, name: "Contribution", amount: -500, currency: "USD", date: Date.current)
-    Transfer.create!(inflow_transaction: inflow, outflow_transaction: outflow, status: "confirmed")
-
-    patch transaction_url(inflow_entry), params: {
-      entry: { entryable_type: "Transaction", entryable_attributes: { id: inflow.id, category_id: categories(:income).id } }
-    }
-
-    assert_nil inflow.reload.category_id
-  end
-
-  test "drawer shows a matched transfer's inflow leg with the outflow's category, disabled" do
-    outflow = Transaction.create!(kind: "investment_contribution", category: categories(:income))
-    Entry.create!(account: accounts(:depository), entryable: outflow, name: "Contribution", amount: 500, currency: "USD", date: Date.current)
-    inflow = Transaction.create!(kind: "funds_movement")
-    inflow_entry = Entry.create!(account: accounts(:investment), entryable: inflow, name: "Contribution", amount: -500, currency: "USD", date: Date.current)
-    Transfer.create!(inflow_transaction: inflow, outflow_transaction: outflow, status: "confirmed")
-
-    get transaction_url(inflow_entry), headers: { "Turbo-Frame" => "drawer" }
-
-    assert_response :success
-    assert_select "button#category_id_trigger[disabled]", text: /#{categories(:income).name}/
-    assert_select "input[type=hidden][name='entry[entryable_attributes][category_id]'][disabled]"
-    assert_match I18n.t("transactions.show.category_set_on_outflow"), response.body
   end
 
   private

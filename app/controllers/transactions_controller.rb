@@ -10,6 +10,7 @@ class TransactionsController < ApplicationController
   def show
     super
     assign_mark_recurring_state
+    assign_create_rule_state
   end
 
   def new
@@ -33,9 +34,8 @@ class TransactionsController < ApplicationController
                          # - outflow rows need inflow_transaction (to_account) for both
                          #   counterpart display and Transfer#categorizable?/#payment?
                          # - inflow rows need outflow_transaction (from_account) for
-                         #   counterpart display, inflow_transaction (to_account)
-                         #   for the category menu on the same row, and the
-                         #   outflow's category, which the inflow row shows
+                         #   counterpart display, and inflow_transaction (to_account)
+                         #   for the category menu on the same row
                          {
                            transfer_as_outflow: {
                              inflow_transaction: { entry: :account }
@@ -44,7 +44,7 @@ class TransactionsController < ApplicationController
                          {
                            transfer_as_inflow: {
                              inflow_transaction: { entry: :account },
-                             outflow_transaction: [ :category, { entry: :account } ]
+                             outflow_transaction: { entry: :account }
                            }
                          }
                        )
@@ -206,6 +206,7 @@ class TransactionsController < ApplicationController
       @entry.reload
 
       assign_mark_recurring_state
+      assign_create_rule_state
 
       respond_to do |format|
         format.html { redirect_back_or_to account_path(@entry.account), notice: t(".updated") }
@@ -232,6 +233,11 @@ class TransactionsController < ApplicationController
               partial: "transactions/mark_recurring",
               locals: { entry: @entry }
             ) if can_edit_entry? && !@entry.split_child?),
+            (turbo_stream.replace(
+              dom_id(@entry, :create_rule),
+              partial: "transactions/create_rule",
+              locals: { entry: @entry }
+            ) if can_edit_entry? && !@entry.split_child?),
             turbo_stream.replace(
               dom_id(@entry),
               partial: "entries/entry",
@@ -243,6 +249,7 @@ class TransactionsController < ApplicationController
       end
     else
       assign_mark_recurring_state
+      assign_create_rule_state
       render :show, status: :unprocessable_entity
     end
   end
@@ -567,6 +574,19 @@ class TransactionsController < ApplicationController
       @mark_recurring_button_class = existing ? "disabled:opacity-50" : nil
     end
 
+    def assign_create_rule_state
+      return unless can_edit_entry? && !@entry.split_child?
+
+      merchant = @entry.transaction.merchant
+      rule_name = merchant&.name || @entry.name
+
+      @create_rule_href = if merchant
+        new_rule_path(resource_type: "transaction", name: rule_name, merchant_id: merchant.id)
+      else
+        new_rule_path(resource_type: "transaction", name: rule_name)
+      end
+    end
+
     def accessible_transactions
       Current.family.transactions
         .joins(entry: :account)
@@ -709,7 +729,7 @@ class TransactionsController < ApplicationController
     # read_write users can only annotate (category, tags, notes, merchant).
     # read_only users cannot update anything.
     def permitted_entry_params
-      permitted = case entry_permission
+      case entry_permission
       when :owner, :full_control
         entry_params
       when :read_write
@@ -722,14 +742,6 @@ class TransactionsController < ApplicationController
       else
         {} # read_only — no edits allowed
       end
-
-      # A matched transfer's category lives on its outflow leg; a category
-      # sent for the inflow leg would look saved but never reach a budget.
-      if permitted[:entryable_attributes]&.key?(:category_id) && @entry.transaction.category_set_on_transfer_outflow?
-        permitted[:entryable_attributes] = permitted[:entryable_attributes].except(:category_id)
-      end
-
-      permitted
     end
 
     def search_params
