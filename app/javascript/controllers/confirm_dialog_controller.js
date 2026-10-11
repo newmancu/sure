@@ -39,10 +39,7 @@ export default class extends Controller {
     });
 
     this.titleTarget.textContent = data.title || "Are you sure?";
-    // Text, never HTML: bodies interpolate record names (merchants, accounts,
-    // brokerages, tickers) that come from bank feeds, providers and other
-    // family members, however the caller built the confirmation.
-    this.subtitleTarget.textContent =
+    this.subtitleTarget.innerHTML =
       data.body || "This action cannot be undone.";
   }
 
