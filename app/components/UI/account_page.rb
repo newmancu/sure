@@ -1,23 +1,14 @@
 class UI::AccountPage < ApplicationComponent
-  attr_reader :account, :chart_view, :chart_period, :loan_chart, :as_of, :statement_coverage, :statements,
-              :reconciliation_statuses, :can_manage_statements
+  attr_reader :account, :chart_view, :chart_period, :statement_coverage, :statements, :reconciliation_statuses,
+              :can_manage_statements
 
   renders_one :activity_feed, ->(feed_data:, pagy:, search:) { UI::Account::ActivityFeed.new(feed_data: feed_data, pagy: pagy, search: search) }
 
-  # `loan_chart` is the Loan::PayoffChart payload the controller built for a
-  # loan account, nil for every other type and for a loan with no schedule.
-  # `as_of` is the page's one reference date, captured by the controller.
-  # `loan_projection` is the projection the controller already built for the
-  # chart, so the Schedule tab's forecast card does not simulate it again.
-  def initialize(account:, chart_view: nil, chart_period: nil, loan_chart: nil, as_of: Date.current, active_tab: nil,
-                 statement_coverage: nil, statements: [], reconciliation_statuses: {}, can_manage_statements: false,
-                 loan_projection: nil)
+  def initialize(account:, chart_view: nil, chart_period: nil, active_tab: nil, statement_coverage: nil, statements: [],
+                 reconciliation_statuses: {}, can_manage_statements: false)
     @account = account
     @chart_view = chart_view
     @chart_period = chart_period
-    @loan_chart = loan_chart
-    @loan_projection = loan_projection
-    @as_of = as_of
     @active_tab = active_tab
     @statement_coverage = statement_coverage
     @statements = statements
@@ -55,9 +46,7 @@ class UI::AccountPage < ApplicationComponent
     base_tabs = case account.accountable_type
     when "Investment", "Crypto"
       [ :activity, :holdings ]
-    when "Loan"
-      account.loan.amortizable? ? [ :activity, :overview, :schedule ] : [ :activity, :overview ]
-    when "Property", "Vehicle"
+    when "Property", "Vehicle", "Loan"
       [ :activity, :overview ]
     else
       [ :activity ]
@@ -83,28 +72,29 @@ class UI::AccountPage < ApplicationComponent
     @fx_coverage_start_date = result
   end
 
-  # The controller's projection when it built one; otherwise built here, once
-  # per render, for callers that construct the page without it.
-  def loan_projection
-    @loan_projection ||= account.loan.payoff_projection(as_of: as_of)
+  # Duplicate merchant-side card rows left in the database from before the twin
+  # filter landed. Memoized because the check parses the account's stored
+  # snapshot, which is not free on a long history.
+  def card_twin_candidate_count
+    return @card_twin_candidate_count if defined?(@card_twin_candidate_count)
+
+    # The cleanup screen only accepts accounts the user can write to, so a
+    # read-only viewer would follow the notice's link into a 404.
+    return @card_twin_candidate_count = 0 unless account.permission_for(Current.user).in?(%i[owner full_control])
+
+    @card_twin_candidate_count = EnableBankingAccount
+      .joins(:account_provider)
+      .where(account_providers: { account_id: account.id })
+      .sum { |enable_banking_account| enable_banking_account.card_twin_candidates.size }
   end
 
   def tab_content_for(tab)
     case tab
     when :activity
       activity_feed
-    when :overview
-      # Accountable is responsible for implementing the partial in the correct
-      # folder. The loan's tab shows date-sensitive figures and takes the
-      # page's one reference date, like its Schedule tab.
-      locals = { account: account }
-      locals[:as_of] = as_of if account.accountable_type == "Loan"
-      render "#{account.accountable_type.downcase.pluralize}/tabs/#{tab}", **locals
-    when :holdings
+    when :holdings, :overview
       # Accountable is responsible for implementing the partial in the correct folder
       render "#{account.accountable_type.downcase.pluralize}/tabs/#{tab}", account: account
-    when :schedule
-      render "loans/tabs/schedule", account: account, as_of: as_of, projection: loan_projection
     when :statements
       render_statement_tab
     end
