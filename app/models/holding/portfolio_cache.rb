@@ -7,10 +7,13 @@ class Holding::PortfolioCache
     end
   end
 
-  def initialize(account, use_holdings: false, security_ids: nil)
+  # Configure quote fallback, currency conversion and optional stored-rate-only reads.
+  def initialize(account, use_holdings: false, security_ids: nil, carry_forward_prices: false, stored_rates_only: false)
     @account = account
     @use_holdings = use_holdings
     @security_ids = security_ids
+    @carry_forward_prices = carry_forward_prices
+    @stored_rates_only = stored_rates_only
     load_prices
   end
 
@@ -22,7 +25,8 @@ class Holding::PortfolioCache
     end
   end
 
-  def get_price(security_id, date, source: nil)
+  # Resolve a dated quote with shared precedence and convert it to the requested currency.
+  def get_price(security_id, date, source: nil, currency: account.currency)
     security = @security_cache[security_id]
     raise SecurityNotFound.new(security_id, account.id) unless security
 
@@ -30,6 +34,13 @@ class Holding::PortfolioCache
       security[:prices_by_date_and_source][[ date, source ]]
     else
       security[:prices_by_date][date]
+    end
+
+    if price_with_priority.nil? && @carry_forward_prices && source.nil?
+      dates = security[:price_dates]
+      index = dates.bsearch_index { |value| value > date }
+      previous_date = index ? (dates[index - 1] if index.positive?) : dates.last
+      price_with_priority = security[:prices_by_date][previous_date] if previous_date
     end
 
     return nil unless price_with_priority
@@ -40,8 +51,18 @@ class Holding::PortfolioCache
     price_money = Money.new(price.price, price.currency)
 
     begin
-      converted_amount = price_money.exchange_to(account.currency, date: date).amount
+      if @stored_rates_only && price.currency != currency
+        rate = ExchangeRate.where(from_currency: price.currency, to_currency: currency)
+          .where(date: (date - ExchangeRate::NEAREST_RATE_LOOKBACK_DAYS)..date).order(date: :desc).first
+        return nil unless rate&.rate.to_d.positive?
+
+        converted_amount = price.price * rate.rate
+      else
+        converted_amount = price_money.exchange_to(currency, date: date).amount
+      end
     rescue Money::ConversionError
+      raise if @carry_forward_prices
+
       converted_amount = price.price
     end
 
@@ -49,7 +70,7 @@ class Holding::PortfolioCache
       security_id: security_id,
       date: price.date,
       price: converted_amount,
-      currency: account.currency
+      currency: currency
     )
   end
 
@@ -57,60 +78,8 @@ class Holding::PortfolioCache
     @security_cache.map { |_, v| v[:security] }
   end
 
-  # The ratio of the split a security goes ex on this date, or nil when it
-  # has none. Nil, not 1, so a caller can leave an unsplit position untouched.
-  def get_split_ratio(security_id, date)
-    split_ratios[[ security_id, date ]]
-  end
-
-  # Every split within the account's history, oldest first.
-  def get_splits
-    splits
-  end
-
-  # How many shares one share held at the close of `from` has become by the
-  # close of `to`: the product of the ratios of the splits in between. 1 when
-  # there are none, so a caller can multiply unconditionally.
-  #
-  # Reads every split up to today, not only those within the account's
-  # history: a provider snapshot can be older than the account's first entry
-  # (an account with no entries starts yesterday), and a split between the
-  # snapshot and that start still changed the count it reported.
-  def split_factor_between(security_id, from, to)
-    return Rational(1) if from.nil? || to.nil? || from >= to
-
-    splits_through_today.reduce(Rational(1)) do |factor, split|
-      next factor unless split.security_id == security_id
-      next factor unless split.ex_date > from && split.ex_date <= to
-
-      factor * split.ratio
-    end
-  end
-
   private
     PriceWithPriority = Data.define(:price, :priority, :source)
-
-    # Only splits the holdings can see: from the account's start date, when
-    # its holdings begin, to today. A split announced for a future ex-date is
-    # not applied early; it takes effect when that date arrives.
-    def splits
-      @splits ||= Security::Split
-        .where(security_id: @security_cache.keys, ex_date: account.start_date..Date.current)
-        .order(:ex_date)
-        .to_a
-    end
-
-    # Every split up to today, however early, for carrying a snapshot forward.
-    def splits_through_today
-      @splits_through_today ||= Security::Split
-        .where(security_id: @security_cache.keys, ex_date: ..Date.current)
-        .order(:ex_date)
-        .to_a
-    end
-
-    def split_ratios
-      @split_ratios ||= splits.to_h { |split| [ [ split.security_id, split.ex_date ], split.ratio ] }
-    end
 
     def trades
       @trades ||= account.entries.includes(entryable: :security).trades.chronological.to_a
@@ -132,10 +101,11 @@ class Holding::PortfolioCache
       @holdings_by_security_id ||= holdings.group_by(&:security_id)
     end
 
+    # Include selected securities before their journal or initial provider holding exists.
     def collect_unique_securities
       ids = trades_by_security_id.keys
       ids |= holdings_by_security_id.keys if use_holdings
-      ids &= @security_ids if @security_ids
+      ids = @security_ids if @security_ids
 
       Security.where(id: ids).to_a
     end
@@ -220,6 +190,7 @@ class Holding::PortfolioCache
         @security_cache[security.id] = {
           security: security,
           prices_by_date: prices_by_date,
+          price_dates: prices_by_date.keys.sort,
           prices_by_date_and_source: prices_by_date_and_source
         }
       end

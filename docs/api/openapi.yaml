@@ -2601,6 +2601,48 @@ components:
       - created_at
       - updated_at
       properties:
+        bitcoin_wallets:
+          type: array
+          description: On-chain connections only. Watch-only Bitcoin status for accessible
+            accounts; never includes public keys or address lists.
+          items:
+            type: object
+            required:
+            - account_id
+            - provider_type
+            - status
+            - address_count
+            - source_count
+            - last_synced_at
+            - stale
+            - history_truncated
+            properties:
+              account_id:
+                type: string
+                format: uuid
+              provider_type:
+                type: string
+                enum:
+                - BitcoinWalletAccount
+              status:
+                type: string
+                enum:
+                - discovering
+                - preview
+                - active
+                - failed
+              address_count:
+                type: integer
+              source_count:
+                type: integer
+              last_synced_at:
+                type: string
+                format: date-time
+                nullable: true
+              stale:
+                type: boolean
+              history_truncated:
+                type: boolean
         id:
           type: string
           format: uuid
@@ -3263,9 +3305,6 @@ components:
           type: string
           enum:
           - net_by_category
-          - net_by_account
-          description: net_by_account (group_by=account) replaces the Cash Flow node
-            with one account node per account, each balanced by Surplus or Deficit
         income:
           type: string
         spending:
@@ -3298,7 +3337,6 @@ components:
                 - income
                 - expense
                 - cash_flow
-                - account
                 - surplus
                 - deficit
               value:
@@ -5496,18 +5534,6 @@ paths:
           - sankey
         description: Graph-only envelope; omits daily comparison. Accepts month or
           an explicit date range; cannot combine with include.
-      - name: group_by
-        in: query
-        required: false
-        schema:
-          type: string
-          enum:
-          - category
-          - account
-          default: category
-        description: 'Requires view=sankey. category: flows through one Cash Flow
-          node; account: income categories flow through each account to expense categories
-          (basis net_by_account).'
       - name: start_date
         in: query
         required: false
@@ -8137,7 +8163,8 @@ paths:
       summary: Lists provider connection status summaries
       description: List safe provider connection status metadata for the authenticated
         user's family without exposing credentials, raw provider payloads, or raw
-        sync errors.
+        sync errors. On-chain connections include aggregated Bitcoin wallet status
+        for accessible accounts, without extended public keys or address lists.
       tags:
       - Provider Connections
       security:

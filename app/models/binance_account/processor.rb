@@ -46,10 +46,6 @@ class BinanceAccount::Processor
     end
 
     fetch_and_process_trades
-
-    # The account was created, and anchored, before any of this history
-    # existed. Now that it does, the anchor has to precede it.
-    binance_account.current_account.ensure_opening_anchor_precedes_entries
   end
 
   private
@@ -58,13 +54,14 @@ class BinanceAccount::Processor
       binance_account.binance_item.family.currency
     end
 
+    # Convert the provider's USD cash report and stage it through shared accounting.
     def process_account!
       account  = binance_account.current_account
       raw_usd  = (binance_account.current_balance || 0).to_d
       amount, stale, rate_date = convert_from_usd(raw_usd, date: Date.current)
       stale_extra = build_stale_extra(stale, rate_date, Date.current)
 
-      account.update!(
+      account.apply_provider_balance!(
         balance:      amount,
         cash_balance: 0,
         currency:     target_currency

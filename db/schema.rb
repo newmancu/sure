@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_29_120000) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pgcrypto"
@@ -315,6 +315,78 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
     t.datetime "updated_at", null: false
     t.index ["family_id"], name: "index_binance_items_on_family_id"
     t.index ["status"], name: "index_binance_items_on_status"
+  end
+
+  create_table "bitcoin_wallet_accounts", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "account_id", null: false
+    t.bigint "balance_sats", default: 0, null: false
+    t.datetime "baseline_at"
+    t.integer "baseline_block_height"
+    t.decimal "baseline_cash_balance", precision: 19, scale: 4
+    t.bigint "baseline_sats"
+    t.datetime "created_at", null: false
+    t.boolean "history_truncated", default: false, null: false
+    t.string "last_error"
+    t.datetime "last_synced_at"
+    t.boolean "needs_reconciliation", default: false, null: false
+    t.uuid "onchain_wallet_item_id", null: false
+    t.uuid "security_id", null: false
+    t.string "status", default: "discovering", null: false
+    t.datetime "updated_at", null: false
+    t.index ["account_id"], name: "index_bitcoin_wallet_accounts_on_account_id", unique: true
+    t.index ["onchain_wallet_item_id"], name: "index_bitcoin_wallet_accounts_on_onchain_wallet_item_id"
+    t.index ["security_id"], name: "index_bitcoin_wallet_accounts_on_security_id"
+  end
+
+  create_table "bitcoin_wallet_addresses", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.string "address", null: false
+    t.integer "address_index"
+    t.uuid "bitcoin_wallet_account_id", null: false
+    t.uuid "bitcoin_wallet_source_id"
+    t.integer "branch"
+    t.datetime "created_at", null: false
+    t.uuid "family_id", null: false
+    t.datetime "updated_at", null: false
+    t.boolean "used", default: false, null: false
+    t.index ["address"], name: "index_bitcoin_wallet_addresses_on_address"
+    t.index ["bitcoin_wallet_account_id", "address"], name: "index_bitcoin_addresses_on_wallet_and_address", unique: true
+    t.index ["bitcoin_wallet_account_id"], name: "index_bitcoin_wallet_addresses_on_bitcoin_wallet_account_id"
+    t.index ["bitcoin_wallet_source_id"], name: "index_bitcoin_wallet_addresses_on_bitcoin_wallet_source_id"
+    t.index ["family_id", "address"], name: "index_bitcoin_wallet_addresses_on_family_id_and_address", unique: true
+    t.index ["family_id"], name: "index_bitcoin_wallet_addresses_on_family_id"
+  end
+
+  create_table "bitcoin_wallet_sources", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.uuid "bitcoin_wallet_account_id", null: false
+    t.datetime "created_at", null: false
+    t.jsonb "discovery", default: {}, null: false
+    t.text "extended_public_key"
+    t.string "fingerprint", null: false
+    t.integer "gap_limit", default: 20, null: false
+    t.string "kind", null: false
+    t.string "receive_address", null: false
+    t.datetime "updated_at", null: false
+    t.index ["bitcoin_wallet_account_id", "fingerprint"], name: "index_bitcoin_sources_on_wallet_and_fingerprint", unique: true
+    t.index ["bitcoin_wallet_account_id"], name: "index_bitcoin_wallet_sources_on_bitcoin_wallet_account_id"
+    t.check_constraint "gap_limit >= 20 AND gap_limit <= 1000", name: "bitcoin_source_gap_limit"
+    t.check_constraint "kind::text = ANY (ARRAY['address'::character varying, 'bip84'::character varying]::text[])", name: "bitcoin_source_kind"
+  end
+
+  create_table "bitcoin_wallet_transactions", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.bigint "amount_sats", null: false
+    t.boolean "baseline", default: false, null: false
+    t.uuid "bitcoin_wallet_account_id", null: false
+    t.integer "block_height"
+    t.boolean "confirmed", default: false, null: false
+    t.datetime "created_at", null: false
+    t.datetime "occurred_at", null: false
+    t.boolean "present", default: true, null: false
+    t.jsonb "raw_payload", default: {}, null: false
+    t.datetime "removed_at"
+    t.string "txid", null: false
+    t.datetime "updated_at", null: false
+    t.index ["bitcoin_wallet_account_id", "txid"], name: "index_bitcoin_transactions_on_wallet_and_txid", unique: true
+    t.index ["bitcoin_wallet_account_id"], name: "index_bitcoin_wallet_transactions_on_bitcoin_wallet_account_id"
   end
 
   create_table "brex_accounts", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
@@ -1593,7 +1665,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
     t.jsonb "variable_rate_schedule", default: {}, null: false
     t.check_constraint "down_payment IS NULL OR down_payment >= 0::numeric", name: "chk_loans_down_payment_non_negative"
     t.check_constraint "insurance_rate IS NULL OR insurance_rate >= 0::numeric", name: "chk_loans_insurance_rate_non_negative"
-    t.check_constraint "insurance_rate_type IS NULL OR (insurance_rate_type::text = ANY (ARRAY['level_term'::character varying::text, 'decreasing_life'::character varying::text]))", name: "chk_loans_insurance_rate_type"
+    t.check_constraint "insurance_rate_type IS NULL OR (insurance_rate_type::text = ANY (ARRAY['level_term'::character varying, 'decreasing_life'::character varying]::text[]))", name: "chk_loans_insurance_rate_type"
   end
 
   create_table "lunchflow_accounts", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
@@ -1611,7 +1683,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
     t.jsonb "raw_holdings_payload"
     t.jsonb "raw_payload"
     t.jsonb "raw_transactions_payload"
-    t.boolean "treat_balance_as_available_credit", default: false, null: false
     t.datetime "updated_at", null: false
     t.index ["account_id"], name: "index_lunchflow_accounts_on_account_id"
     t.index ["lunchflow_item_id", "account_id"], name: "index_lunchflow_accounts_on_item_and_account_id", unique: true, where: "(account_id IS NOT NULL)"
@@ -2333,20 +2404,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
     t.index ["security_id"], name: "index_security_prices_on_security_id"
   end
 
-  create_table "security_splits", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
-    t.datetime "created_at", null: false
-    t.integer "denominator", null: false
-    t.date "ex_date", null: false
-    t.integer "numerator", null: false
-    t.uuid "security_id", null: false
-    t.string "source", null: false
-    t.datetime "updated_at", null: false
-    t.index ["security_id", "ex_date"], name: "index_security_splits_on_security_id_and_ex_date", unique: true
-    t.index ["security_id"], name: "index_security_splits_on_security_id"
-    t.check_constraint "numerator <> denominator", name: "security_splits_not_one_to_one"
-    t.check_constraint "numerator > 0 AND denominator > 0", name: "security_splits_positive_terms"
-  end
-
   create_table "sessions", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.uuid "active_impersonator_session_id"
     t.datetime "created_at", null: false
@@ -2640,7 +2697,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
 
   create_table "tool_calls", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.datetime "created_at", null: false
-    t.jsonb "extra_content"
     t.jsonb "function_arguments"
     t.string "function_name"
     t.jsonb "function_result"
@@ -2685,7 +2741,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
     t.boolean "scheduled_for_deletion", default: false, null: false
     t.text "session_blob"
     t.string "status", default: "good", null: false
-    t.jsonb "timeline_cursors", default: {}, null: false
     t.datetime "updated_at", null: false
     t.index ["family_id", "brokerage_account_id"], name: "index_trade_republic_items_on_family_id_and_brokerage_account", unique: true, where: "((brokerage_account_id IS NOT NULL) AND (scheduled_for_deletion = false))"
     t.index ["family_id"], name: "index_trade_republic_items_on_family_id"
@@ -2870,9 +2925,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
   end
 
   create_table "valuations", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.decimal "cash_entry_total", precision: 19, scale: 4
     t.datetime "created_at", null: false
     t.string "kind", default: "reconciliation", null: false
     t.jsonb "locked_attributes", default: {}
+    t.datetime "superseded_at"
     t.datetime "updated_at", null: false
   end
 
@@ -2957,6 +3014,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
   add_foreign_key "balances", "accounts", on_delete: :cascade
   add_foreign_key "binance_accounts", "binance_items"
   add_foreign_key "binance_items", "families"
+  add_foreign_key "bitcoin_wallet_accounts", "accounts"
+  add_foreign_key "bitcoin_wallet_accounts", "onchain_wallet_items"
+  add_foreign_key "bitcoin_wallet_accounts", "securities"
+  add_foreign_key "bitcoin_wallet_addresses", "bitcoin_wallet_accounts", on_delete: :cascade
+  add_foreign_key "bitcoin_wallet_addresses", "bitcoin_wallet_sources", on_delete: :nullify
+  add_foreign_key "bitcoin_wallet_addresses", "families"
+  add_foreign_key "bitcoin_wallet_sources", "bitcoin_wallet_accounts", on_delete: :cascade
+  add_foreign_key "bitcoin_wallet_transactions", "bitcoin_wallet_accounts", on_delete: :cascade
   add_foreign_key "brex_accounts", "brex_items"
   add_foreign_key "brex_items", "families"
   add_foreign_key "budget_categories", "budgets", on_delete: :cascade
@@ -3092,7 +3157,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
   add_foreign_key "rule_runs", "rules"
   add_foreign_key "rules", "families"
   add_foreign_key "security_prices", "securities"
-  add_foreign_key "security_splits", "securities", on_delete: :cascade
   add_foreign_key "sessions", "impersonation_sessions", column: "active_impersonator_session_id", on_delete: :nullify
   add_foreign_key "sessions", "users"
   add_foreign_key "simplefin_accounts", "simplefin_items"

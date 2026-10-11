@@ -6,10 +6,16 @@ class Holding::Materializer
   # alongside the full @holdings collection. Reduces peak RSS during sync.
   PERSIST_BATCH_SIZE = 2_000
 
-  def initialize(account, strategy:, security_ids: nil)
+  # Configure shared basis reconciliation and scoped publication of provider positions.
+  def initialize(account, strategy:, security_ids: nil, window_start_date: nil)
     @account = account
     @strategy = strategy
     @security_ids = security_ids
+    @window_start_date = window_start_date
+    @position_providers = account.account_providers.filter_map do |link|
+      adapter = link.adapter
+      [ link.id, adapter ] if adapter&.position_only?
+    end.to_h
   end
 
   def materialize_holdings
@@ -49,6 +55,7 @@ class Holding::Materializer
       @holdings = calculator.calculate
     end
 
+    # Persist calculated or carried holdings while respecting provider ownership and basis locks.
     def persist_holdings
       return if @holdings.empty?
 
@@ -72,9 +79,27 @@ class Holding::Materializer
         key = holding_key(holding)
         existing = existing_holdings_map[key]
 
+        if holding.snapshot && existing.nil?
+          snapshot = holding.snapshot
+          account.holdings.create!(security_id: holding.security_id, date: holding.date,
+            currency: holding.currency, qty: holding.qty, price: holding.price, amount: holding.amount,
+            cost_basis: snapshot.cost_basis && Money.new(snapshot.cost_basis, snapshot.currency).exchange_to(holding.currency, date: snapshot.date).amount,
+            cost_basis_source: snapshot.cost_basis_source, cost_basis_locked: snapshot.cost_basis_locked,
+            security_locked: snapshot.security_locked, provider_security_id: snapshot.provider_security_id,
+            account_provider_id: snapshot.account_provider_id)
+          next
+        end
+
         # Skip provider-sourced holdings - they have authoritative data from the provider
         # (e.g., Coinbase, SimpleFIN) and should not be overwritten by calculated holdings
-        if existing&.account_provider_id.present?
+        position_provider = @position_providers[existing&.account_provider_id]
+        derived_position = position_provider && position_provider.position_start_date &&
+          holding.date >= position_provider.position_start_date
+        if derived_position && holding.date == Date.current
+          holding.qty = existing.qty
+          holding.amount = existing.qty * holding.price
+        end
+        if existing&.account_provider_id.present? && !derived_position
           Rails.logger.debug(
             "Holding::Materializer - Skipping provider-sourced holding id=#{existing.id} " \
             "security_id=#{existing.security_id} date=#{existing.date}"
@@ -164,6 +189,7 @@ class Holding::Materializer
       existing.cost_basis_source.nil? || existing.cost_basis_source == "calculated"
     end
 
+    # Preload dated rows whose provider priority or locked basis affects reconciliation.
     def load_existing_holdings_map
       # Load holdings that might affect reconciliation:
       # - Locked holdings (must preserve their cost_basis)
@@ -173,6 +199,8 @@ class Holding::Materializer
       #   figure and no source was invisible here, so the transfer clearing
       #   below saw `existing` as nil and left the stale basis standing —
       #   exactly the rows least able to justify the number they hold.
+      return account.holdings.index_by { |h| holding_key(h) } if account.accounting_start_date
+
       account.holdings
         .where(cost_basis_locked: true)
         .or(account.holdings.where.not(cost_basis_source: nil))
@@ -246,45 +274,11 @@ class Holding::Materializer
       return nil unless result
 
       cost_basis, snap_currency, snap_date = result
-      cost_basis = split_adjusted_cost_basis(cost_basis, holding.security_id, snap_date, holding.date)
       return cost_basis if snap_currency == holding.currency
 
       Money.new(cost_basis, snap_currency).exchange_to(holding.currency, date: snap_date).amount
     rescue Money::ConversionError
       nil
-    end
-
-    # The snapshot's per-share cost, restated for the share count the holding
-    # is on.
-    #
-    # The figure carried forward is per share, and a split changes how many
-    # shares the same money bought: a $100 basis across a 2-for-1 split is $50
-    # a share afterwards, on twice as many shares, for the same $1,000 total.
-    # Carried across unchanged it doubled every position's recorded cost, and
-    # every gain and return computed from it, without anything looking wrong.
-    def split_adjusted_cost_basis(cost_basis, security_id, snap_date, holding_date)
-      factor = cumulative_split_factor(security_id, snap_date, holding_date)
-      return cost_basis if factor == 1
-
-      Security::Split.unscale(cost_basis, factor)
-    end
-
-    def cumulative_split_factor(security_id, from, to)
-      return Rational(1) if from.nil? || to.nil? || from >= to
-
-      splits_by_security[security_id].reduce(Rational(1)) do |factor, split|
-        next factor unless split.ex_date > from && split.ex_date <= to
-
-        factor * split.ratio
-      end
-    end
-
-    def splits_by_security
-      @splits_by_security ||= Security::Split
-        .where(security_id: @holdings.map(&:security_id).uniq)
-        .order(:ex_date)
-        .group_by(&:security_id)
-        .tap { |grouped| grouped.default = [] }
     end
 
     def provider_cost_basis_snapshots
@@ -302,7 +296,10 @@ class Holding::Materializer
       end
     end
 
+    # Preserve imported mixed-account history while retaining legacy cleanup elsewhere.
     def purge_stale_holdings
+      return if account.accounting_start_date
+
       portfolio_security_ids = account.trades.distinct.pluck(:security_id)
 
       # Never delete provider-sourced holdings - they're authoritative from the provider
@@ -319,12 +316,13 @@ class Holding::Materializer
       end
     end
 
+    # Choose forward journal reconstruction or the established reverse provider calculation.
     def calculator
       if strategy == :reverse
         portfolio_snapshot = Holding::PortfolioSnapshot.new(account)
         Holding::ReverseCalculator.new(account, portfolio_snapshot: portfolio_snapshot, security_ids: security_ids)
       else
-        Holding::ForwardCalculator.new(account, security_ids: security_ids)
+        Holding::ForwardCalculator.new(account, security_ids: security_ids, window_start_date: @window_start_date)
       end
     end
 end
