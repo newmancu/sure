@@ -155,7 +155,7 @@ pt-PT:
         one: tem o tamanho errado (deve ter %{count} caracter)
         other: tem o tamanho errado (deve ter %{count} caracteres)
     template:
-      body: "Foram detectados problemas nos seguintes campos:"
+      body: "Foram detetados problemas nos seguintes campos:"
       header:
         one: "%{count} erro impediu que este %{model} fosse guardado"
         other: "%{count} erros impediram que este %{model} fosse guardado"
@@ -239,3 +239,6 @@ pt-PT:
       long: "%d de %B de %Y, %H:%M"
       short: "%d de %B %H:%M"
     pm: pm
+  oauth:
+    registration:
+      invalid_redirect_uris: redirect_uris tem de utilizar https, http de loopback ou um esquema de URI de aplicação nativa

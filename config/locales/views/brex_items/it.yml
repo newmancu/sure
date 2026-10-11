@@ -92,13 +92,14 @@ it:
       total: Totale
       unlinked: Non collegati
     provider_panel:
+      accounts_link: Conti
       add_connection: Aggiungi connessione Brex
       base_url_label: URL base (facoltativo)
       base_url_placeholder: https://api.brex.com
       connection_name_label: Nome connessione
       connection_name_placeholder: Conto aziendale
+      configured_html: "Configurato e pronto all'uso. Visita la scheda %{accounts_link} per gestire e configurare i conti."
       default_connection_name: Connessione Brex
-      disconnect: Disconnetti
       disconnect_label: "Disconnetti %{name}"
       disconnect_confirm: "Disconnettere %{name}?"
       encryption_warning:
@@ -110,8 +111,10 @@ it:
         open_tokens: Vai alle impostazioni sviluppatore/token API Brex per l'azienda che vuoi connettere
         sign_in_html: "Visita %{link} e accedi all'account che vuoi connettere"
       keep_token_placeholder: Lascia vuoto per mantenere il token attuale
+      not_configured: Non configurato
       sandbox_note_html: "Usa una connessione nominata separata per ogni azienda/token API Brex che vuoi sincronizzare. Lascia l'URL base vuoto per la produzione. L'ambiente staging è limitato ai test approvati da Brex."
       setup_accounts: Configura conti
+      setup_title: "Istruzioni di configurazione:"
       sync: Sincronizza
       token_label: Token
       token_placeholder: Incolla il token qui
@@ -186,11 +189,11 @@ it:
       no_api_token: Token API Brex non trovato. Configuralo nelle Impostazioni provider.
       account_types:
         skip: Salta questo conto
-        depository: Conto Corrente o Risparmio
+        depository: Conto corrente o di risparmio
         credit_card: Carta di credito
         investment: Conto investimento
         loan: Prestito o Mutuo
-        other_asset: Altro attivo
+        other_asset: Altro asset
       subtype_labels:
         depository: "Sottotipo conto:"
         credit_card: ""
@@ -199,16 +202,16 @@ it:
         other_asset: ""
       subtype_messages:
         credit_card: "Le carte di credito saranno configurate automaticamente come conti carta di credito."
-        other_asset: "Nessuna opzione aggiuntiva necessaria per gli altri attivi."
+        other_asset: "Nessuna opzione aggiuntiva necessaria per gli altri asset."
       subtypes:
         depository:
-          checking: Conto Corrente
+          checking: Conto corrente
           savings: Risparmio
-          hsa: Health Savings Account
+          hsa: Conto di risparmio sanitario
           cd: Certificato di Deposito
           money_market: Mercato Monetario
         investment:
-          brokerage: Intermediazione
+          brokerage: Conto titoli
           pension: Pensione
           retirement: Previdenza
           "401k": "401(k)"
@@ -216,7 +219,7 @@ it:
           "403b": "403(b)"
           tsp: Thrift Savings Plan
           "529_plan": "Piano 529"
-          hsa: Health Savings Account
+          hsa: Conto di risparmio sanitario
           mutual_fund: Fondo comune
           ira: IRA Tradizionale
           roth_ira: Roth IRA
