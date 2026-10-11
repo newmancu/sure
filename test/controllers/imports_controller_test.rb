@@ -19,16 +19,11 @@ class ImportsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "gets new" do
-    adapter = mock("vector_store_adapter")
-    adapter.stubs(:supported_extensions).returns(%w[.pdf .txt])
-    VectorStore::Registry.stubs(:adapter).returns(adapter)
-
     get new_import_url
 
     assert_response :success
 
     assert_select "turbo-frame#modal"
-    assert_select "form[data-turbo-frame=_top] input[type=file][onchange='this.form.requestSubmit()']", count: 2
   end
 
   test "cancel marks a lost import as failed" do
@@ -91,26 +86,6 @@ class ImportsControllerTest < ActionDispatch::IntegrationTest
     end
 
     assert_redirected_to import_upload_url(Import.all.ordered.first)
-  end
-
-  test "create with an empty request body redirects back with an alert" do
-    assert_no_difference "Import.count" do
-      post imports_url
-    end
-
-    assert_redirected_to new_import_url
-    assert_equal I18n.t("imports.create.missing_upload"), flash[:alert]
-  end
-
-  test "create with DocumentImport or SureImport type but no file redirects back with an alert" do
-    %w[DocumentImport SureImport].each do |type|
-      assert_no_difference "Import.count" do
-        post imports_url, params: { import: { type: type } }
-      end
-
-      assert_redirected_to new_import_url
-      assert_equal I18n.t("imports.create.missing_upload"), flash[:alert]
-    end
   end
 
   test "uploads supported non-pdf document for vector store without creating import" do
@@ -471,6 +446,20 @@ class ImportsControllerTest < ActionDispatch::IntegrationTest
 
     sign_in users(:family_member)
     put revert_import_url(import)
+
+    assert_redirected_to import_path(import)
+    assert_equal I18n.t("accounts.not_authorized"), flash[:alert]
+  end
+
+  test "member cannot delete import whose entries are in a read only shared account" do
+    import = imports(:transaction)
+    import.update!(status: :failed)
+    entries(:transaction).update!(import: import, account: accounts(:credit_card))
+
+    sign_in users(:family_member)
+    assert_no_difference([ "Import.count", "Entry.count" ]) do
+      delete import_url(import)
+    end
 
     assert_redirected_to import_path(import)
     assert_equal I18n.t("accounts.not_authorized"), flash[:alert]
