@@ -3,7 +3,16 @@ class TransferMatchesController < ApplicationController
 
   def new
     @accounts = Current.family.accounts.writable_by(Current.user).visible.alphabetically.where.not(id: @entry.account_id)
-    @transfer_match_candidates = writable_transfer_match_candidates
+    @transfer_match_candidates = @entry.transaction.transfer_match_candidates
+    @suggested_target_account = Current.family.missing_transfer_suggestion_for(@entry, user: Current.user) if @transfer_match_candidates.empty?
+  end
+
+  def dismiss_suggestion
+    return unless require_account_permission!(@entry.account, redirect_path: transactions_path)
+
+    @entry.transaction.dismiss_counterparty_transfer_suggestion!
+
+    redirect_back_or_to transactions_path, notice: t(".success")
   end
 
   def create
@@ -18,8 +27,7 @@ class TransferMatchesController < ApplicationController
 
       # Use DESTINATION (inflow) account for kind, matching Transfer::Creator logic
       destination_account = @transfer.inflow_transaction.entry.account
-      source_account = @transfer.outflow_transaction.entry.account
-      outflow_kind = Transfer.kind_for_account(destination_account, from_account: source_account)
+      outflow_kind = Transfer.kind_for_account(destination_account)
       outflow_attrs = { kind: outflow_kind }
 
       if outflow_kind == "investment_contribution"
@@ -39,20 +47,6 @@ class TransferMatchesController < ApplicationController
   private
     def set_entry
       @entry = Current.accessible_entries.find(params[:transaction_id])
-    end
-
-    # Family-wide candidates, limited to counterparts in accounts the user can
-    # write to (create would reject the others anyway).
-    def writable_transfer_match_candidates
-      candidates = @entry.transaction.transfer_match_candidates
-      counterpart_id = ->(candidate) { @entry.amount.negative? ? candidate.outflow_transaction_id : candidate.inflow_transaction_id }
-
-      writable_counterpart_ids = Entry
-        .where(entryable_type: "Transaction", entryable_id: candidates.map(&counterpart_id), account_id: @accounts.map(&:id))
-        .pluck(:entryable_id)
-        .to_set
-
-      candidates.select { |candidate| writable_counterpart_ids.include?(counterpart_id.call(candidate)) }
     end
 
     def transfer_match_params

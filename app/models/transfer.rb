@@ -1,6 +1,6 @@
 class Transfer < ApplicationRecord
-  belongs_to :inflow_transaction, class_name: "Transaction", inverse_of: :transfer_as_inflow
-  belongs_to :outflow_transaction, class_name: "Transaction", inverse_of: :transfer_as_outflow
+  belongs_to :inflow_transaction, class_name: "Transaction"
+  belongs_to :outflow_transaction, class_name: "Transaction"
 
   has_many :fee_transactions, class_name: "Transaction", dependent: :destroy
 
@@ -17,23 +17,13 @@ class Transfer < ApplicationRecord
   validate :transfer_has_same_family
 
   class << self
-    # The outflow leg's kind for a transfer into this account. Transfer::Creator,
-    # Family::DataImporter, auto-matching, rules and manual matches all call
-    # it (the inflow leg is always funds_movement, see kind_for_leg).
-    # from_account: an investment/crypto destination only counts as a
-    # contribution when the source isn't itself an investment/crypto account,
-    # otherwise it's a plain funds movement.
-    def kind_for_account(account, from_account: nil)
+    def kind_for_account(account)
       if account.loan?
         "loan_payment"
       elsif account.credit_card?
         "cc_payment"
       elsif account.investment? || account.crypto?
-        if from_account && (from_account.investment? || from_account.crypto?)
-          "funds_movement"
-        else
-          "investment_contribution"
-        end
+        "investment_contribution"
       elsif account.liability?
         "cc_payment"
       else
@@ -101,27 +91,24 @@ class Transfer < ApplicationRecord
     "transfer"
   end
 
-  # The kind a leg carries while this transfer exists: the outflow by the
-  # destination account, the inflow always funds_movement.
-  def kind_for_leg(transaction)
-    return "funds_movement" if transaction.id == inflow_transaction_id
-
-    Transfer.kind_for_account(to_account, from_account: from_account)
-  end
-
-  # Based on the destination account rather than outflow_transaction.kind,
-  # which can be stale on rows a provider sync overwrote before
-  # Account::ProviderImportAdapter derived matched legs from their transfer
-  # (see Transaction#payment?, which has the same to_account-based reasoning).
   def categorizable?
-    return false unless to_account
-
-    !Transaction::UNCATEGORIZED_EXCLUDED_KINDS.include?(Transfer.kind_for_account(to_account, from_account: from_account))
+    to_account&.accountable_type == "Loan"
   end
 
   def reject!
     Transfer.transaction do
       RejectedTransfer.find_or_create_by!(inflow_transaction_id: inflow_transaction_id, outflow_transaction_id: outflow_transaction_id)
+      dismiss_fabricated_counterpart_suggestion!
+      destroy!
+    end
+  end
+
+  # User-initiated unlink. Unlike the plain destroy! (also used when an
+  # account is deleted or merged), this records that the user doesn't want
+  # a fabricated counterpart back.
+  def unlink!
+    Transfer.transaction do
+      dismiss_fabricated_counterpart_suggestion!
       destroy!
     end
   end
@@ -132,6 +119,20 @@ class Transfer < ApplicationRecord
         next if transaction.nil?
         next unless Transaction.exists?(transaction.id)
         begin
+          # This leg didn't exist before Family::AutoTransferMatchable
+          # fabricated it as a stand-in counterpart (see
+          # #auto_create_missing_transfer_counterparts!) -- unlike a real,
+          # bank-synced transaction, there's no underlying data for it to
+          # revert to, so unlinking it must remove it entirely rather than
+          # downgrade it to a phantom "standard" transaction the user never
+          # created.
+          if transaction.extra&.dig("auto_generated_transfer_counterpart") == true
+            account = transaction.entry.account
+            transaction.entry.destroy!
+            account.sync_later
+            next
+          end
+
           transaction.update!(kind: "standard")
           # The entry survives this destroy (only the Transfer join row and
           # fee transactions go away), but its idempotency_key must not: a
@@ -147,6 +148,17 @@ class Transfer < ApplicationRecord
       end
       super
     end
+  end
+
+  # Removing a fabricated leg alone isn't enough: the next sync would find the
+  # outflow unmatched again and fabricate the same counterpart (see
+  # Family::AutoTransferMatchable#auto_create_missing_transfer_counterparts!).
+  # Rejecting or unlinking it is the user saying "this isn't a transfer", so
+  # record that on the outflow the same way dismissing the suggestion does.
+  def dismiss_fabricated_counterpart_suggestion!
+    return unless inflow_transaction&.extra&.dig("auto_generated_transfer_counterpart") == true
+
+    outflow_transaction&.dismiss_counterparty_transfer_suggestion!
   end
 
   def confirm!

@@ -48,6 +48,10 @@ en:
       institution_name_placeholder: e.g., Chase Bank
       institution_domain_label: Institution domain
       institution_domain_placeholder: e.g., chase.com
+      iban_label: IBAN
+      iban_placeholder: e.g., DE89370400440532013000 # pipelock:ignore IBAN
+      iban_set_placeholder: •••• •••• •••• •••• — IBAN on file, enter a new value to replace it
+      iban_remove_label: Remove IBAN
       notes_label: Notes
       notes_placeholder: Store additional information like account numbers, sort codes, IBAN, routing numbers, etc.
       exclude_from_reports: Exclude from all reports
@@ -92,7 +96,6 @@ en:
       activity:
         amount: Amount
         balance: Balance
-        category: Category
         confirmed: Confirmed
         date: Date
         entries: entries
@@ -111,7 +114,6 @@ en:
         search_placeholder: Search entries by name
         status: Status
         title: Activity
-        uncategorized_only: Uncategorized only
       chart:
         balance: Balance
         owed: Amount owed
