@@ -1,6 +1,4 @@
 class PlansController < ApplicationController
-  include BudgetOwnership
-
   # The Plan hub fronts budgets + goals under one nav entry, and only
   # replaces the Budgets entry for preview users (see
   # ApplicationHelper#plan_nav_item). Without the flag, fall through to the
@@ -8,9 +6,7 @@ class PlansController < ApplicationController
   before_action :redirect_to_budgets_unless_preview
 
   def show
-    @budget = resolve_budget(Date.current)
-    @editable = @budget.editable_by?(Current.user)
-    @switch_options = budget_switch_options(@budget)
+    @budget = Budget.find_or_bootstrap(Current.family, start_date: Date.current, user: Current.user)
     @top_budget_categories = @budget.initialized? ? @budget.top_spending_categories : []
 
     @goals = Goal.active_prepared_for(Current.family)

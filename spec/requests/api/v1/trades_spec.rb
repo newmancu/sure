@@ -81,6 +81,7 @@ RSpec.describe 'API V1 Trades', type: :request do
     get 'List trades' do
       tags 'Trades'
       security [ { apiKeyAuth: [] } ]
+      description 'Returns trades for accounts accessible to the authenticated user, excluding accounts pending deletion.'
       produces 'application/json'
       parameter name: :page, in: :query, type: :integer, required: false,
                 description: 'Page number (default: 1)'
@@ -160,28 +161,17 @@ RSpec.describe 'API V1 Trades', type: :request do
             properties: {
               account_id: { type: :string, format: :uuid, description: 'Account ID (required)' },
               date: { type: :string, format: :date, description: 'Trade date (required)' },
-              qty: { type: :number, description: 'Quantity (required for buy/sell/sweep_in/sweep_out/reinvestment)' },
-              price: { type: :number, description: 'Price (required for buy/sell/sweep_in/sweep_out/reinvestment)' },
-              amount: {
-                type: :number,
-                description: 'Amount (required for dividend, deposit, withdrawal, interest, fee)'
-              },
-              fee: {
-                type: :number,
-                description: 'Optional fee (buy/sell/sweep_in/sweep_out/reinvestment)'
-              },
-              type: {
-                type: :string,
-                enum: %w[buy sell sweep_in sweep_out dividend reinvestment interest fee deposit withdrawal],
-                description: 'Trade type (required)'
-              },
+              qty: { type: :number, description: 'Quantity (required for buy/sell)' },
+              price: { type: :number, description: 'Price (required for buy/sell)' },
+              amount: { type: :number, description: 'Amount (required for dividend, deposit, withdrawal, interest)' },
+              type: { type: :string, enum: %w[buy sell dividend deposit withdrawal interest], description: 'Trade type (required)' },
               security_id: { type: :string, format: :uuid, description: 'Security ID (one of security_id, ticker, manual_ticker required)' },
               ticker: { type: :string, description: 'Ticker symbol' },
               manual_ticker: { type: :string, description: 'Manual ticker for offline securities' },
               currency: { type: :string, description: 'Currency (defaults to account currency)' },
               investment_activity_label: { type: :string, description: 'Activity label (e.g. Buy, Sell)' },
               category_id: { type: :string, format: :uuid, description: 'Category ID' },
-              transfer_account_id: { type: :string, format: :uuid, description: 'Destination/source account ID for linked transfers. Must be an account the user can write to; otherwise the request returns 404.' }
+              transfer_account_id: { type: :string, format: :uuid, description: 'Destination/source account ID for linked transfers' }
             },
             required: %w[account_id date type]
           }
@@ -281,8 +271,9 @@ RSpec.describe 'API V1 Trades', type: :request do
         run_test!
       end
 
-      response '404', 'account not found' do
+      response '404', 'account not found or not writable' do
         schema '$ref' => '#/components/schemas/ErrorResponse'
+        description 'Returned when the account does not exist or the authenticated user lacks write access to it.'
 
         let(:body) do
           {
@@ -441,7 +432,7 @@ RSpec.describe 'API V1 Trades', type: :request do
         run_test!
       end
 
-      response '201', 'trade created' do
+      response '201', 'interest created' do
         schema '$ref' => '#/components/schemas/TransactionResponse'
 
         let(:body) do
@@ -459,7 +450,7 @@ RSpec.describe 'API V1 Trades', type: :request do
         run_test!
       end
 
-      response '422', 'invalid trade request' do
+      response '422', 'deposit without amount returns error' do
         schema '$ref' => '#/components/schemas/ErrorResponse'
 
         let(:body) do
@@ -502,8 +493,9 @@ RSpec.describe 'API V1 Trades', type: :request do
         run_test!
       end
 
-      response '404', 'trade not found' do
+      response '404', 'trade not found or not accessible' do
         schema '$ref' => '#/components/schemas/ErrorResponse'
+        description 'Returned when the trade does not exist or belongs to an account the authenticated user cannot access.'
 
         let(:id) { SecureRandom.uuid }
 
@@ -526,7 +518,7 @@ RSpec.describe 'API V1 Trades', type: :request do
               date: { type: :string, format: :date },
               qty: { type: :number },
               price: { type: :number },
-              type: { type: :string, enum: %w[buy sell sweep_in sweep_out reinvestment] },
+              type: { type: :string, enum: %w[buy sell dividend deposit withdrawal interest] },
               nature: { type: :string, enum: %w[inflow outflow] },
               name: { type: :string },
               notes: { type: :string },
@@ -585,6 +577,7 @@ RSpec.describe 'API V1 Trades', type: :request do
 
       response '404', 'trade not found' do
         schema '$ref' => '#/components/schemas/ErrorResponse'
+        description 'Returned when the trade does not exist or belongs to an account the authenticated user cannot write to.'
 
         let(:id) { SecureRandom.uuid }
 
@@ -634,6 +627,7 @@ RSpec.describe 'API V1 Trades', type: :request do
 
       response '404', 'trade not found' do
         schema '$ref' => '#/components/schemas/ErrorResponse'
+        description 'Returned when the trade does not exist or belongs to an account the authenticated user cannot write to.'
 
         let(:id) { SecureRandom.uuid }
 
