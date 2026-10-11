@@ -22,7 +22,7 @@ en:
           one: "1 txn"
           other: "%{count} txns"
         split_warning_title: Split transactions detected
-        split_warning_description: "This QIF file contains split transactions. Review the detected split categories and tags below before importing."
+        split_warning_description: "This QIF file contains split transactions. Splits are not yet supported, so each split transaction will be imported as a single transaction with its full amount and no category. The individual split breakdowns will not be preserved."
         split_badge: split
         empty_state_primary: No categories or tags were found in this QIF file.
         empty_state_secondary: All transactions will be imported without categories or tags.
@@ -163,11 +163,6 @@ en:
       show:
         description: Select the columns that correspond to each field in your CSV.
         title: Configure your import
-        template_found: Template configuration found
-        template_description: We found a configuration from a previous import for this account.  Would you like to apply it to this import?
-        manually_configure: Manually configure
-        apply_template: Apply template
-        sample_caption: Sample data from your uploaded CSV
     confirms:
       sure_import:
         title: Confirm your import
@@ -205,7 +200,6 @@ en:
     uploads:
       handle_qif_upload:
         qif_uploaded: "QIF file uploaded successfully."
-        qif_account_required: Please select an account for the QIF import
       update:
         qif_uploaded: "QIF file uploaded successfully."
       show:
@@ -221,7 +215,7 @@ en:
         download_sample_csv: Download a sample CSV
         to_see_format: to see the required CSV format
         qif_title: Upload QIF file
-        qif_description: Select an account for single-account files, or leave blank when your QIF export includes account names.
+        qif_description: Select the account this QIF file belongs to, then upload your .qif export from Quicken.
         qif_account_label: Account
         qif_account_placeholder: Select an account…
         qif_file_prompt: to add your QIF file here
@@ -289,23 +283,8 @@ en:
       category_icon: "Lucide icon"
       merchant_color: "Color"
       merchant_website: "Website URL"
-    summary:
-      title: "Import summary"
-      subtitle: "What became of each transaction on this statement in %{account}."
-      subtitle_no_account: "What became of each transaction on this statement."
-      extracted: "Found on the statement"
-      already_recorded: "Already recorded"
-      already_recorded_hint: "Matched to a transaction this account already had, and marked reconciled."
-      imported: "Imported as new"
-      awaiting_review: "Waiting to be imported"
-      fully_reconciled:
-        one: "Nothing needed importing — the statement's only transaction was already on file."
-        other: "Nothing needed importing — all %{count} transactions were already on file."
-      statement_evidence_html: "Reconciled against %{statement}."
-      close: "Close"
     update:
       account_saved: "Account saved."
-      account_locked: "This import has already been published, so its account can't be changed. Revert it first if you need to import it somewhere else."
       invalid_account: "Account not found."
     publish:
       started: "Your import has started in the background."
@@ -374,7 +353,6 @@ en:
       map: Map
       confirm: Confirm
       select: Select
-      label: "Step %{step}"
       progress: "Step %{step} of %{total}"
     empty:
       message: No imports found.
@@ -448,13 +426,13 @@ en:
       pdf_too_large: PDF file is too large. Maximum size is %{max_size}MB.
       pdf_processing: Your PDF is being processed. You will receive an email when analysis is complete.
       invalid_pdf: The uploaded file is not a valid PDF.
-      missing_upload: We didn't receive your file. Please try uploading it again.
       duplicate_pdf_unavailable: This PDF is already stored as a statement you cannot access.
       document_too_large: Document file is too large. Maximum size is %{max_size}MB.
       invalid_document_file_type: Invalid document file type for the active vector store.
       document_uploaded: Document uploaded successfully.
       document_upload_failed: We couldn't upload the document to the vector store. Please try again.
       invalid_ndjson_file_type: Invalid file type or format. Please upload a valid .ndjson or .json export file.
+      ndjson_uploaded: NDJSON file uploaded successfully.
       document_provider_not_configured: No vector store is configured for document uploads.
     show:
       finalize_upload: Please finalize your file upload.
@@ -468,50 +446,6 @@ en:
       empty_summary: We could not find any importable records in this file. It may be empty, or the lines may not match the expected export format (each line should be a JSON object with "type" and "data" keys, using types this import supports).
       publish_import: Publish import
       back_to_imports: Back to imports
-      missing_merchant_warning_title: Some merchants are missing from this export
-      missing_merchant_warning_description:
-        one: >-
-          1 merchant reference in this file points to a merchant that isn't included. This can happen
-          with an export taken before provider-assigned merchants were added to Sure exports. You can still
-          publish this import -- the affected record will just import without a merchant, and you can tag
-          it afterward.
-        other: >-
-          %{count} merchant references in this file point to merchants that aren't included. This can happen
-          with an export taken before provider-assigned merchants were added to Sure exports. You can still
-          publish this import -- the affected records will just import without a merchant, and you can tag
-          them afterward.
-      skipped_recurring_description:
-        one: >-
-          1 recurring transaction has no name and its merchant is missing, so it will be skipped.
-          Automatically detected recurring transactions are rebuilt after the import.
-        other: >-
-          %{count} recurring transactions have no name and their merchants are missing, so they will be skipped.
-          Automatically detected recurring transactions are rebuilt after the import.
-      reused_taxonomy_notice_title: Some categories, tags or merchants already exist
-      reused_taxonomy_notice_description:
-        one: >-
-          1 category, tag or merchant in this file already exists in your account (for
-          example, from onboarding's default categories). It'll be reused and updated with this file's
-          data instead of creating a duplicate.
-        other: >-
-          %{count} categories, tags or merchants in this file already exist in your account (for
-          example, from onboarding's default categories). They'll be reused and updated with this file's
-          data instead of creating duplicates.
-      provider_merchant_diff_title: Some merchants already exist with different details
-      provider_merchant_diff_description:
-        one: >-
-          1 merchant in this file already exists with different details. The existing merchant
-          will be kept and this file's values won't be applied.
-        other: >-
-          %{count} merchants in this file already exist with different details. The existing merchants
-          will be kept and this file's values won't be applied.
-      provider_merchant_diff_summary: View differences
-      provider_merchant_diff_none: none
-      provider_merchant_diff_fields:
-        website_url: Website
-        name: Name
-        provider_merchant_id: Provider ID
-      provider_merchant_diff_row: "%{field}: keeping %{kept}, file has %{imported}"
     errors:
       custom_column_requires_inflow: "Custom column imports require an inflow column to be selected"
       interrupted: "The background worker was interrupted before this finished. Imported data was rolled back — you can safely try again."
@@ -544,13 +478,8 @@ en:
       unknown_state_description: This import is in an unexpected state. Please return to imports.
       processing_failed_with_message: "%{message}"
       processing_failed_generic: "Processing failed: %{error}"
-      errors:
-        provider_not_configured: AI provider not configured
-        provider_no_pdf_support: AI provider does not support PDF processing
       ready_for_review_title: Ready for Review
-      ready_for_review_description:
-        one: "%{count} transaction from your statement isn't in this account yet. Review and publish it to add it."
-        other: "%{count} transactions from your statement aren't in this account yet. Review and publish them to add them."
+      ready_for_review_description: "We extracted %{count} transactions from your statement. Review and publish them to add to your account."
       transactions_extracted: Transactions Extracted
       transactions_extracted_count:
         one: "%{count} transaction"
@@ -565,12 +494,5 @@ en:
         one: "Publish %{count} Transaction"
         other: "Publish %{count} Transactions"
       review_transactions: Review Transactions
-      view_summary: View import summary
-      already_recorded_note:
-        one: "%{count} was already in this account and was matched to the statement."
-        other: "%{count} were already in this account and were matched to the statement."
-      complete_fully_reconciled:
-        one: "Every transaction on this statement was already in your account. %{count} was matched and marked reconciled — nothing needed importing."
-        other: "Every transaction on this statement was already in your account. All %{count} were matched and marked reconciled — nothing needed importing."
       select_account_to_continue: Please select an account above to continue.
       unknown_document_type: Unknown
