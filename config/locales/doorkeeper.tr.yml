@@ -84,7 +84,7 @@ tr:
         title: Yetkilendirme kodu
     authorized_applications:
       buttons:
-        revoke: İptal Et
+        revoke: Geri Al
       confirmations:
         revoke: Emin misiniz?
       index:

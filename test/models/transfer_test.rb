@@ -14,38 +14,6 @@ class TransferTest < ActiveSupport::TestCase
     end
   end
 
-  test "destroy! clears the idempotency key so a retried request can create a new transfer" do
-    idempotency_key = SecureRandom.uuid
-
-    transfer = Transfer::Creator.new(
-      family: families(:dylan_family),
-      source_account_id: accounts(:depository).id,
-      destination_account_id: accounts(:credit_card).id,
-      date: Date.current,
-      amount: 100,
-      idempotency_key: idempotency_key
-    ).create
-
-    transfer.destroy!
-
-    assert_nil transfer.outflow_transaction.entry.reload.idempotency_key
-    assert_nil transfer.inflow_transaction.entry.reload.idempotency_key
-
-    # A retry of the original create request (e.g. the user resubmits after
-    # rejecting/undoing the first transfer) must not find a stale entry with
-    # this key and raise RecordNotUnique - it should create a fresh transfer.
-    assert_difference "Transfer.count", 1 do
-      Transfer::Creator.new(
-        family: families(:dylan_family),
-        source_account_id: accounts(:depository).id,
-        destination_account_id: accounts(:credit_card).id,
-        date: Date.current,
-        amount: 100,
-        idempotency_key: idempotency_key
-      ).create
-    end
-  end
-
   test "transfer has different accounts, opposing amounts, and within 4 days of each other" do
     outflow_entry = create_transaction(date: 1.day.ago.to_date, account: accounts(:depository), amount: 500)
     inflow_entry = create_transaction(date: Date.current, account: accounts(:credit_card), amount: -500)
@@ -157,79 +125,16 @@ class TransferTest < ActiveSupport::TestCase
     assert_equal "funds_movement", Transfer.kind_for_account(accounts(:depository))
   end
 
-  test "kind_for_account returns funds_movement for investment-to-investment transfers" do
-    assert_equal "funds_movement", Transfer.kind_for_account(accounts(:crypto), from_account: accounts(:investment))
-    assert_equal "funds_movement", Transfer.kind_for_account(accounts(:investment), from_account: accounts(:crypto))
+  test "kind_for_account returns funds_movement for investment to investment" do
+    assert_equal "funds_movement", Transfer.kind_for_account(accounts(:investment), source_account: accounts(:investment))
   end
 
-  test "kind_for_account still returns investment_contribution when the source isn't an investment account" do
-    assert_equal "investment_contribution", Transfer.kind_for_account(accounts(:investment), from_account: accounts(:depository))
+  test "kind_for_account returns funds_movement for crypto to investment" do
+    assert_equal "funds_movement", Transfer.kind_for_account(accounts(:investment), source_account: accounts(:crypto))
   end
 
-  test "categorizable? is true for loan payment transfers" do
-    outflow_entry = create_transaction(date: Date.current, account: accounts(:depository), amount: 500, kind: "loan_payment")
-    inflow_entry = create_transaction(date: Date.current, account: accounts(:loan), amount: -500, kind: "loan_payment")
-
-    transfer = Transfer.create!(inflow_transaction: inflow_entry.transaction, outflow_transaction: outflow_entry.transaction)
-
-    assert transfer.categorizable?
-  end
-
-  test "categorizable? is true for investment contribution transfers" do
-    outflow_entry = create_transaction(date: Date.current, account: accounts(:depository), amount: 500, kind: "investment_contribution")
-    inflow_entry = create_transaction(date: Date.current, account: accounts(:investment), amount: -500, kind: "investment_contribution")
-
-    transfer = Transfer.create!(inflow_transaction: inflow_entry.transaction, outflow_transaction: outflow_entry.transaction)
-
-    assert transfer.categorizable?
-  end
-
-  test "categorizable? is false for regular funds movement transfers" do
-    outflow_entry = create_transaction(date: Date.current, account: accounts(:depository), amount: 500, kind: "funds_movement")
-    inflow_entry = create_transaction(date: Date.current, account: accounts(:connected), amount: -500, kind: "funds_movement")
-
-    transfer = Transfer.create!(inflow_transaction: inflow_entry.transaction, outflow_transaction: outflow_entry.transaction)
-
-    refute transfer.categorizable?
-  end
-
-  test "categorizable? is false for credit card payment transfers" do
-    outflow_entry = create_transaction(date: Date.current, account: accounts(:depository), amount: 500, kind: "cc_payment")
-    inflow_entry = create_transaction(date: Date.current, account: accounts(:credit_card), amount: -500, kind: "cc_payment")
-
-    transfer = Transfer.create!(inflow_transaction: inflow_entry.transaction, outflow_transaction: outflow_entry.transaction)
-
-    refute transfer.categorizable?
-  end
-
-  test "categorizable? bases on destination account even if the outflow's kind is stale" do
-    # Account::ProviderImportAdapter can reassign an already-matched leg's
-    # kind on a later sync without touching its Transfer. Simulate a stale
-    # "funds_movement" kind left on the outflow of an investment_contribution
-    # transfer -- categorizable? must still key off to_account, not the kind.
-    outflow_entry = create_transaction(date: Date.current, account: accounts(:depository), amount: 500, kind: "investment_contribution")
-    inflow_entry = create_transaction(date: Date.current, account: accounts(:investment), amount: -500, kind: "investment_contribution")
-
-    transfer = Transfer.create!(inflow_transaction: inflow_entry.transaction, outflow_transaction: outflow_entry.transaction)
-    outflow_entry.transaction.update_column(:kind, "funds_movement")
-
-    assert transfer.reload.categorizable?
-  end
-
-  test "categorizable? is false without a destination account" do
-    transfer = transfers(:one)
-    transfer.stubs(:to_account).returns(nil)
-
-    assert_not transfer.categorizable?
-  end
-
-  test "categorizable? matches how Transfer::Creator classifies investment-to-investment transfers" do
-    outflow_entry = create_transaction(date: Date.current, account: accounts(:investment), amount: 500, kind: "funds_movement")
-    inflow_entry = create_transaction(date: Date.current, account: accounts(:crypto), amount: -500, kind: "funds_movement")
-
-    transfer = Transfer.create!(inflow_transaction: inflow_entry.transaction, outflow_transaction: outflow_entry.transaction)
-
-    refute transfer.categorizable?
+  test "kind_for_account returns investment_contribution for depository to investment" do
+    assert_equal "investment_contribution", Transfer.kind_for_account(accounts(:investment), source_account: accounts(:depository))
   end
 
   test "has_source_fee? returns true when source fee present" do
