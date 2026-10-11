@@ -50,14 +50,21 @@ en:
       institution_domain_placeholder: e.g., chase.com
       notes_label: Notes
       notes_placeholder: Store additional information like account numbers, sort codes, IBAN, routing numbers, etc.
+      logo_label: Custom icon
+      logo_hint: Upload an image to use as this account's icon (PNG, JPG, or SVG, up to %{max_size}). If left blank, the institution logo will be used automatically.
+      logo_too_large: That file is too large. Please choose an image under %{max_size}.
+      logo_file_chosen: Chose %{filename} (%{size} of %{max_size})
+      logo_attached: Current icon
+      logo_fallback: Using logo from institution or provider
+      change_logo: Change icon
+      auto_logo: Auto (from institution)
+      manual_logo: Manual (custom upload)
+      logo_source_aria: Logo source
       exclude_from_reports: Exclude from all reports
       enable_category_matcher_label: Enable category matcher
       enable_category_matcher_hint: When enabled, the provider's suggested category is applied to imported transactions. Disable to leave new transactions uncategorized.
     index:
       accounts: Accounts
-      financekit_accounts:
-        title: Apple Wallet
-        description: Manage Apple Wallet connections and sync in the Sure iOS app.
       cancel_sync: Cancel sync
       manual_accounts:
         other_accounts: Other accounts
@@ -71,8 +78,6 @@ en:
         select: Select
         navigate: Navigate
         close: Close
-        next: Next
-        previous: Previous
       method_selector:
         connected_entry: Link account
         connected_entry_eu: Link EU account
@@ -87,12 +92,10 @@ en:
         activity: Activity
         holdings: Holdings
         overview: Overview
-        schedule: Schedule
         statements: Statements
       activity:
         amount: Amount
         balance: Balance
-        category: Category
         confirmed: Confirmed
         date: Date
         entries: entries
@@ -111,7 +114,6 @@ en:
         search_placeholder: Search entries by name
         status: Status
         title: Activity
-        uncategorized_only: Uncategorized only
       chart:
         balance: Balance
         owed: Amount owed
@@ -149,8 +151,6 @@ en:
       new_debt: New debt
       new_account: New account
       new_account_group: "New %{account_group}"
-      expand_all: Expand all
-      collapse_all: Collapse all
     types:
       depository: Cash
       investment: Investment
@@ -193,7 +193,6 @@ en:
       title: Unlink account from provider?
       description_html: "You are about to unlink <strong>%{account_name}</strong> from <strong>%{provider_name}</strong>. This will convert it to a manual account."
       warning_title: What this means
-      warning_wallet_connection: All accounts in this Apple Wallet connection will be unlinked. Their transactions and balances will be preserved. You can reconnect through the Sure iOS app with a new Wallet setup.
       warning_no_sync: The account will no longer sync automatically with your provider
       warning_manual_updates: You will need to add transactions and update balances manually
       warning_transactions_kept: All existing transactions and balances will be preserved

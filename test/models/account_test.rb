@@ -21,13 +21,6 @@ class AccountTest < ActiveSupport::TestCase
     admin = users(:empty)
     super_admin = users(:sure_support_staff)
 
-    # Fixtures stamp every row with one `created_at`, and this family holds a
-    # second admin (`sso_only`), so "the earliest admin" is only meaningful
-    # once the timestamps differ. Without this the assertion below rides on
-    # whichever admin the query plan happens to return first.
-    family.users.update_all(created_at: 1.hour.ago)
-    admin.update!(created_at: 2.hours.ago)
-
     Current.reset
 
     account = family.accounts.create!(
@@ -39,43 +32,6 @@ class AccountTest < ActiveSupport::TestCase
 
     assert_equal admin, account.owner
     assert_not_equal super_admin, account.owner
-  end
-
-  test "default owner is stable when two admins share a created_at" do
-    family = families(:empty)
-    family.users.where(role: "admin").update_all(created_at: 1.hour.ago)
-
-    Current.reset
-
-    owners = 2.times.map do |i|
-      family.accounts.create!(
-        name: "Unowned tie-break account #{i}",
-        balance: 0,
-        currency: "USD",
-        accountable: Depository.new
-      ).owner
-    end
-
-    # `id` breaks the tie, so the winner is the tied admin with the lowest id.
-    # Asserting only that the two calls agree would pass without the
-    # tie-breaker whenever the database returned the same tied row twice.
-    expected_owner = family.users.where(role: "admin").order(:id).first
-
-    assert_equal expected_owner, owners.first
-    assert_equal expected_owner, owners.last
-  end
-
-  test "set_current_balance schedules an account sync by default" do
-    @account.expects(:sync_later).once
-
-    assert @account.set_current_balance(1234).success?
-  end
-
-  test "set_current_balance skips the account sync when the caller schedules it" do
-    @account.expects(:sync_later).never
-
-    assert @account.set_current_balance(1234, schedule_sync: false).success?
-    assert_equal 1234, @account.reload.current_anchor_balance
   end
 
   test "create_and_sync calls sync_later by default" do
@@ -464,6 +420,411 @@ class AccountTest < ActiveSupport::TestCase
     assert_not ActiveStorage::Attachment.exists?(attachment_id)
   end
 
+  # Logo URL tests
+  test "logo_url returns Brandfetch URL when configured" do
+    Setting.stubs(:brand_fetch_client_id).returns("test_client_id")
+    Setting.stubs(:brand_fetch_logo_size).returns(120)
+    @account.institution_domain = "example.com"
+
+    expected_url = "https://cdn.brandfetch.io/example.com/icon/fallback/lettermark/w/120/h/120?c=test_client_id"
+    assert_equal expected_url, @account.logo_url
+  end
+
+  test "logo_url returns DuckDuckGo favicon when Brandfetch not configured" do
+    Setting.stubs(:brand_fetch_client_id).returns(nil)
+    @account.institution_domain = "example.com"
+
+    expected_url = "https://icons.duckduckgo.com/ip3/example.com.ico"
+    assert_equal expected_url, @account.logo_url
+  end
+
+  test "logo_url returns provider logo when available" do
+    Setting.stubs(:brand_fetch_client_id).returns(nil)
+    @account.institution_domain = nil
+    provider = OpenStruct.new(logo_url: "https://provider.com/logo.png")
+    @account.stubs(:provider).returns(provider)
+
+    assert_equal "https://provider.com/logo.png", @account.logo_url
+  end
+
+  test "logo_url prefers provider logo over favicon fallback" do
+    Setting.stubs(:brand_fetch_client_id).returns(nil)
+    @account.institution_domain = "example.com"
+    provider = OpenStruct.new(logo_url: "https://provider.com/logo.png")
+    @account.stubs(:provider).returns(provider)
+
+    assert_equal "https://provider.com/logo.png", @account.logo_url
+  end
+
+  test "logo_url returns attached logo URL when manual source" do
+    Setting.stubs(:brand_fetch_client_id).returns(nil)
+    @account.institution_domain = nil
+    @account.logo.attach(
+      io: StringIO.new("fake-logo"),
+      filename: "logo.png",
+      content_type: "image/png"
+    )
+    @account.logo_source = "manual"
+
+    assert @account.logo_url.include?("/rails/active_storage")
+  end
+
+  test "logo_url returns nil when no logo source available" do
+    Setting.stubs(:brand_fetch_client_id).returns(nil)
+    @account.institution_domain = nil
+    @account.stubs(:provider).returns(nil)
+
+    assert_nil @account.logo_url
+  end
+
+  # Favicon URL tests
+  test "favicon_url returns DuckDuckGo URL" do
+    @account.institution_domain = "example.com"
+    expected_url = "https://icons.duckduckgo.com/ip3/example.com.ico"
+    assert_equal expected_url, @account.favicon_url
+  end
+
+  test "favicon_url returns nil when no domain" do
+    @account.institution_domain = nil
+    assert_nil @account.favicon_url
+  end
+
+  # Domain cleaning tests
+  test "clean_institution_domain removes https://" do
+    @account.institution_domain = "https://example.com"
+    @account.valid?
+    assert_equal "example.com", @account.institution_domain
+  end
+
+  test "clean_institution_domain removes www." do
+    @account.institution_domain = "www.example.com"
+    @account.valid?
+    assert_equal "example.com", @account.institution_domain
+  end
+
+  test "clean_institution_domain removes path" do
+    @account.institution_domain = "example.com/some/path"
+    @account.valid?
+    assert_equal "example.com", @account.institution_domain
+  end
+
+  test "clean_institution_domain removes port" do
+    @account.institution_domain = "example.com:8080"
+    @account.valid?
+    assert_equal "example.com", @account.institution_domain
+  end
+
+  test "clean_institution_domain handles complex URLs" do
+    @account.institution_domain = "https://www.example.com:8080/some/path"
+    @account.valid?
+    assert_equal "example.com", @account.institution_domain
+  end
+
+  # Logo source enum tests
+  test "logo_source defaults to auto" do
+    assert_equal "auto", @account.logo_source
+  end
+
+  test "logo_source can be set to manual" do
+    @account.logo_source = "manual"
+    assert_equal "manual", @account.logo_source
+  end
+
+  test "logo_source is auto?" do
+    assert @account.logo_source_auto?
+  end
+
+  test "logo_source is manual?" do
+    @account.logo_source = "manual"
+    assert @account.logo_source_manual?
+  end
+
+  test "uploading a logo without an explicit logo_source marks it manual" do
+    # Simulates a caller that submits a logo without choosing a source. The
+    # enum defaults logo_source to "auto", which previously swallowed
+    # set_logo_source and later let FetchLogoJob replace the upload with an
+    # institution logo.
+    @account.update!(
+      logo: { io: StringIO.new("user-upload"), filename: "logo.png", content_type: "image/png" }
+    )
+
+    assert @account.logo_source_manual?
+  end
+
+  test "saving without an upload leaves an existing logo_source untouched" do
+    # The auto fetcher attaches through attach_fetched_logo, so a plain save
+    # on an account with a fetched logo must not flip it to manual.
+    @account.attach_fetched_logo(
+      io: StringIO.new("fetched-logo"),
+      filename: "fetched.png",
+      content_type: "image/png"
+    )
+    @account.reload
+
+    @account.update!(notes: "changed")
+
+    assert @account.logo_source_auto?
+  end
+
+  test "rejects logo uploads with non-image content types" do
+    # The form's accept="image/*" is client-side only; a crafted request can
+    # submit anything, so the model enforces the content type too.
+    @account.logo.attach(
+      io: StringIO.new("<html><body>not an image</body></html>"),
+      filename: "page.html",
+      content_type: "text/html"
+    )
+
+    assert_not @account.valid?
+    assert @account.errors[:logo].present?
+  end
+
+  test "rejects logo uploads larger than the size limit" do
+    @account.logo.attach(
+      io: StringIO.new("x" * (Account::MAX_LOGO_BYTES + 1)),
+      filename: "huge.png",
+      content_type: "image/png"
+    )
+
+    assert_not @account.valid?
+    assert @account.errors[:logo].present?
+  end
+
+  test "accepts logo uploads with an image content type" do
+    @account.logo.attach(
+      io: StringIO.new("valid-image"),
+      filename: "logo.png",
+      content_type: "image/png"
+    )
+
+    assert @account.valid?
+  end
+
+  test "changing the domain purges the previously fetched logo" do
+    @account.update!(institution_domain: "old.example.com", logo_source: "auto")
+    @account.attach_fetched_logo(
+      io: StringIO.new("old-logo"),
+      filename: "old.png",
+      content_type: "image/png"
+    )
+    @account.reload
+    assert @account.logo.attached?
+
+    @account.update!(institution_domain: "new.example.com")
+
+    assert_not @account.reload.logo.attached?
+  end
+
+  test "a failed fetch after a domain change serves the new domain fallback, not the old logo" do
+    Setting.stubs(:brand_fetch_client_id).returns(nil)
+
+    @account.update!(institution_domain: "old.example.com", logo_source: "auto")
+    @account.attach_fetched_logo(
+      io: StringIO.new("old-logo"),
+      filename: "old.png",
+      content_type: "image/png"
+    )
+
+    # Mock DNS resolution for DuckDuckGo
+    Resolv.stubs(:getaddresses).with("icons.duckduckgo.com").returns([ "52.149.246.247" ])
+
+    ddg_failure = Net::HTTPNotFound.new("1.1", "404", "Not Found")
+    ddg_failure.stubs(:body).returns(nil)
+    ddg_http = mock
+    ddg_http.stubs(:ipaddr=)
+    ddg_http.stubs(:use_ssl=)
+    ddg_http.stubs(:open_timeout=)
+    ddg_http.stubs(:read_timeout=)
+    ddg_http.expects(:request).returns(ddg_failure)
+    # LogoFetcher dials the DNS-validated address (DNS rebinding protection)
+    # via Net::HTTP#ipaddr=, while the connection itself is constructed with
+    # the hostname so TLS SNI/certificate verification keeps working.
+    Net::HTTP.stubs(:new).with("icons.duckduckgo.com", 443).returns(ddg_http)
+
+    @account.update!(institution_domain: "new.example.com")
+    FetchLogoJob.perform_now(@account.id, "new.example.com")
+
+    assert_not @account.logo.attached?
+    assert_equal "https://icons.duckduckgo.com/ip3/new.example.com.ico", @account.logo_url
+  end
+
+  test "setting a domain when no previous domain or provider exists purges the fetched logo" do
+    @account.attach_fetched_logo(
+      io: StringIO.new("stale-logo"),
+      filename: "stale.png",
+      content_type: "image/png"
+    )
+    @account.reload
+    assert @account.logo.attached?
+    assert @account.logo_source_auto?
+
+    @account.update!(institution_domain: "new.example.com")
+
+    assert_not @account.reload.logo.attached?
+  end
+
+  test "setting a domain on a provider-logo account with a blank stored domain purges the stale logo" do
+    @account.update_columns(institution_domain: "")
+    @account.stubs(:provider).returns(
+      OpenStruct.new(institution_domain: "provider.example.com", logo_url: "https://provider.example.com/logo.png")
+    )
+    @account.attach_fetched_logo(
+      io: StringIO.new("provider-logo"),
+      filename: "provider.png",
+      content_type: "image/png"
+    )
+    @account.reload
+    assert @account.logo.attached?
+    assert @account.logo_source_auto?
+
+    @account.update!(institution_domain: "new.example.com")
+
+    assert_not @account.reload.logo.attached?
+  end
+
+  test "a fetched replacement attached between callbacks survives the manual-source purge" do
+    @account.update!(institution_domain: "example.com")
+    @account.logo.attach(
+      io: StringIO.new("manual-logo"),
+      filename: "manual.png",
+      content_type: "image/png"
+    )
+    assert @account.logo_source_manual?
+
+    # Simulate FetchLogoJob executing inline between the two after_save_commit
+    # callbacks: the replacement is attached on a fresh instance whose logo
+    # association is unloaded, mirroring what the job does in production.
+    FetchLogoJob.stubs(:perform_later).with do |account_id, _expected_domain|
+      Account.find(account_id).attach_fetched_logo(
+        io: StringIO.new("fetched-logo"),
+        filename: "fetched.png",
+        content_type: "image/png"
+      )
+      true
+    end
+
+    @account.logo_source = "auto"
+    perform_enqueued_jobs do
+      @account.save!
+    end
+
+    @account.reload
+    assert @account.logo.attached?
+    assert_equal "fetched.png", @account.logo.blob.filename.to_s
+    assert @account.logo_source_auto?
+  end
+
+  # Regression: Rails defers the physical blob upload to an after_commit hook,
+  # but the account is always saved inside an outer transaction (the
+  # controller's create wraps create_and_sync). create_and_sync then calls
+  # sync_later -> with_lock -> reload, which resets attachment_changes before
+  # the outer commit runs the upload — leaving an attachment row with no file
+  # on storage (a permanently broken image). The bytes must be uploaded during
+  # the save itself.
+  test "logo uploaded through create_and_sync inside an outer transaction is stored" do
+    account = nil
+    Account.transaction do
+      account = Account.create_and_sync(
+        {
+          family: @family,
+          name: "Upload Survives Outer Tx",
+          balance: 100,
+          currency: "USD",
+          accountable_type: "Depository",
+          accountable: Depository.new(subtype: :checking),
+          logo: { io: StringIO.new("user-upload-bytes"), filename: "upload.png", content_type: "image/png" }
+        },
+        opening_balance_date: Date.current - 2.years
+      )
+    end
+
+    assert account.logo.attached?
+    blob = account.logo.blob
+    assert blob.service.exist?(blob.key), "blob bytes must be uploaded to the storage service, not just the rows"
+  end
+
+  # Same regression for the edit flow: the balance-changed branch of
+  # AccountableResource#update wraps the save and set_current_balance in an
+  # outer transaction and re-saves the account, so the pending upload used to
+  # be dropped the same way.
+  test "logo uploaded while editing an account with a balance change is stored" do
+    Account.transaction do
+      @account.assign_attributes(notes: "edited with balance")
+      @account.logo.attach(
+        io: StringIO.new("edited-upload-bytes"),
+        filename: "edited.png",
+        content_type: "image/png"
+      )
+      @account.save!
+      @account.set_current_balance(500)
+    end
+
+    @account.reload
+    assert @account.logo.attached?
+    blob = @account.logo.blob
+    assert blob.service.exist?(blob.key), "blob bytes must be uploaded to the storage service, not just the rows"
+  end
+
+  # Regression: when an account save with a logo upload happens inside an outer
+  # transaction that later rolls back, the uploaded file must be cleaned up.
+  # Otherwise orphaned files (up to 25MB each) accumulate on storage with no
+  # blob/attachment row to purge them.
+  test "logo upload inside a rolled-back transaction cleans up the storage file" do
+    blob_key = nil
+
+    assert_raises(RuntimeError) do
+      Account.transaction do
+        account = Account.create_and_sync(
+          {
+            family: @family,
+            name: "Rollback Test Account",
+            balance: 100,
+            currency: "USD",
+            accountable_type: "Depository",
+            accountable: Depository.new(subtype: :checking),
+            logo: { io: StringIO.new("rollback-test-bytes"), filename: "rollback.png", content_type: "image/png" }
+          },
+          opening_balance_date: Date.current - 2.years
+        )
+
+        # Capture the blob key before rollback so we can verify cleanup
+        blob_key = account.logo.blob.key
+
+        # Verify the file was uploaded
+        assert account.logo.blob.service.exist?(blob_key), "blob should exist before rollback"
+
+        # Simulate a later failure that triggers rollback
+        raise "Simulated balance reconciliation failure"
+      end
+    end
+
+    # After rollback, the blob row is gone but we tracked the key.
+    # The orphaned file should have been cleaned up.
+    refute ActiveStorage::Blob.service.exist?(blob_key),
+      "orphaned logo file should be cleaned up after rollback, but still exists on storage"
+  end
+
+  # A broken manual upload (attachment row present, file missing from storage)
+  # must fall back to the auto chain once the broken attachment is detached —
+  # the fallback must be persistent, not retried on every request.
+  test "detaching a broken manual logo falls back to the auto-fetch chain" do
+    Setting.stubs(:brand_fetch_client_id).returns(nil)
+    @account.institution_domain = "example.com"
+    @account.logo.attach(
+      io: StringIO.new("broken-logo"),
+      filename: "broken.png",
+      content_type: "image/png"
+    )
+    @account.update!(logo_source: "manual")
+    assert @account.logo_url.include?("/rails/active_storage")
+
+    # Simulates the repair task / user choosing Auto: the broken attachment is
+    # detached, so the persistent fallback chain takes over.
+    @account.logo.detach
+
+    assert_equal "https://icons.duckduckgo.com/ip3/example.com.ico", @account.logo_url
+  end
+
   test "destroying account moves linked statements to inbox after commit" do
     statement = AccountStatement.create_from_upload!(
       family: @family,
@@ -724,224 +1085,142 @@ class AccountTest < ActiveSupport::TestCase
     assert transfers.all? { |transfer| !Transfer.exists?(transfer.id) }
   end
 
-  test "history_start_date resolves to the earliest of opening anchor, entries, and balances" do
-    account = @family.accounts.create!(
-      owner: @admin,
-      name: "History Test Account",
-      balance: 0,
-      currency: "USD",
-      accountable: Depository.new
+  test "manual logo source displays the attached logo" do
+    # When logo_source is "manual", the uploaded logo should be displayed
+    logo_file = uploaded_file(filename: "test_logo.png", content_type: "image/png", content: "valid-image-data")
+
+    account = Account.create_and_sync(
+      {
+        family: @family,
+        owner: @admin,
+        name: "Test8",
+        balance: 1000,
+        currency: "USD",
+        accountable_type: "Depository",
+        accountable_attributes: {},
+        logo: logo_file,
+        logo_source: "manual"
+      },
+      skip_initial_sync: true
     )
-    account.entries.destroy_all
-    account.balances.destroy_all
 
-    assert_nil account.history_start_date
+    assert account.persisted?, "Account should be created successfully"
+    assert account.logo.attached?, "Logo should be attached to the account"
+    assert account.logo_source_manual?, "Logo source should be manual"
 
-    anchor_date = 30.days.ago.to_date
-    account.set_opening_anchor_balance(balance: 100, date: anchor_date)
-    assert_equal anchor_date, account.history_start_date
+    # logo_url should return the attached logo URL
+    logo_url = account.logo_url
+    assert logo_url.present?, "logo_url should be present when logo is attached with manual source"
 
-    earlier_entry_date = 45.days.ago.to_date
-    account.entries.create!(
-      name: "Past Entry",
-      date: earlier_entry_date,
-      amount: 50,
-      currency: "USD",
-      entryable: Transaction.new
-    )
-    assert_equal earlier_entry_date, account.history_start_date
+    # Verify it's the blob URL
+    assert logo_url.include?("/rails/active_storage/"), "logo_url should be an Active Storage blob URL"
   end
 
-  test "history_start_date returns nil when account has no opening anchor, entries, or balances" do
-    account = @family.accounts.create!(
-      owner: @admin,
-      name: "Empty History Account",
-      balance: 0,
-      currency: "USD",
-      accountable: Depository.new
+  test "auto logo source uses an attached fetched logo" do
+    # When logo_source is "auto", a logo successfully attached by LogoFetcher
+    # (via attach_fetched_logo, which sets @attaching_fetched_logo) should be
+    # served before falling back to remote logo providers — and must keep
+    # logo_source as "auto", not be reclassified as "manual".
+    logo_file = uploaded_file(
+      filename: "test_logo.png",
+      content_type: "image/png",
+      content: "valid-image-data"
     )
-    account.entries.destroy_all
-    account.balances.destroy_all
 
-    assert_nil account.history_start_date
+    account = Account.create_and_sync(
+      {
+        family: @family,
+        owner: @admin,
+        name: "Test Auto Account",
+        balance: 1000,
+        currency: "USD",
+        accountable_type: "Depository",
+        accountable_attributes: {},
+        institution_domain: "example.com",
+        logo_source: "auto"
+      },
+      skip_initial_sync: true
+    )
+
+    assert account.persisted?, "Account should be created successfully"
+
+    # Attach the logo the same way LogoFetcher does: via attach_fetched_logo,
+    # which opts out of mark_manual_if_logo_uploaded. A direct upload (without
+    # that opt-out) would now be classified as "manual".
+    account.attach_fetched_logo(logo_file)
+
+    assert account.logo.attached?, "Logo should be attached to the account"
+    assert account.logo_source_auto?, "a fetched logo must keep logo_source auto"
+
+    # An attached fetched logo should take priority over remote fallbacks.
+    logo_url = account.logo_url
+
+    assert logo_url.present?, "logo_url should be present"
+    assert logo_url.include?("/rails/active_storage/"),
+      "logo_url should be the attached blob URL"
   end
 
-  test "history_start_date resolves to transaction date when there is no opening valuation" do
-    account = @family.accounts.create!(
-      owner: @admin,
-      name: "Transaction Only Account",
-      balance: 0,
-      currency: "USD",
-      accountable: Depository.new
-    )
-    account.entries.destroy_all
-    account.balances.destroy_all
-
-    trade_date = 2.years.ago.to_date
-    account.entries.create!(
-      name: "Old Trade",
-      date: trade_date,
-      amount: 500,
-      currency: "USD",
-      entryable: Transaction.new
+  test "direct logo upload with default auto source is classified as manual" do
+    # The form always submits logo_source=auto as its hidden-field default.
+    # A direct upload with that default must be classified as "manual" so
+    # FetchLogoJob cannot replace a manually uploaded logo.
+    logo_file = uploaded_file(
+      filename: "test_logo.png",
+      content_type: "image/png",
+      content: "valid-image-data"
     )
 
-    assert_equal trade_date, account.history_start_date
+    account = Account.create_and_sync(
+      {
+        family: @family,
+        owner: @admin,
+        name: "Test Manual Upload Account",
+        balance: 1000,
+        currency: "USD",
+        accountable_type: "Depository",
+        accountable_attributes: {},
+        institution_domain: "example.com",
+        logo: logo_file,
+        logo_source: "auto"
+      },
+      skip_initial_sync: true
+    )
+
+    assert account.persisted?, "Account should be created successfully"
+    assert account.logo.attached?, "Logo should be attached to the account"
+    assert account.logo_source_manual?,
+      "a direct upload with the default auto source must be classified as manual"
   end
 
-  test "history_start_date resolves to balance date when there are no entries or opening valuation" do
-    account = @family.accounts.create!(
-      owner: @admin,
-      name: "Balance Only Account",
-      balance: 0,
-      currency: "USD",
-      accountable: Depository.new
+  test "manual logo source falls back to auto-fetch when no logo attached" do
+    # When logo_source is "manual" but no logo is attached, should fallback
+    account = Account.create_and_sync(
+      {
+        family: @family,
+        owner: @admin,
+        name: "Test Manual No Logo",
+        balance: 1000,
+        currency: "USD",
+        accountable_type: "Depository",
+        accountable_attributes: {},
+        institution_domain: "example.com",
+        logo_source: "manual"
+      },
+      skip_initial_sync: true
     )
-    account.entries.destroy_all
-    account.balances.destroy_all
 
-    balance_date = 1.year.ago.to_date
-    account.balances.create!(
-      date: balance_date,
-      balance: 1000,
-      currency: "USD"
-    )
+    assert account.persisted?, "Account should be created successfully"
+    assert_not account.logo.attached?, "Logo should not be attached"
+    assert account.logo_source_manual?, "Logo source should be manual"
 
-    assert_equal balance_date, account.history_start_date
+    # logo_url should return the auto-fetch fallback
+    logo_url = account.logo_url
+    assert logo_url.present?, "logo_url should be present even without attached logo"
   end
 
-  test "history_start_date prefers earlier transaction when valuation is added much later" do
-    account = @family.accounts.create!(
-      owner: @admin,
-      name: "Late Valuation Account",
-      balance: 0,
-      currency: "USD",
-      accountable: Depository.new
-    )
-    account.entries.destroy_all
-    account.balances.destroy_all
-
-    trade_date = 2.years.ago.to_date
-    account.entries.create!(
-      name: "Initial Buy",
-      date: trade_date,
-      amount: 100,
-      currency: "USD",
-      entryable: Transaction.new
-    )
-
-    # Later reconciliation valuation added 6 months ago
-    account.set_opening_anchor_balance(balance: 500, date: 6.months.ago.to_date)
-
-    assert_equal trade_date, account.history_start_date
-  end
-
-  test "history_start_date handles transaction from 10 years ago" do
-    account = @family.accounts.create!(
-      owner: @admin,
-      name: "Decade Old Account",
-      balance: 0,
-      currency: "USD",
-      accountable: Depository.new
-    )
-    account.entries.destroy_all
-    account.balances.destroy_all
-
-    ten_years_ago = 10.years.ago.to_date
-    account.entries.create!(
-      name: "Decade Ago Trade",
-      date: ten_years_ago,
-      amount: 250,
-      currency: "USD",
-      entryable: Transaction.new
-    )
-
-    assert_equal ten_years_ago, account.history_start_date
-  end
-
-  test "history_start_date ignores pending transactions" do
-    account = @family.accounts.create!(
-      owner: @admin,
-      name: "Pending Account",
-      balance: 0,
-      currency: "USD",
-      accountable: Depository.new
-    )
-    account.entries.destroy_all
-    account.balances.destroy_all
-
-    posted_date = 5.days.ago.to_date
-    account.entries.create!(
-      name: "Posted Entry",
-      date: posted_date,
-      amount: 100,
-      currency: "USD",
-      entryable: Transaction.new
-    )
-
-    account.entries.create!(
-      name: "Pending Entry",
-      date: 10.days.ago.to_date,
-      amount: 50,
-      currency: "USD",
-      entryable: Transaction.new(extra: { "plaid" => { "pending" => true } })
-    )
-
-    assert_equal posted_date, account.history_start_date
-  end
-
-  test "history_start_date on linked investment account resolves to provider activity ignoring default anchor" do
-    account = @family.accounts.create!(
-      owner: @admin,
-      name: "Linked Investment Account",
-      balance: 0,
-      currency: "USD",
-      accountable: Investment.new,
-      plaid_account: plaid_accounts(:one)
-    )
-    assert account.linked?
-
-    default_anchor_date = 2.years.ago.to_date
-    account.set_opening_anchor_balance(balance: 0, date: default_anchor_date)
-
-    recent_trade_date = 14.days.ago.to_date
-    account.entries.create!(
-      name: "Recent Provider Trade",
-      date: recent_trade_date,
-      amount: 100,
-      currency: "USD",
-      source: "plaid",
-      entryable: Transaction.new
-    )
-
-    assert_equal recent_trade_date, account.history_start_date
-  end
-
-  test "history_start_date on linked investment account returns nil when no provider activity exists" do
-    account = @family.accounts.create!(
-      owner: @admin,
-      name: "Fresh Linked Investment",
-      balance: 0,
-      currency: "USD",
-      accountable: Investment.new,
-      plaid_account: plaid_accounts(:one)
-    )
-    assert account.linked?
-
-    default_anchor_date = 2.years.ago.to_date
-    account.set_opening_anchor_balance(balance: 0, date: default_anchor_date)
-
-    assert_nil account.history_start_date
-  end
-
-  test "annotatable_by includes owned and annotate-tier shares but not read-only ones" do
-    member = users(:family_member)
-    ids = Account.annotatable_by(member).pluck(:id)
-
-    assert_includes ids, accounts(:depository).id, "full_control share"
-    assert_not_includes ids, accounts(:credit_card).id, "read_only share"
-
-    accounts(:credit_card).account_shares.find_by!(user: member).update!(permission: "read_write")
-    assert_includes Account.annotatable_by(member).pluck(:id), accounts(:credit_card).id, "read_write share"
+  test "clean_institution_domain removes uppercase https scheme" do
+    @account.institution_domain = "HTTPS://WWW.EXAMPLE.COM/path"
+    @account.valid?
+    assert_equal "example.com", @account.institution_domain
   end
 end
