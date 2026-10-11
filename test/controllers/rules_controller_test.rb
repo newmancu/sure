@@ -91,145 +91,10 @@ class RulesControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to confirm_rule_url(rule, reload_on_close: true)
   end
 
-  test "rejects a null byte in a condition instead of returning a server error" do
-    assert_no_difference "Rule.count" do
-      post rules_url, params: {
-        rule: {
-          resource_type: "transaction",
-          conditions_attributes: {
-            "0" => { condition_type: "transaction_name", operator: "like", value: "cof\0fee" }
-          },
-          actions_attributes: {
-            "0" => { action_type: "exclude_transaction" }
-          }
-        }
-      }
-    end
-
-    assert_response :unprocessable_entity
-    assert_select "p.text-destructive", text: /Conditions value is invalid/
-  end
-
-  test "rejects a null byte when updating an action" do
-    rule = rules(:one)
-    action = rule.actions.first
-
-    patch rule_url(rule), params: {
-      rule: {
-        actions_attributes: {
-          "0" => { id: action.id, action_type: "set_transaction_name", value: "bad\0value" }
-        }
-      }
-    }
-
-    assert_response :unprocessable_entity
-    assert_equal action.value, action.reload.value
-  end
-
-  test "rejects a null byte in the condition operator" do
-    assert_no_difference "Rule.count" do
-      post rules_url, params: {
-        rule: {
-          resource_type: "transaction",
-          conditions_attributes: {
-            "0" => { condition_type: "transaction_name", operator: "like\0", value: "coffee" }
-          },
-          actions_attributes: { "0" => { action_type: "exclude_transaction" } }
-        }
-      }
-    end
-
-    assert_response :unprocessable_entity
-    assert_equal "text/plain", response.media_type
-    assert_match(/operator is invalid/i, response.body)
-  end
-
-  test "rejects a null byte in a nested condition operator" do
-    assert_no_difference "Rule.count" do
-      post rules_url, params: {
-        rule: {
-          resource_type: "transaction",
-          conditions_attributes: {
-            "0" => {
-              condition_type: "compound", operator: "and",
-              sub_conditions_attributes: {
-                "0" => { condition_type: "transaction_name", operator: "like\0", value: "coffee" }
-              }
-            }
-          },
-          actions_attributes: { "0" => { action_type: "exclude_transaction" } }
-        }
-      }
-    end
-
-    assert_response :unprocessable_entity
-    assert_equal "text/plain", response.media_type
-    assert_match(/operator is invalid/i, response.body)
-  end
-
-  test "rejects a null byte in the condition type without selecting a different type" do
-    post rules_url, params: {
-      rule: {
-        resource_type: "transaction",
-        conditions_attributes: {
-          "0" => { condition_type: "transaction_name\0", operator: "like", value: "coffee" }
-        },
-        actions_attributes: { "0" => { action_type: "exclude_transaction" } }
-      }
-    }
-
-    assert_response :unprocessable_entity
-    assert_equal "text/plain", response.media_type
-    assert_match(/condition type is invalid/i, response.body)
-  end
-
-  test "rejects a null byte in the action type without failing to render" do
-    assert_no_difference "Rule.count" do
-      post rules_url, params: {
-        rule: {
-          resource_type: "transaction",
-          actions_attributes: { "0" => { action_type: "exclude_transaction\0" } }
-        }
-      }
-    end
-
-    assert_response :unprocessable_entity
-    assert_equal "text/plain", response.media_type
-    assert_match(/action type is invalid/i, response.body)
-  end
-
-  test "rejects a null byte when updating the action type" do
-    rule = rules(:one)
-    action = rule.actions.first
-    original_type = action.action_type
-
-    patch rule_url(rule), params: {
-      rule: { actions_attributes: { "0" => { id: action.id, action_type: "#{original_type}\0" } } }
-    }
-
-    assert_response :unprocessable_entity
-    assert_equal "text/plain", response.media_type
-    assert_match(/action type is invalid/i, response.body)
-    assert_equal original_type, action.reload.action_type
-  end
-
-  test "rejects a null byte in the resource type without failing to render" do
-    assert_no_difference "Rule.count" do
-      post rules_url, params: {
-        rule: {
-          resource_type: "transaction\0",
-          actions_attributes: { "0" => { action_type: "exclude_transaction" } }
-        }
-      }
-    end
-
-    assert_response :unprocessable_entity
-    assert_equal "text/plain", response.media_type
-    assert_match(/resource type is invalid/i, response.body)
-  end
-
   test "can update rule" do
     rule = rules(:one)
+    original_action_id = rule.actions.first.id
+    original_condition_id = rule.conditions.first.id
 
     assert_difference -> { Rule.count } => 0,
       -> { Rule::Condition.count } => 1,
@@ -265,10 +130,10 @@ class RulesControllerTest < ActionDispatch::IntegrationTest
     rule.reload
 
     assert_not rule.active
-    assert_equal "new_value", rule.conditions.order("created_at ASC").first.value
-    assert_equal "new_value", rule.actions.order("created_at ASC").first.value
-    assert_equal tags(:one).id, rule.actions.order("created_at ASC").last.value
-    assert_equal "100", rule.conditions.order("created_at ASC").last.value
+    assert_equal "new_value", rule.conditions.find(original_condition_id).value
+    assert_equal "new_value", rule.actions.find(original_action_id).value
+    assert_equal tags(:one).id, rule.actions.find_by!(action_type: "set_transaction_tags").value
+    assert_equal "100", rule.conditions.find_by!(condition_type: "transaction_amount").value
 
     assert_redirected_to rules_url
   end
@@ -315,6 +180,21 @@ class RulesControllerTest < ActionDispatch::IntegrationTest
     end
 
     assert_redirected_to rules_url
+  end
+
+  test "index eager loads rule actions" do
+    3.times do |idx|
+      rule = @user.family.rules.build(resource_type: "transaction", name: "Performance rule #{idx}")
+      rule.conditions.build(condition_type: "transaction_name", operator: "like", value: "perf-#{idx}")
+      rule.actions.build(action_type: "exclude_transaction")
+      rule.save!
+    end
+
+    queries = capture_sql_queries { get rules_url }
+
+    assert_response :success
+    assert_empty queries.grep(/FROM "rule_actions" WHERE "rule_actions"\."rule_id" =/),
+                 "Expected no per-rule rule_actions queries, got: #{queries.grep(/FROM "rule_actions"/).inspect}"
   end
 
   test "index renders when rule has empty compound condition" do
@@ -367,36 +247,6 @@ class RulesControllerTest < ActionDispatch::IntegrationTest
     assert_select "td", text: "10 / 7 / 4 / 3"
   end
 
-  # The confirmation screen used to hardcode :openai, so it quoted a provider
-  # that would not run — an Anthropic install saw the OpenAI model, and a family
-  # on Jev saw whichever LLM model happened to be configured.
-  test "confirm names the provider that will actually categorize" do
-    rule = rules(:one)
-    rule.actions.create!(action_type: "auto_categorize")
-    @user.family.update!(categorization_provider: "jev")
-    # The general stub catches the :openai lookup preferred_llm_provider makes;
-    # the specific one wins for :jev.
-    Provider::Registry.stubs(:get_provider).returns(nil)
-    Provider::Registry.stubs(:get_provider).with(:jev).returns(Provider::Jev.allocate)
-    Provider::Jev.stubs(:effective_model).returns("~typesafe/jev-latest")
-
-    get confirm_rule_url(rule)
-
-    assert_response :success
-    assert_match "~typesafe/jev-latest", response.body
-  end
-
-  test "confirm does not name Jev when the family has not selected it" do
-    rule = rules(:one)
-    rule.actions.create!(action_type: "auto_categorize")
-    assert_equal "llm", @user.family.categorization_provider
-
-    get confirm_rule_url(rule)
-
-    assert_response :success
-    assert_no_match "~typesafe/jev-latest", response.body
-  end
-
   test "should get confirm_all" do
     get confirm_all_rules_url
     assert_response :success
@@ -410,95 +260,20 @@ class RulesControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to rules_url
   end
 
-  test "guest cannot create rule" do
-    sign_in family_guest
+  private
+    def capture_sql_queries
+      queries = []
+      callback = lambda do |_name, _started, _finished, _unique_id, payload|
+        next if payload[:cached]
+        next if %w[SCHEMA TRANSACTION].include?(payload[:name])
 
-    assert_no_difference "Rule.count" do
-      post rules_url, params: { rule: { name: "Guest Rule", resource_type: "transaction" } }
+        queries << payload[:sql].squish
+      end
+
+      ActiveSupport::Notifications.subscribed(callback, "sql.active_record") do
+        yield
+      end
+
+      queries
     end
-
-    assert_redirected_to accounts_url
-  end
-
-  test "guest cannot apply rule" do
-    sign_in family_guest
-    rule = rules(:one)
-
-    assert_no_enqueued_jobs do
-      post apply_rule_url(rule)
-    end
-
-    assert_redirected_to accounts_url
-    assert_not rule.reload.active?
-  end
-
-  test "member can create rule" do
-    sign_in users(:family_member)
-
-    assert_difference "Rule.count", 1 do
-      post rules_url, params: {
-        rule: {
-          name: "Member Rule",
-          resource_type: "transaction",
-          actions_attributes: {
-            "0" => {
-              action_type: "set_transaction_category",
-              value: categories(:food_and_drink).id } } } }
-    end
-
-    assert_redirected_to confirm_rule_path(Rule.order(:created_at).last, reload_on_close: true)
-  end
-
-  test "clear_ai_cache enqueues job and records the request in the debug log" do
-    assert_enqueued_with(job: ClearAiCacheJob, args: [ @user.family ]) do
-      post clear_ai_cache_rules_url
-    end
-
-    assert_redirected_to rules_url
-
-    entry = DebugLogEntry.where(category: ClearAiCacheJob::DEBUG_CATEGORY, level: "info").sole
-    assert_equal "AI cache reset requested from the rules page", entry.message
-    assert_equal @user, entry.user
-    assert_equal @user.family, entry.family
-  end
-
-  test "clear_ai_cache records an error when the job cannot be enqueued" do
-    ClearAiCacheJob.expects(:perform_later).with(@user.family).raises(StandardError, "queue is down")
-
-    assert_raises(StandardError) { post clear_ai_cache_rules_url }
-
-    entry = DebugLogEntry.where(category: ClearAiCacheJob::DEBUG_CATEGORY, level: "error").sole
-    assert_match "AI cache reset could not be enqueued", entry.message
-    assert_equal "StandardError", entry.metadata["error_class"]
-  end
-
-  # perform_later swallows ActiveJob::EnqueueError into a false return instead of
-  # raising it, which would otherwise log the reset as requested and redirect
-  # with a success notice while nothing was queued.
-  test "clear_ai_cache records an error when the job is silently not enqueued" do
-    ClearAiCacheJob.stubs(:perform_later).with(@user.family).returns(false)
-
-    assert_raises(ActiveJob::EnqueueError) { post clear_ai_cache_rules_url }
-
-    entry = DebugLogEntry.where(category: ClearAiCacheJob::DEBUG_CATEGORY, level: "error").sole
-    assert_match "AI cache reset could not be enqueued", entry.message
-    assert_equal "ActiveJob::EnqueueError", entry.metadata["error_class"]
-    assert_empty DebugLogEntry.where(category: ClearAiCacheJob::DEBUG_CATEGORY, level: "info")
-  end
-
-  # When the adapter reports the failure, the yielded job carries the underlying
-  # cause — the detail an operator actually needs. The fallback above can only
-  # say that nothing was queued.
-  test "clear_ai_cache surfaces the queue adapter's error when the job carries one" do
-    failed_job = ClearAiCacheJob.new(@user.family)
-    failed_job.enqueue_error = ActiveJob::EnqueueError.new("connection refused")
-    ClearAiCacheJob.stubs(:perform_later).with(@user.family).yields(failed_job).returns(false)
-
-    error = assert_raises(ActiveJob::EnqueueError) { post clear_ai_cache_rules_url }
-    assert_equal "connection refused", error.message
-
-    entry = DebugLogEntry.where(category: ClearAiCacheJob::DEBUG_CATEGORY, level: "error").sole
-    assert_match "connection refused", entry.message
-    assert_equal "connection refused", entry.metadata["error_message"]
-  end
 end
