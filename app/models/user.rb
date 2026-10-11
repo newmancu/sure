@@ -653,14 +653,6 @@ class User < ApplicationRecord
     preferences&.dig("dashboard_section_layout", section_key, "height")
   end
 
-  CASHFLOW_SANKEY_GROUPINGS = IncomeStatement::CashFlowGraph::GROUPINGS.keys.freeze
-
-  # Preview cash-flow Sankey: flows by category (default) or through each account.
-  def cashflow_sankey_group_by
-    group_by = preferences&.dig("cashflow_sankey_group_by")
-    CASHFLOW_SANKEY_GROUPINGS.include?(group_by) ? group_by : "category"
-  end
-
   # Per-widget column-span override ("single" | "full"); nil = use default.
   def dashboard_section_width(section_key)
     preferences&.dig("dashboard_section_layout", section_key, "col_span")
@@ -742,6 +734,29 @@ class User < ApplicationRecord
   # expanded in the sidebar and dashboard balance sheet.
   def always_expanded_account_group?(account_group_key)
     always_expanded_account_groups.include?(account_group_key.to_s)
+  end
+
+  # Returns the first grouping dimension for an account list view ("sidebar"
+  # or "dashboard"); the account type unless the user picked another one.
+  # Unknown or stale keys read as the default. See AccountGrouping.
+  def account_grouping_primary_for(view)
+    key = preferences&.dig("account_grouping_primary", view.to_s)
+    AccountGrouping.valid_dimension?(key) ? key : AccountGrouping::DEFAULT_PRIMARY
+  end
+
+  # Returns the second grouping dimension for an account list view, or nil
+  # when the view has only one level. Unknown or stale keys, and a key equal
+  # to the first level, read as nil. See AccountGrouping.
+  def account_grouping_for(view)
+    key = preferences&.dig("account_grouping", view.to_s)
+    return nil unless AccountGrouping.valid_dimension?(key)
+
+    key == account_grouping_primary_for(view) ? nil : key
+  end
+
+  # The user's own name for the free-text "custom group" account field.
+  def custom_account_group_label
+    preferences&.dig("custom_account_group_label").presence || I18n.t("account_grouping.dimensions.custom_group")
   end
 
   # Returns whether clicking outside a modal is prevented from closing it.
