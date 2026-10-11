@@ -59,8 +59,8 @@ uk:
       success: "Категорію успішно оновлено"
     virtual:
       transfer: "Переказ"
-      payment: "Погашення"
-      trade: "Угода"
+      payment: "Платіж"
+      trade: "Торгівля"
   category:
     dropdowns:
       show:

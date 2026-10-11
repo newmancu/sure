@@ -46,21 +46,15 @@ class Goal < ApplicationRecord
   # A target_amount edit is in the list because in this mode the amount is
   # derived, not typed: without it the form could persist an arbitrary figure
   # under a "six months of expenses" label until the next monthly refresh.
-  # before_VALIDATION, not before_save. `target_amount` is required and must be
-  # positive, and those run before any save callback — so a reserve whose
-  # amount is derived arrived at validation empty and was refused before the
-  # callback that fills it ever ran. The form makes the field read-only in this
-  # mode, so there was no way to satisfy the validation by hand either: the
-  # months mode could not be created from the UI at all.
-  before_validation :apply_months_of_expenses_target,
-                    if: -> {
-                      months_of_expenses_target? && (
-                        new_record? ||
-                        target_months_changed? ||
-                        target_mode_changed? ||
-                        target_amount_changed?
-                      )
-                    }
+  before_save :apply_months_of_expenses_target,
+              if: -> {
+                months_of_expenses_target? && (
+                  new_record? ||
+                  will_save_change_to_target_months? ||
+                  will_save_change_to_target_mode? ||
+                  will_save_change_to_target_amount?
+                )
+              }
 
   validate :must_have_at_least_one_linked_account
   validate :linked_accounts_must_be_fundable
@@ -423,14 +417,6 @@ class Goal < ApplicationRecord
       .sum { |account| account_amount_for(account) }
   end
 
-  # Whether this reader can record a spend against this goal. Two doors lead to
-  # the same dialog — the lifecycle panel and the overflow menu — and they have
-  # to agree: offering it on the strength of money the reader cannot reach ends
-  # in a dialog with nothing to pick and a refusal on submit.
-  def spendable_within?(account_ids)
-    one_off? && active? && backing_within(account_ids).to_d.positive?
-  end
-
   def account_backing(account)
     Money.new(account_amount_for(account), currency)
   end
@@ -465,22 +451,8 @@ class Goal < ApplicationRecord
     computed
   end
 
-  # Whether a months-based target could be worked out AT ALL right now. The
-  # form has to know before the user has picked anything, so this deliberately
-  # ignores the goal's own kind, mode and months: it answers "is there spending
-  # history to derive from", nothing else. With none, the typed amount is the
-  # only way to set a target, so the form must keep offering the field.
-  def months_target_derivable?
-    return false if family.nil? || currency.blank?
-
-    median = median_monthly_expense
-    return false unless median.positive?
-
-    convert_to_goal_currency(median).to_d.positive?
-  end
-
   private
-    # The family's median monthly spend, in FAMILY currency.
+    # The floor this reserve should hold, or nil when it cannot be computed.
     #
     # ⚠️ The account scope is passed EXPLICITLY, and that is the whole point
     # of this method. IncomeStatement's constructor does `user || Current.user`
@@ -490,19 +462,11 @@ class Goal < ApplicationRecord
     # whole family: derived from a viewer's slice of the accounts it would
     # change depending on who last triggered it. The rollover chain hit
     # exactly this and had to be pinned the same way.
-    # Deliberately not memoized. The refresh job derives again on an instance
-    # it has already saved through, and a median frozen on first read would
-    # hand it back the figure it started with.
-    def median_monthly_expense
-      IncomeStatement.new(family, accounts: family.accounts.visible.included_in_reports)
-                     .median_expense(interval: "month").to_d
-    end
-
-    # The balance this reserve should hold, or nil when it cannot be computed.
     def months_of_expenses_amount
       return nil unless maintained? && months_of_expenses_target? && target_months.to_i.positive?
 
-      median = median_monthly_expense
+      statement = IncomeStatement.new(family, accounts: family.accounts.visible.included_in_reports)
+      median = statement.median_expense(interval: "month").to_d
       return nil unless median.positive?
 
       computed = (median * target_months).round(2)
@@ -746,10 +710,7 @@ class Goal < ApplicationRecord
     end
 
     segments = []
-    # A real colour, not a CSS variable: the ring runs this segment through
-    # d3.color, which cannot parse var(...) and left the ring blank (#4030).
-    # The same fallback as Goals::AvatarComponent, so ring and avatar match.
-    segments << { color: color.presence || Goal::COLORS.first, amount: filled, id: "saved" } if filled.positive?
+    segments << { color: color.presence || "var(--color-blue-500)", amount: filled, id: "saved" } if filled.positive?
     segments << { color: "var(--budget-unused-fill)", amount: rem, id: "unused" } if rem.positive?
     segments
   end
@@ -932,7 +893,12 @@ class Goal < ApplicationRecord
       destructive: true,
       high_severity: true,
       title: I18n.t("goals.show.confirm_delete_title"),
-      body: I18n.t("goals.show.confirm_delete_body", name: name),
+      # Escaped: the dialog assigns `body` to innerHTML (so bodies like the
+      # accounts' confirm_body_html can carry <p>), so a goal named
+      # "<img src=x onerror=…>" would otherwise run when a family member opens
+      # the confirmation. Only `body` needs this — the dialog sets its title and
+      # button label with textContent.
+      body: I18n.t("goals.show.confirm_delete_body", name: ERB::Util.html_escape(name)),
       btn_text: I18n.t("goals.show.confirm_delete_cta")
     )
   end
@@ -1209,7 +1175,7 @@ class Goal < ApplicationRecord
       # the reserve already had. Same reasoning as the refresh job — a stale
       # floor beats a wrong one, and this one would be wearing a label saying
       # it was computed.
-      self.target_amount = target_amount_in_database if target_amount_changed? && !new_record?
+      self.target_amount = target_amount_in_database if will_save_change_to_target_amount? && !new_record?
     end
 
     # target_months only means something for a reserve on the months basis.
