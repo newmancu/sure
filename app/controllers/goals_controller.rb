@@ -188,8 +188,6 @@ class GoalsController < ApplicationController
     perform_transition!(:reopen)
   end
 
-  helper_method :eligible_consumption_accounts
-
   private
     def set_goal
       @goal = Current.family.goals
