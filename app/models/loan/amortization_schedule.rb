@@ -1,163 +1,168 @@
-# Builds a constant-payment ("French") amortisation schedule for a loan.
-#
-# Each period charges interest on the outstanding principal and applies the
-# remainder of the level payment to principal, so the principal/interest split
-# shifts over the life of the loan. This is the standard system for European
-# mortgages and for most US fixed-rate loans.
-#
-# All arithmetic runs in BigDecimal and every payment is rounded to the
-# currency's precision, exactly as a lender's own table does. The final payment
-# absorbs whatever rounding residue is left so the balance lands on zero.
-#
-# The period-by-period walk itself lives in Loan::Simulator. This class owns
-# what a *schedule* is -- the dates, the term, and the presentation of a run as
-# Payment records -- and nothing about how interest accrues.
-class Loan::AmortizationSchedule
-  Payment = Data.define(:number, :date, :payment, :principal, :interest, :ending_balance)
+class Loan
+  # The month-by-month principal a loan SHOULD carry, derived from its terms.
+  #
+  # Sure stores a liability's history the same way it stores an asset's: the
+  # balance moves only when an entry lands on the loan account
+  # (Balance::BaseCalculator#derive_non_cash_balance). A loan repaid by direct
+  # debit from a checking account has no entries of its own, so its balance sits
+  # frozen between manual valuations and then jumps. The recorded net-worth
+  # curve therefore shows a plateau followed by a step, and understates the
+  # progress actually made in between.
+  #
+  # This does NOT rewrite `balances`. It derives what the schedule implies and
+  # reports the gap, so the size of the distortion is measurable before anyone
+  # decides to touch the calculator that produces it.
+  class AmortizationSchedule
+    # A schedule that has not cleared after 50 years is a runaway, not a loan.
+    MAX_PERIODS = 600
 
-  attr_reader :principal, :annual_rate, :term_months, :start_date, :currency
+    Point = Data.define(:date, :balance, :interest, :principal)
 
-  class << self
-    # Returns a schedule for the loan, or nil when the loan isn't amortizable
-    # (missing rate/term/principal).
-    def for(loan)
-      return nil unless loan.amortizable?
+    Divergence = Data.define(:date, :recorded, :expected, :difference)
 
-      new(
-        principal: loan.original_balance.amount,
-        annual_rate: loan.interest_rate,
-        term_months: loan.term_months,
-        start_date: loan.origination_date,
-        currency: loan.account.currency,
-        rate_resolver: (Loan::RateResolver.for(loan) if loan.variable_rate_type?)
-      )
-    end
-  end
+    attr_reader :loan
 
-  # `rate_resolver` is how a variable loan's recorded rate changes reach the
-  # simulator. Omitted, the schedule runs at one rate for its whole life, which
-  # is what a fixed loan does.
-  def initialize(principal:, annual_rate:, term_months:, start_date:, currency:, rate_resolver: nil)
-    @currency = currency
-    # Rounded to the currency at the door. A balance carrying more fractional
-    # units than the currency has -- `first_valuation_amount` is decimal(19,4)
-    # against two-decimal USD -- otherwise loses its residue in the first
-    # period's rounding, and the principal portions then sum to less than the
-    # loan. A schedule is denominated in its currency; sub-unit precision in
-    # the opening balance is not a thing it can represent.
-    @principal = BigDecimal(principal.to_s).round(currency_precision)
-    @annual_rate = BigDecimal(annual_rate.to_s)
-    @term_months = term_months.to_i
-    @start_date = start_date
-    @rate_resolver = rate_resolver
-  end
-
-  # True when this schedule re-amortises part-way through, i.e. the repayment
-  # is re-sized at some payment after the first. Views use it to decide whether
-  # "the monthly payment" is a meaningful thing to say. Asked of the run rather
-  # than of the recorded changes: a change to the same rate, or one effective
-  # on the first payment, is an event that moves nothing in-term, and a
-  # constant payment must not be labelled an opening one.
-  def re_amortising?
-    return false unless @rate_resolver
-    return false unless schedulable?
-
-    simulation.payments.each_cons(2).any? { |previous, current| previous[:sizing_rate] != current[:sizing_rate] }
-  end
-
-  # Every scheduled payment, oldest first. Empty when there is nothing to
-  # amortise; shorter than the term when rounding clears the balance early.
-  def payments
-    @payments ||= simulation.payments.map do |row|
-      Payment.new(
-        number: row[:payment_number],
-        date: row[:payment_date],
-        payment: money(row[:payment_amount]),
-        principal: money(row[:principal_payment]),
-        interest: money(row[:interest_payment]),
-        ending_balance: money(row[:ending_balance])
-      )
-    end
-  end
-
-  # The level payment the schedule opens with. The last payment can differ by
-  # a few cents, and on a re-amortising loan every payment after a rate change
-  # differs too -- read them off #payments when the exact figures matter, and
-  # see #re_amortising? before presenting this as "the" monthly payment.
-  def periodic_payment
-    # Read off the first simulated payment rather than re-deriving it from the
-    # base rate. A rate change effective ON the first payment date already
-    # sizes that payment, and re-deriving would quote the rate the loan was
-    # written at for a payment the borrower will never make. For a fixed loan
-    # the two are the same number.
-    payments.first&.payment || money(0)
-  end
-
-  # What the loan costs in interest over its whole life. Sits slightly above
-  # the naive periodic_payment * term figure because interest is rounded to
-  # the currency's precision every period.
-  def total_interest
-    money(simulation.total_interest)
-  end
-
-  # Principal plus total_interest -- everything the borrower pays.
-  def total_paid
-    money(payments.sum(BigDecimal("0")) { |payment| payment.payment.amount })
-  end
-
-  # The date of the final payment, or nil when there's nothing to amortise.
-  def payoff_date
-    payments.last&.date
-  end
-
-  # The scheduled payment falling in the same calendar month as `date`, if any.
-  # Callers use this to reconcile a real bank payment against the schedule.
-  def payment_for(date)
-    payments.find { |payment| payment.date.year == date.year && payment.date.month == date.month }
-  end
-
-  # The repayment in force on `as_of`: the next scheduled payment on or after
-  # it, sized at every rate change recorded before that payment. A variable
-  # loan has no single monthly payment, but it always has this one. Nil once
-  # the schedule has run out.
-  def payment_in_force(as_of)
-    payments.find { |payment| payment.date >= as_of }&.payment
-  end
-
-  private
-    # One payment per month of the term, stepping from origination. `>>` gives
-    # the calendar-correct answer at month ends: 31 January plus one month is
-    # 28 February, not 3 March.
-    def payment_schedule
-      @payment_schedule ||= (1..term_months).map { |number| start_date >> number }
+    def initialize(loan)
+      @loan = loan
     end
 
-    # The simulator refuses an empty schedule rather than inventing a
-    # degenerate run, so a loan with nothing to amortise is answered here.
-    def simulation
-      @simulation ||= if schedulable?
-        Loan::Simulator.new(
-          starting_balance: principal,
-          accrual_start_date: start_date,
-          payment_schedule: payment_schedule,
-          accrual_rate_for: @rate_resolver ? @rate_resolver.method(:accrual_rate_for) : ->(_date) { annual_rate },
-          re_amortisation_events: @rate_resolver&.method(:re_amortisation_events),
-          currency_precision: currency_precision
-        ).run
-      else
-        Loan::SimulationResult.new(payments: [], currency_precision: currency_precision)
+    # nil when the terms cannot support a schedule, never a plausible guess.
+    # `reason` says which field is missing so a caller can tell the user.
+    def available?
+      anchor_balance.present? && anchor_balance.positive? &&
+        payment.present? && payment.positive? &&
+        loan.interest_rate.present?
+    end
+
+    def unavailable_reason
+      return nil if available?
+      return "No monthly payment is known: a fixed rate needs interest_rate and term_months, any other rate needs the actual payment recorded." if payment.nil? || payment.zero?
+      return "No starting principal is known: record the loan's original balance or an opening valuation." if anchor_balance.blank? || !anchor_balance.positive?
+
+      # An unknown rate is not a zero rate. Reading it as zero builds an
+      # interest-free schedule that clears the loan early and reports no
+      # interest at all, which is a confident wrong answer. A declared 0% is a
+      # real rate and still produces a schedule.
+      "No interest rate is recorded: enter the loan's nominal interest rate (0 is a valid value)."
+    end
+
+    # Anchored at origination when the user recorded one, which is what makes a
+    # BACKWARD comparison possible. Without it the schedule can only run forward
+    # from today, which says nothing about the plateau in the recorded history.
+    def anchored_at_origination?
+      loan.origination_date.present? && loan.original_balance&.amount.to_d.positive?
+    end
+
+    def start_date
+      anchored_at_origination? ? loan.origination_date : Date.current
+    end
+
+    def points
+      @points ||= build_points
+    end
+
+    def balance_on(date)
+      return nil if points.empty?
+      return points.first.balance if date <= points.first.date
+
+      point = points.reverse.find { |candidate| candidate.date <= date }
+      point&.balance || 0.to_d
+    end
+
+    def payoff_date
+      cleared = points.find { |point| point.balance.zero? }
+      cleared&.date
+    end
+
+    def total_interest
+      points.sum(&:interest)
+    end
+
+    # What the recorded history says against what the terms imply, on the dates
+    # the application actually stored. A large, one-directional gap is the
+    # plateau made visible.
+    def divergences(limit: 24)
+      return [] unless anchored_at_origination?
+
+      recorded_balances(limit).map do |balance|
+        expected = balance_on(balance.date)
+        next if expected.nil?
+
+        Divergence.new(
+          date: balance.date,
+          recorded: balance.balance.to_d.round(2),
+          expected: expected.round(2),
+          difference: (balance.balance.to_d - expected).round(2)
+        )
+      end.compact
+    end
+
+    private
+      def account
+        loan.account
       end
-    end
 
-    def schedulable?
-      term_months.positive? && principal.positive?
-    end
+      def payment
+        @payment ||= loan.effective_payment&.amount
+      end
 
-    def currency_precision
-      @currency_precision ||= Money::Currency.new(currency).default_precision || 2
-    end
+      def anchor_balance
+        @anchor_balance ||= if anchored_at_origination?
+          loan.original_balance.amount
+        else
+          account.balance.to_d
+        end
+      end
 
-    def money(value)
-      Money.new(value, currency)
-    end
+      # Only reached through `build_points`, which refuses to run unless
+      # `available?` has already established that a rate was recorded.
+      def monthly_rate
+        loan.interest_rate.to_d / 100 / 12
+      end
+
+      def build_points
+        return [] unless available?
+
+        rate = monthly_rate
+        balance = anchor_balance
+        date = start_date
+        points = [ Point.new(date: date, balance: balance.round(2), interest: 0.to_d, principal: 0.to_d) ]
+
+        MAX_PERIODS.times do
+          break if balance <= 0
+
+          interest = (balance * rate).round(2)
+          principal = payment - interest
+          # A payment that cannot cover the interest never clears the loan.
+          # Loan#remaining_payments already refuses to answer in that case;
+          # stopping here keeps the two consistent instead of emitting a
+          # schedule that quietly grows forever.
+          break if principal <= 0
+
+          balance = [ balance - principal, 0.to_d ].max
+          date = date.advance(months: 1)
+
+          points << Point.new(date: date, balance: balance.round(2), interest: interest, principal: principal.round(2))
+        end
+
+        points
+      end
+
+      # Month ends only: a daily series over a 20-year mortgage is thousands of
+      # rows nobody reads, and the distortion this exists to expose is measured
+      # in months.
+      def recorded_balances(limit)
+        account.balances
+               .where(currency: account.currency)
+               .where("date >= ?", start_date)
+               .order(date: :desc)
+               .limit(limit * 31)
+               .to_a
+               .group_by { |balance| balance.date.beginning_of_month }
+               .values
+               .map { |group| group.max_by(&:date) }
+               .sort_by(&:date)
+               .last(limit)
+      end
+  end
 end

@@ -1,154 +1,139 @@
 require "test_helper"
 
 class Loan::AmortizationScheduleTest < ActiveSupport::TestCase
-  test "builds one payment per month of the term" do
-    schedule = build_schedule
-
-    assert_equal 360, schedule.payments.count
-    assert_equal 1, schedule.payments.first.number
-    assert_equal 360, schedule.payments.last.number
+  setup do
+    @account = accounts(:loan)
+    @loan = @account.loan
   end
 
-  test "level payment matches the standard amortization formula" do
-    assert_equal BigDecimal("2245.22"), build_schedule.periodic_payment.amount
+  def schedule
+    Loan::AmortizationSchedule.new(@loan.reload)
   end
 
-  test "first payment is mostly interest and last payment is mostly principal" do
-    schedule = build_schedule
-    first = schedule.payments.first
-    last = schedule.payments.last
+  # ---- availability ---------------------------------------------------------
 
-    # 500,000 at 3.5% => 1,458.33 of interest in month one.
-    assert_equal BigDecimal("1458.33"), first.interest.amount
-    assert_equal BigDecimal("786.89"), first.principal.amount
-    assert first.interest.amount > first.principal.amount
-    assert last.principal.amount > last.interest.amount
+  test "is unavailable without a payment and names the missing field" do
+    @loan.update!(rate_type: "variable", scheduled_payment: nil, interest_rate: 5)
+
+    assert_not schedule.available?
+    assert_match(/monthly payment/, schedule.unavailable_reason)
   end
 
-  test "amortizes down to exactly zero" do
-    assert_equal BigDecimal("0"), build_schedule.payments.last.ending_balance.amount
+  # An unknown rate used to be read as 0%, which produced a confident,
+  # interest-free schedule for a loan whose rate was simply never entered.
+  test "is unavailable without an interest rate and names it" do
+    @account.update!(balance: 10_000)
+    @loan.update!(rate_type: "variable", interest_rate: nil, scheduled_payment: 500,
+                  origination_date: nil)
+
+    assert_not schedule.available?
+    assert_match(/interest rate/, schedule.unavailable_reason)
   end
 
-  test "principal portions sum to the original principal" do
-    schedule = build_schedule
-    total_principal = schedule.payments.sum(BigDecimal(0)) { |payment| payment.principal.amount }
+  test "an explicit zero rate is a real rate and still builds" do
+    @account.update!(balance: 10_000)
+    @loan.update!(rate_type: "variable", interest_rate: 0, scheduled_payment: 500,
+                  origination_date: nil)
 
-    assert_equal BigDecimal("500000"), total_principal
+    assert schedule.available?
+    assert_nil schedule.unavailable_reason
   end
 
-  test "total paid is principal plus total interest" do
-    schedule = build_schedule
+  test "is available from the live balance when no origination is recorded" do
+    @account.update!(balance: 10_000)
+    @loan.update!(rate_type: "variable", interest_rate: 0, scheduled_payment: 500,
+                  origination_date: nil)
 
-    # Slightly above the naive payment*term figure because interest is rounded
-    # to cents every month, exactly as a lender's table does.
-    assert_equal BigDecimal("308281.36"), schedule.total_interest.amount
-    assert_equal schedule.principal + schedule.total_interest.amount, schedule.total_paid.amount
+    assert schedule.available?
+    assert_not schedule.anchored_at_origination?
+    assert_equal Date.current, schedule.start_date
   end
 
-  test "payment dates step monthly from origination" do
-    schedule = build_schedule(start_date: Date.new(2026, 1, 31))
+  # ---- the schedule itself --------------------------------------------------
 
-    assert_equal Date.new(2026, 2, 28), schedule.payments.first.date
-    assert_equal Date.new(2026, 3, 31), schedule.payments.second.date
+  test "a zero-rate loan pays down by exactly the payment each month" do
+    @account.update!(balance: 1_000)
+    @loan.update!(rate_type: "variable", interest_rate: 0, scheduled_payment: 100, origination_date: nil)
+
+    balances = schedule.points.map(&:balance)
+
+    assert_equal 1_000, balances.first
+    assert_equal 900, balances[1]
+    assert_equal 0, balances.last
+    assert_equal 0, schedule.total_interest
   end
 
-  test "payoff date is the last payment date" do
-    schedule = build_schedule(start_date: Date.new(2026, 1, 1), term_months: 12)
+  test "an interest-bearing loan clears and accumulates interest" do
+    @account.update!(balance: 10_000)
+    @loan.update!(rate_type: "variable", interest_rate: 6, scheduled_payment: 500, origination_date: nil)
 
-    assert_equal Date.new(2027, 1, 1), schedule.payoff_date
+    assert_equal 0, schedule.points.last.balance
+    assert schedule.total_interest.positive?
+    assert schedule.payoff_date.present?
   end
 
-  test "handles a zero-interest loan with straight-line principal" do
-    schedule = build_schedule(annual_rate: 0, term_months: 10, principal: 1000)
+  test "refuses to emit a schedule that never clears" do
+    @account.update!(balance: 100_000)
+    @loan.update!(rate_type: "variable", interest_rate: 12, scheduled_payment: 100, origination_date: nil)
 
-    assert_equal BigDecimal("100"), schedule.periodic_payment.amount
-    assert schedule.payments.all? { |payment| payment.interest.amount.zero? }
-    assert_equal BigDecimal("0"), schedule.total_interest.amount
-    assert_equal BigDecimal("0"), schedule.payments.last.ending_balance.amount
+    assert_operator schedule.points.size, :<, Loan::AmortizationSchedule::MAX_PERIODS
+    assert_nil schedule.payoff_date, "a payment below the monthly interest clears nothing"
   end
 
-  test "rounds to whole units for a currency without minor units" do
-    schedule = build_schedule(currency: "JPY", principal: 1_000_000, annual_rate: 2, term_months: 12)
+  test "balance_on reads the schedule at a date" do
+    @account.update!(balance: 1_200)
+    @loan.update!(rate_type: "variable", interest_rate: 0, scheduled_payment: 100, origination_date: nil)
 
-    assert schedule.payments.all? { |payment| payment.payment.amount.frac.zero? }
-    assert_equal BigDecimal("0"), schedule.payments.last.ending_balance.amount
+    assert_equal 1_200, schedule.balance_on(Date.current - 30)
+    assert_equal 1_100, schedule.balance_on(Date.current.advance(months: 1))
+    assert_equal 0, schedule.balance_on(Date.current.advance(years: 5))
   end
 
-  test "returns no payments when the term is zero" do
-    assert_empty build_schedule(term_months: 0).payments
-    assert_nil build_schedule(term_months: 0).payoff_date
-    assert_equal BigDecimal("0"), build_schedule(term_months: 0).periodic_payment.amount
-    assert_equal BigDecimal("0"), build_schedule(principal: 0).periodic_payment.amount
+  # ---- the point of the exercise: measuring the recorded plateau -------------
+
+  test "reports no comparison when the loan has no origination anchor" do
+    @account.update!(balance: 1_200)
+    @loan.update!(rate_type: "variable", interest_rate: 0, scheduled_payment: 100, origination_date: nil)
+
+    assert_empty schedule.divergences
   end
 
-  test "keeps the periods it built when rounding clears the balance early" do
-    # 10 over 51 months rounds to a 0.20 payment, which pays the loan off in 50.
-    schedule = build_schedule(principal: 10, annual_rate: 0, term_months: 51)
+  test "quantifies the gap between a frozen recorded balance and the real amortization" do
+    origination = Date.current.advance(months: -6).beginning_of_month
+    @account.update!(balance: 1_000)
 
-    assert_equal 50, schedule.payments.count
-    assert_equal BigDecimal("0"), schedule.payments.last.ending_balance.amount
-    assert_equal BigDecimal("10"), schedule.total_paid.amount
-    assert_equal schedule.payments.last.date, schedule.payoff_date
-  end
+    Valuation.destroy_all if defined?(Valuation)
+    @account.entries.destroy_all
+    @account.entries.create!(
+      name: "Opening",
+      date: origination,
+      amount: 1_000,
+      currency: @account.currency,
+      entryable: Valuation.new(kind: "opening_anchor")
+    )
 
-  test "payment_for finds the payment landing in a given month" do
-    schedule = build_schedule(start_date: Date.new(2026, 1, 1), term_months: 12)
+    @loan.update!(rate_type: "variable", interest_rate: 0, scheduled_payment: 100,
+                  origination_date: origination)
 
-    assert_equal 3, schedule.payment_for(Date.new(2026, 4, 17)).number
-    assert_nil schedule.payment_for(Date.new(2030, 1, 1))
-  end
-
-  test "builds from a loan record" do
-    loan = loan_account(interest_rate: 3.5, term_months: 360, rate_type: "fixed").loan
-
-    assert_equal BigDecimal("2245.22"), Loan::AmortizationSchedule.for(loan).periodic_payment.amount
-  end
-
-  # Reversed by #104. A variable loan was excluded while a schedule could only
-  # be built off one rate; it now re-amortises at each recorded change, so the
-  # reason for the exclusion is gone.
-  test "is buildable for a variable rate loan" do
-    loan = loan_account(interest_rate: 3.5, term_months: 360, rate_type: "variable").loan
-
-    assert_not_nil Loan::AmortizationSchedule.for(loan)
-  end
-
-  # A rate type outside the form's vocabulary is still a rate type (#100
-  # decision 8). PlaidAccount::Liabilities::MortgageProcessor writes Plaid's
-  # raw `interest_rate.type` straight through, so this is reachable from a
-  # sync, not only from the form, and such a loan is variable rather than
-  # unknown.
-  test "is buildable for a provider's own rate type" do
-    loan = loan_account(interest_rate: 3.5, term_months: 360, rate_type: "teaser").loan
-
-    assert_not_nil Loan::AmortizationSchedule.for(loan)
-  end
-
-  # What is still not buildable: no rate type at all.
-  test "is not buildable for a blank rate type" do
-    loan = loan_account(interest_rate: 3.5, term_months: 360, rate_type: "").loan
-
-    assert_nil Loan::AmortizationSchedule.for(loan)
-  end
-
-  private
-    def build_schedule(principal: 500_000, annual_rate: 3.5, term_months: 360,
-                       start_date: Date.new(2026, 1, 1), currency: "USD")
-      Loan::AmortizationSchedule.new(
-        principal: principal,
-        annual_rate: annual_rate,
-        term_months: term_months,
-        start_date: start_date,
-        currency: currency
+    # A loan repaid from a current account records nothing on the loan account,
+    # so its stored balance never moves.
+    (0..5).each do |month|
+      @account.balances.create!(
+        date: origination.advance(months: month),
+        balance: 1_000,
+        currency: @account.currency
       )
     end
 
-    def loan_account(**loan_attrs)
-      Account.create! \
-        family: families(:dylan_family),
-        name: "Mortgage Loan",
-        balance: 500_000,
-        currency: "USD",
-        accountable: Loan.create!(subtype: "mortgage", **loan_attrs)
-    end
+    divergences = schedule.divergences
+
+    assert divergences.any?, "there must be recorded months to compare"
+
+    latest = divergences.last
+
+    assert_equal 1_000, latest.recorded, "the stored balance stayed frozen"
+    assert_operator latest.expected, :<, 1_000, "the terms imply real repayment"
+    assert_operator latest.difference, :>, 0,
+                    "a positive gap is the net worth curve understating progress"
+  end
 end

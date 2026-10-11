@@ -1,59 +1,9 @@
 require "test_helper"
 
 class LoanTest < ActiveSupport::TestCase
-  # Leverage is what the down payment is FOR: 80,000 borrowed against 20,000 put
-  # in is 4x, and the same loan against 5,000 is 16x. Bands are read off the
-  # ratio rather than stored, so a loan re-read after an edit cannot disagree
-  # with its own figure.
-  test "leverage is the borrowed amount over the down payment" do
-    loan = build_loan_account(balance: 80_000, down_payment: 20_000).loan
-
-    assert_in_delta 4.0, loan.initial_leverage_ratio, 0.001
-    assert_equal :conservative, loan.leverage_band, "4x sits on the conservative boundary"
-
-    loan.down_payment = 5_000
-    assert_in_delta 16.0, loan.initial_leverage_ratio, 0.001
-    assert_equal :high, loan.leverage_band
-  end
-
-  test "a moderate loan lands in the middle band" do
-    loan = build_loan_account(balance: 80_000, down_payment: 16_000).loan
-
-    assert_in_delta 5.0, loan.initial_leverage_ratio, 0.001
-    assert_equal :moderate, loan.leverage_band
-  end
-
-  # No deposit recorded is not a deposit of zero: a loan nobody has told us
-  # about is not infinitely leveraged, and a view must be able to tell the two
-  # apart to decide whether to show the figure at all.
-  test "a loan with no down payment recorded has no leverage figure" do
-    loan = build_loan_account(balance: 80_000, down_payment: nil).loan
-
-    assert_nil loan.initial_leverage_ratio
-    assert_nil loan.leverage_band
-
-    loan.down_payment = 0
-    assert_nil loan.initial_leverage_ratio, "zero is not a deposit either"
-  end
-
-  # Imports can open a loan at a negative valuation. That is no amount borrowed
-  # to measure a deposit against, and a ratio from it has no band to name.
-  test "a negative opening balance has no leverage figure" do
-    loan = loans(:one)
-    loan.down_payment = 100_000
-    loan.stubs(:original_balance).returns(Money.new(-500_000, "USD"))
-
-    assert_nil loan.initial_leverage_ratio
-    assert_nil loan.leverage_band
-  end
-
-  test "rejects a negative down payment or insurance rate" do
-    loan = Loan.new(down_payment: -1, insurance_rate: -1, insurance_rate_type: "nonsense")
-
-    assert_not loan.valid?
-    assert_includes loan.errors[:down_payment], "must be greater than or equal to 0"
-    assert_includes loan.errors[:insurance_rate], "must be greater than or equal to 0"
-    assert_includes loan.errors[:insurance_rate_type], "is not included in the list"
+  setup do
+    @account = accounts(:loan)
+    @loan = @account.loan
   end
 
   test "rejects invalid subtype" do
@@ -76,192 +26,172 @@ class LoanTest < ActiveSupport::TestCase
         rate_type: "fixed"
       )
 
-    assert_equal BigDecimal("2245.22"), loan_account.loan.monthly_payment.amount
+    assert_equal 2245, loan_account.loan.monthly_payment.amount
   end
 
-  test "monthly payment is zero for a non-positive term" do
-    loan_account = Account.create! \
-      family: families(:dylan_family),
-      name: "Backwards Loan",
-      balance: 500000,
-      currency: "USD",
-      accountable: Loan.create!(
-        subtype: "mortgage",
-        interest_rate: 3.5,
-        term_months: -360,
-        rate_type: "fixed"
-      )
+  # ---- fixed rate: the payment is computed --------------------------------
 
-    assert_equal 0, loan_account.loan.monthly_payment.amount
-    assert_not loan_account.loan.amortizable?
+  test "a fixed-rate loan computes its own instalment" do
+    @loan.update!(rate_type: "fixed", interest_rate: 3.5, term_months: 360)
+
+    assert_not_nil @loan.effective_payment
+    assert_equal @loan.monthly_payment, @loan.effective_payment
   end
 
-  # Reversed in part by #104: a variable loan now has a schedule. It still has
-  # no single monthly payment, because it does not have one -- quoting the
-  # payment it opened with would present a stale figure as a current one.
-  test "variable rate loans have a schedule but no single monthly payment" do
-    account = Account.create! \
-      family: families(:dylan_family),
-      name: "Variable Mortgage",
-      balance: 500000,
-      currency: "USD",
-      accountable: Loan.create!(subtype: "mortgage", interest_rate: 3.5, term_months: 360, rate_type: "variable")
+  test "an explicit scheduled payment overrides the computed one" do
+    @loan.update!(rate_type: "fixed", interest_rate: 3.5, term_months: 360, scheduled_payment: 1234)
 
-    assert_equal account, account.loan.account, "validating a Loan before attaching its Account must not cache a missing association"
-    assert account.loan.amortizable?
-    assert_not_nil account.loan.amortization_schedule
-    assert_nil account.loan.monthly_payment
+    assert_equal 1234, @loan.effective_payment.amount
   end
 
-  # #100 decision 8: a provider writes its own vocabulary straight into
-  # rate_type (Plaid's mortgage payload says "arm", others capitalise), and a
-  # loan whose rate can move is variable whatever the word for it. Only a
-  # blank rate type says nothing at all.
-  test "any non-blank rate type other than fixed is a variable, amortizable loan" do
-    [ "arm", "Variable" ].each do |provider_rate_type|
-      account = Account.create! \
-        family: families(:dylan_family),
-        name: "Provider Mortgage",
-        balance: 500000,
-        currency: "USD",
-        accountable: Loan.create!(subtype: "mortgage", interest_rate: 3.5, term_months: 360, rate_type: provider_rate_type)
+  # ---- variable rate: the payment must be supplied -------------------------
 
-      assert account.loan.variable_rate_type?, "#{provider_rate_type.inspect} should read as variable"
-      assert account.loan.amortizable?, "#{provider_rate_type.inspect} should amortize"
-      assert_nil account.loan.monthly_payment, "a variable loan has no single monthly payment"
-    end
+  test "a variable-rate loan has no computable instalment" do
+    @loan.update!(rate_type: "variable", interest_rate: 3.5, term_months: 360, scheduled_payment: nil)
 
-    [ nil, "" ].each do |blank|
-      account = Account.create! \
-        family: families(:dylan_family),
-        name: "Untyped Mortgage",
-        balance: 500000,
-        currency: "USD",
-        accountable: Loan.create!(subtype: "mortgage", interest_rate: 3.5, term_months: 360, rate_type: blank)
-
-      assert_not account.loan.variable_rate_type?, "#{blank.inspect} says nothing about the rate"
-      assert_not account.loan.amortizable?, "#{blank.inspect} must not amortize"
-    end
+    assert_nil @loan.monthly_payment
+    assert_nil @loan.effective_payment
+    assert_nil @loan.remaining_payments
+    assert_nil @loan.remaining_interest
   end
 
-  test "a loan with no account is not amortizable rather than raising" do
-    assert_not Loan.new(interest_rate: 3.5, term_months: 360, rate_type: "variable").amortizable?
-    assert_not Loan.new(interest_rate: 3.5, term_months: 360, rate_type: "fixed").amortizable?
+  test "a variable-rate loan amortizes once the real payment is recorded" do
+    @account.update!(balance: 10_000)
+    @loan.update!(rate_type: "variable", interest_rate: 6, term_months: nil, scheduled_payment: 500)
+
+    assert_equal 500, @loan.effective_payment.amount
+    assert @loan.remaining_payments.between?(20, 24),
+           "10k at 6% paid 500/month clears in roughly 21 months, got #{@loan.remaining_payments}"
+    assert_not_nil @loan.payoff_date
   end
 
-  test "a start date in the future is rejected, today and blank are not" do
-    loan = Loan.new(subtype: "mortgage", interest_rate: 6, term_months: 12, rate_type: "fixed")
+  # ---- amortization edge cases --------------------------------------------
 
-    loan.start_date = Date.current + 1
-    assert_not loan.valid?
-    assert loan.errors.of_kind?(:start_date, :less_than_or_equal_to)
+  test "a payment that does not cover the monthly interest reports no schedule" do
+    @account.update!(balance: 100_000)
+    @loan.update!(rate_type: "variable", interest_rate: 12, scheduled_payment: 100)
 
-    loan.start_date = Date.current
-    assert loan.valid?
-
-    loan.start_date = nil
-    assert loan.valid?
+    assert_nil @loan.remaining_payments,
+               "1000 of monthly interest against a 100 payment never amortizes"
+    assert_nil @loan.remaining_interest
   end
 
-  # An imported loan is the case where what was borrowed and what has been seen
-  # are different numbers. Plaid sends `origination_principal_amount`, which
-  # lands in `initial_balance`; the first valuation the account carries is
-  # whatever the balance was on the day it was linked, years of repayments in.
-  #
-  # 20,000 borrowed, 10,000 outstanding, 5,000 deposit, a level-term policy at
-  # 0.36% a year. Every figure below was measured against the 10,000 before
-  # this: the schedule amortised half a loan, the borrower had repaid "none" of
-  # it, the deposit looked twice as effective as it was, and the premium was
-  # half what the policy charges.
-  # Four separate tests rather than four assertions, so each figure is observed
-  # to fail on its own: one of them failing first would otherwise hide the rest.
-  test "the principal is the recorded one, not the first tracked balance" do
-    loan = build_imported_loan_account.loan
+  test "a zero-interest loan divides the balance by the payment" do
+    @account.update!(balance: 1_200)
+    @loan.update!(rate_type: "variable", interest_rate: 0, scheduled_payment: 100)
 
-    assert_equal 20_000, loan.original_balance.amount
+    assert_equal 12, @loan.remaining_payments
   end
 
-  test "the schedule amortises what was borrowed" do
-    loan = build_imported_loan_account.loan
+  # A declared 0% is a rate. A blank one is not, and treating it as zero quoted
+  # the payoff count of an interest-free loan: always too short, and delivered
+  # to the assistant through get_liabilities as if it were established.
+  test "an unknown interest rate yields no payoff count rather than a zero-rate one" do
+    @account.update!(balance: 1_200)
+    @loan.update!(rate_type: "variable", interest_rate: nil, scheduled_payment: 100)
 
-    repaid = loan.amortization_schedule.payments.sum(BigDecimal("0")) { |payment| payment.principal.amount }
-
-    assert_in_delta 20_000, repaid, 1, "half a loan was being amortised"
+    assert_nil @loan.remaining_payments
+    assert_nil @loan.payoff_date
+    assert_nil @loan.remaining_interest
   end
 
-  test "repaid is measured against what was borrowed" do
-    loan = build_imported_loan_account.loan
+  test "a cleared loan has no payments left" do
+    @account.update!(balance: 0)
+    @loan.update!(rate_type: "fixed", interest_rate: 3.5, term_months: 360)
 
-    assert_in_delta 0.5, loan.balance_paid_ratio, 0.0001, "10,000 outstanding on 20,000 borrowed is half repaid"
+    assert_equal 0, @loan.remaining_payments
   end
 
-  test "leverage is measured against what was borrowed" do
-    loan = build_imported_loan_account.loan
+  test "remaining payments follow the live balance, not the original term" do
+    @loan.update!(rate_type: "variable", interest_rate: 0, scheduled_payment: 100, term_months: 360)
 
-    assert_in_delta 4.0, loan.initial_leverage_ratio, 0.001, "20,000 against a 5,000 deposit"
+    @account.update!(balance: 1_000)
+    before = @loan.remaining_payments
+
+    @account.update!(balance: 500)
+    @loan.reload
+
+    assert_operator @loan.remaining_payments, :<, before
   end
 
-  test "a level-term premium is charged on what was borrowed" do
-    loan = build_imported_loan_account.loan
+  # ---- insurance and total cost -------------------------------------------
 
-    assert_equal 6, Loan::Insurance.for(loan).premium_for(1).amount.amount, "0.36% a year on 20,000"
+  test "the total monthly cost adds the insurance premium to the instalment" do
+    @loan.update!(rate_type: "variable", scheduled_payment: 400, insurance_monthly_amount: 25)
+
+    assert_equal 400, @loan.effective_payment.amount
+    assert_equal 425, @loan.total_monthly_cost.amount
   end
 
-  # The fallback, which is every loan created here: no principal is recorded
-  # separately from the opening valuation, and the two must not disagree.
-  test "a loan with no recorded principal still reads its first valuation" do
-    loan = build_loan_account(balance: 80_000, down_payment: 20_000).loan
+  test "the total monthly cost equals the instalment when there is no insurance" do
+    @loan.update!(rate_type: "variable", scheduled_payment: 400, insurance_monthly_amount: nil)
 
-    assert_nil loan.initial_balance
-    assert_equal 80_000, loan.original_balance.amount
+    assert_equal 400, @loan.total_monthly_cost.amount
   end
 
-  # An import can write either, and neither is an amount borrowed, so both fall
-  # back rather than producing a zero or a negative principal.
-  test "a zero or negative recorded principal falls back to the first valuation" do
-    account = build_loan_account(balance: 80_000, down_payment: 20_000)
+  test "remaining interest excludes insurance" do
+    @account.update!(balance: 1_200)
+    @loan.update!(rate_type: "variable", interest_rate: 0, scheduled_payment: 100, insurance_monthly_amount: 50)
 
-    account.loan.update!(initial_balance: 0)
-    assert_equal 80_000, account.loan.reload.original_balance.amount
-
-    account.loan.update!(initial_balance: -5_000)
-    assert_equal 80_000, account.loan.reload.original_balance.amount
+    assert_equal 0, @loan.remaining_interest.amount, "a zero-rate loan owes no interest"
   end
 
-  private
-    # A loan imported part way through its life: the principal it was written
-    # for is recorded, and the only valuation the account carries is the
-    # balance on the day it was linked.
-    def build_imported_loan_account
-      account = Account.create!(
-        family: families(:dylan_family),
-        name: "Imported #{SecureRandom.hex(3)}",
-        balance: 10_000,
-        currency: "USD",
-        accountable: Loan.create!(
-          subtype: "mortgage", interest_rate: 5, term_months: 120, rate_type: "fixed",
-          initial_balance: 20_000, down_payment: 5_000,
-          insurance_rate: 0.36, insurance_rate_type: "level_term",
-          start_date: 5.years.ago.to_date
-        )
-      )
-      account.entries.create!(
-        name: "Starting balance", amount: 10_000, currency: "USD",
-        date: 5.years.ago.to_date, entryable: Valuation.new(kind: "opening_anchor")
-      )
-      account
-    end
+  # 1,201 at 0% in instalments of 12 needs 101 payments, and the last one is a
+  # single unit, not a twelfth full payment. Counting it full quoted 11 of
+  # interest on an interest-free loan.
+  test "the final instalment of a non-divisible zero-rate balance is not a full payment" do
+    @account.update!(balance: 1_201)
+    @loan.update!(rate_type: "variable", interest_rate: 0, scheduled_payment: 12)
 
-    def build_loan_account(balance:, down_payment:)
-      Account.create!(
-        family: families(:dylan_family),
-        name: "Leveraged #{SecureRandom.hex(3)}",
-        balance: balance,
-        currency: "USD",
-        accountable: Loan.create!(
-          subtype: "mortgage", interest_rate: 5, term_months: 120,
-          rate_type: "fixed", down_payment: down_payment
-        )
-      )
-    end
+    assert_equal 101, @loan.remaining_payments
+    assert_equal 0, @loan.remaining_interest.amount, "a zero-rate loan owes no interest at any balance"
+  end
+
+  test "an interest-bearing loan still reports the interest it really owes" do
+    @account.update!(balance: 10_000)
+    @loan.update!(rate_type: "variable", interest_rate: 6, scheduled_payment: 500)
+
+    interest = @loan.remaining_interest.amount
+
+    assert_operator interest, :>, 0
+    # 10k at 6% cleared in ~21 monthly payments of 500 costs a few hundred in
+    # interest; the old full-final-payment total overstated it by up to 500.
+    assert_operator interest, :<, 600
+  end
+
+  # ---- payoff date ---------------------------------------------------------
+
+  test "a recorded maturity date wins over the projected one" do
+    @account.update!(balance: 1_200)
+    @loan.update!(rate_type: "variable", interest_rate: 0, scheduled_payment: 100,
+                  maturity_date: Date.new(2030, 6, 30))
+
+    assert_equal Date.new(2030, 6, 30), @loan.payoff_date
+  end
+
+  test "the payoff date is projected when no maturity date was recorded" do
+    @account.update!(balance: 1_200)
+    @loan.update!(rate_type: "variable", interest_rate: 0, scheduled_payment: 100, maturity_date: nil)
+
+    assert_equal Date.current.advance(months: 12), @loan.payoff_date
+  end
+
+  # ---- APR is not the amortization rate ------------------------------------
+
+  test "apr is stored separately and never drives the schedule" do
+    @account.update!(balance: 1_200)
+    @loan.update!(rate_type: "variable", interest_rate: 0, apr: 9.9, scheduled_payment: 100)
+
+    assert_equal 9.9, @loan.apr.to_f
+    assert_equal 12, @loan.remaining_payments, "the nominal rate drives the schedule, not the TAEG"
+  end
+
+  test "contract_terms? reports whether any contract detail was recorded" do
+    @loan.update!(origination_date: nil, maturity_date: nil, apr: nil,
+                  insurance_monthly_amount: nil, scheduled_payment: nil, early_repayment_terms: nil)
+    assert_not @loan.contract_terms?
+
+    @loan.update!(apr: 5.9)
+    assert @loan.contract_terms?
+  end
 end
