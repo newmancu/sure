@@ -27,15 +27,18 @@ class Entry < ApplicationRecord
   accepts_nested_attributes_for :entryable
 
   validates :date, :name, :amount, :currency, presence: true
-  validates :date, uniqueness: { scope: [ :account_id, :entryable_type ] }, if: -> { valuation? }
+  validates :date, uniqueness: { scope: [ :account_id, :entryable_type ],
+    conditions: -> { where.not(entryable_id: Valuation.cash_anchor.select(:id)) } },
+    if: -> { valuation? && !entryable.cash_anchor? }
   validates :date, comparison: { greater_than: -> { min_supported_date } }
   validates :external_id, uniqueness: { scope: [ :account_id, :source ] }, if: -> { external_id.present? && source.present? }
 
   validate :cannot_unexclude_split_parent
   validate :split_child_date_matches_parent
+  validate :position_provider_owns_trade_quantity
 
   before_destroy :prevent_individual_child_deletion, if: :split_child?
-  after_save :track_earliest_saved_date, if: :saved_change_to_date?
+  before_validation :reactivate_changed_valuation
 
   scope :visible, -> {
     joins(:account).where(accounts: { status: [ "draft", "active" ] })
@@ -67,8 +70,9 @@ class Entry < ApplicationRecord
   # Pending transaction scopes - check Transaction.extra for provider pending flags
   # Works with any provider that stores pending status in extra["provider_name"]["pending"]
   scope :pending, -> {
+    conditions = Transaction::PENDING_PROVIDERS.map { |p| "(transactions.extra -> '#{p}' ->> 'pending')::boolean = true" }
     joins("INNER JOIN transactions ON transactions.id = entries.entryable_id AND entries.entryable_type = 'Transaction'")
-      .where(Transaction.pending_sql)
+      .where(conditions.join(" OR "))
   }
 
   scope :excluding_pending, -> {
@@ -165,7 +169,9 @@ class Entry < ApplicationRecord
   def self.reconcile_pending_duplicates(account: nil, dry_run: false, date_window: 8, amount_tolerance: 0.25)
     stats = { checked: 0, reconciled: 0, details: [] }
 
-    not_pending_sql = Transaction.not_pending_sql
+    not_pending_sql = Transaction::PENDING_PROVIDERS
+      .map { |p| "(transactions.extra -> '#{p}' ->> 'pending')::boolean IS NOT TRUE" }
+      .join(" AND ")
 
     # Get pending entries to check
     scope = Entry.pending.where(excluded: false)
@@ -295,19 +301,8 @@ class Entry < ApplicationRecord
     entryable.lock_saved_attributes!
   end
 
-  # Enqueues an account sync whose window starts at the earliest date this
-  # entry has occupied since it was loaded, so balances are recomputed from
-  # wherever the entry used to sit.
-  #
-  # Later saves (lock_saved_attributes!, mark_user_modified!) reset
-  # date_previously_was, so the earliest date tracked across saves is used too.
-  # Starting the window after the old date would seed the incremental balance
-  # calculation from a balance that still includes this entry.
-  #
-  # @return [void]
   def sync_account_later
-    sync_start_date = [ @earliest_saved_date, date_previously_was, date ].compact.min unless destroyed?
-    @earliest_saved_date = nil
+    sync_start_date = [ date_previously_was, date ].compact.min unless destroyed?
     account.sync_later(window_start_date: sync_start_date)
   end
 
@@ -580,12 +575,20 @@ class Entry < ApplicationRecord
 
   private
 
-    # Remembers the earliest date this entry had before any save that changed
-    # it, for sync_account_later to use as the sync window start.
-    #
-    # @return [Date]
-    def track_earliest_saved_date
-      @earliest_saved_date = [ @earliest_saved_date, date_before_last_save ].compact.min
+    # A monetary or dated edit explicitly restores a superseded total valuation.
+    def reactivate_changed_valuation
+      return unless valuation? && !entryable.cash_anchor? && (amount_changed? || date_changed?)
+
+      entryable.superseded_at = nil
+    end
+
+    # Provider imports may publish units; manual edits must respect dated ownership.
+    def position_provider_owns_trade_quantity
+      return unless trade? && account && date && !entryable.provider_importing
+      return unless new_record? || date_changed?
+      return unless account.provider_managed_security?(entryable.security_id, date: date)
+
+      errors.add(:base, I18n.t("entries.errors.position_managed"))
     end
 
     def cannot_unexclude_split_parent

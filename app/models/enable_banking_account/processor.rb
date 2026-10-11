@@ -30,6 +30,7 @@ class EnableBankingAccount::Processor
 
   private
 
+    # Import account metadata and tag its reported total as provider-owned valuation data.
     def process_account!
       if enable_banking_account.current_account.blank?
         Rails.logger.error("Enable Banking account #{enable_banking_account.id} has no associated Account")
@@ -85,7 +86,7 @@ class EnableBankingAccount::Processor
           # Use set_current_balance to create a current_anchor valuation entry.
           # This enables Balance::ReverseCalculator, which works backward from the
           # bank-reported balance — eliminating spurious cash adjustment spikes.
-          result = account.set_current_balance(balance)
+          result = account.set_current_balance(balance, provider_balance: true)
           raise ProcessingError, "Failed to set current balance: #{result.error}" unless result.success?
         end
       end
@@ -114,9 +115,7 @@ class EnableBankingAccount::Processor
           # The API returns the available credit as the current balance, so the
           # outstanding debt is derived from the credit limit.
           # Use .max(0) to prevent synthetic debt on overpaid cards.
-          outstanding_debt = CreditCard.debt_from_available_credit(
-            credit_limit: credit_limit, available_credit: reported_balance, clamp_overpayment: true
-          )
+          outstanding_debt = [ credit_limit - reported_balance, 0 ].max
 
           [ outstanding_debt, credit_limit, false ]
         else

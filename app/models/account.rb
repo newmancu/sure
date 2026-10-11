@@ -1,4 +1,5 @@
 class Account < ApplicationRecord
+  has_one :bitcoin_wallet_account, dependent: :destroy
   include AASM, Syncable, Monetizable, Chartable, Linkable, Enrichable, Anchorable, Reconcileable, TaxTreatable
 
   before_validation :assign_default_owner, if: -> { owner_id.blank? }
@@ -71,26 +72,6 @@ class Account < ApplicationRecord
     left_joins(:account_shares)
       .where("accounts.owner_id = :uid OR account_shares.user_id = :uid", uid: user.id)
       .distinct
-  }
-
-  # Accounts every active member of the account's family can access (owned or
-  # shared with them), the same test as accessible_by applied to all of them.
-  # Family-wide surfaces such as the insights feed name accounts and amounts
-  # to everyone, so they draw only from this set.
-  scope :accessible_by_all_active_members, -> {
-    where(<<~SQL.squish)
-      NOT EXISTS (
-        SELECT 1 FROM users
-        WHERE users.family_id = accounts.family_id
-          AND users.active = TRUE
-          AND users.id IS DISTINCT FROM accounts.owner_id
-          AND NOT EXISTS (
-            SELECT 1 FROM account_shares
-            WHERE account_shares.account_id = accounts.id
-              AND account_shares.user_id = users.id
-          )
-      )
-    SQL
   }
 
   # Accounts a user can write to (owned or shared with full_control)
@@ -378,7 +359,9 @@ class Account < ApplicationRecord
     end
 
     def create_from_binance_account(binance_account)
-      create_from_crypto_exchange_account(binance_account, family: binance_account.binance_item.family)
+      account = create_from_crypto_exchange_account(binance_account, family: binance_account.binance_item.family)
+      account.set_opening_anchor_balance(balance: 0)
+      account
     end
 
     def create_from_ibkr_account(ibkr_account)
@@ -485,26 +468,12 @@ class Account < ApplicationRecord
     private
 
       def create_from_crypto_exchange_account(provider_account, family:)
-        # The provider record carries the exchange's *reporting* currency -- Kraken
-        # quotes everything in USD -- which says nothing about what the user
-        # values the account in. The account's own currency is the one its
-        # balance and holdings are shown in, so it is the family's; entries keep
-        # whatever currency they were made in and convert at display, as on
-        # every other account.
-        provider_currency = provider_account.currency.presence || family.currency
-        balance = (provider_account.current_balance || 0).to_d
-        # With no rate the figure cannot be stated in the family currency, and
-        # relabelling it would be wrong by the whole rate. Zero is honest: the
-        # first sync writes the converted balance minutes later, and the
-        # opening anchor is zeroed below regardless.
-        balance = convert_provider_balance(balance, from: provider_currency, to: family.currency) || 0
-
         attributes = {
           family: family,
           name: provider_account.name,
-          balance: balance,
+          balance: (provider_account.current_balance || 0).to_d,
           cash_balance: 0,
-          currency: family.currency,
+          currency: provider_account.currency.presence || family.currency,
           accountable_type: "Crypto",
           accountable_attributes: {
             subtype: "exchange",
@@ -512,38 +481,7 @@ class Account < ApplicationRecord
           }
         }
 
-        # An exchange account's ledger is imported from inception, so it opens at
-        # zero. Without this it inherits create_and_sync's default: an opening
-        # balance equal to what the account is worth *today*, dated two years ago
-        # -- so an exchange older than that imports its whole history on top of
-        # its present value, and every entry before the anchor sits ahead of its
-        # own opening balance.
-        #
-        # Through the manager, not set_opening_anchor_balance: that queues a
-        # sync, which is what skip_initial_sync below just declined. Running
-        # before the provider link exists, it would see one zero anchor and no
-        # entries and write that zero over the balance set here.
-        #
-        # Both in one transaction: creation commits on its own, so a failure
-        # while zeroing the anchor would otherwise leave an account behind
-        # carrying today's balance as its opening one, and the retry would
-        # create a second.
-        account = nil
-        transaction do
-          account = create_and_sync(attributes, skip_initial_sync: true)
-          result = Account::OpeningBalanceManager.new(account).set_opening_balance(balance: 0)
-          raise result.error if result.error
-        end
-
-        account
-      end
-
-      def convert_provider_balance(amount, from:, to:)
-        return amount if from == to || amount.zero?
-
-        Money.new(amount, from).exchange_to(to).amount
-      rescue Money::ConversionError
-        nil
+        create_and_sync(attributes, skip_initial_sync: true)
       end
 
       def build_simplefin_accountable_attributes(simplefin_account, account_type, subtype)
@@ -652,7 +590,12 @@ class Account < ApplicationRecord
     raise e
   end
 
+  # Select current composition using each provider's scope of position ownership.
   def current_holdings
+    if position_tracking? || accounting_start_date
+      return Holding::CurrentPositions.new(self).scope
+    end
+
     if (provider_snapshot_date = latest_provider_holdings_snapshot_date)
       holdings
         .where.not(account_provider_id: nil)
@@ -671,6 +614,16 @@ class Account < ApplicationRecord
         .order(amount: :desc)
     end
   end
+
+  # New data needs a follow-up after a running materializer has built its cache;
+  # pending jobs may be reused only within the same completion tree.
+  def coalescible_syncs(parent_sync: nil)
+    return super unless accounting_start_date
+
+    scope = syncs.visible.pending
+    parent_sync ? scope.where(parent_id: [ nil, parent_sync.id ]) : scope
+  end
+  private :coalescible_syncs
 
   def latest_provider_holdings_snapshot_date
     holdings.where.not(account_provider_id: nil).maximum(:date)
@@ -715,6 +668,8 @@ class Account < ApplicationRecord
   # Determines if this account supports manual trade entry
   # Investment accounts always support trades; Crypto only if subtype is "exchange"
   def supports_trades?
+    return true if position_tracking?
+
     return true if investment?
     return accountable.supports_trades? if crypto? && accountable.respond_to?(:supports_trades?)
     false
