@@ -128,6 +128,7 @@ class Provider::Openai::PdfProcessor
         ],
         response_format: { type: "json_object" }
       }
+      params = Provider::Openai.apply_reasoning_effort(params, api: :chat)
 
       response = client.chat(parameters: params)
 
@@ -146,9 +147,15 @@ class Provider::Openai::PdfProcessor
     def extract_text_from_pdf
       return nil if pdf_content.blank?
 
-      Pdf::TextExtractor.pages(pdf_content).each_with_index.flat_map do |text, index|
-        [ "--- Page #{index + 1} ---", text ]
-      end.join("\n\n")
+      reader = PDF::Reader.new(StringIO.new(pdf_content))
+      text_parts = []
+
+      reader.pages.each_with_index do |page, index|
+        text_parts << "--- Page #{index + 1} ---"
+        text_parts << page.text
+      end
+
+      text_parts.join("\n\n")
     rescue => e
       Rails.logger.error("Failed to extract text from PDF: #{e.message}")
       nil
@@ -192,6 +199,7 @@ class Provider::Openai::PdfProcessor
       else
         params[:max_tokens] = max_response_tokens
       end
+      params = Provider::Openai.apply_reasoning_effort(params, api: :chat)
 
       response = client.chat(parameters: params)
 
