@@ -6,7 +6,6 @@ class HoldingsController < ApplicationController
 
   def index
     @account = accessible_accounts.find(params[:account_id])
-    @current_holdings = @account.current_holdings
     @trade_republic_categories = trade_republic_categories_for(@account)
   end
 
@@ -156,7 +155,7 @@ class HoldingsController < ApplicationController
       end
       return if provider.blank?
 
-      values = provider.positions.group_by { |position| position["category"].presence || "brokerage" }
+      values = Array(provider.raw_positions_payload).group_by { |position| position["category"].presence || "brokerage" }
       TradeRepublicClientCategories::ALL.index_with do |category|
         positions = values.fetch(category, [])
         {
