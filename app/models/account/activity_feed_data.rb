@@ -2,14 +2,13 @@
 # This data object is useful for avoiding N+1 queries and having an easy way to pass around the required data to the
 # activity feed component in controllers and background jobs that refresh it.
 class Account::ActivityFeedData
-  ActivityDateData = Data.define(:date, :entries, :balance, :transfers, :split_parents)
+  ActivityDateData = Data.define(:date, :entries, :balance, :transfers)
 
-  attr_reader :account, :entries, :split_parents
+  attr_reader :account, :entries
 
-  def initialize(account, entries, split_parents: {})
+  def initialize(account, entries)
     @account = account
     @entries = entries.to_a
-    @split_parents = split_parents
   end
 
   def entries_by_date
@@ -19,8 +18,7 @@ class Account::ActivityFeedData
           date: date,
           entries: date_entries,
           balance: balance_for_date(date),
-          transfers: transfers_for_date(date),
-          split_parents: split_parents
+          transfers: transfers_for_date(date)
         )
       end
     end
@@ -52,36 +50,62 @@ class Account::ActivityFeedData
 
     def transfers_by_date
       @transfers_by_date ||= begin
-        return {} if transaction_ids.empty?
+        return {} if transaction_entries.empty?
 
-        transfers = Transfer
-          .where(inflow_transaction_id: transaction_ids)
-          .or(Transfer.where(outflow_transaction_id: transaction_ids))
-          .to_a
-
-        # Group transfers by the date of their transaction entries
-        result = Hash.new { |h, k| h[k] = [] }
-
-        entries.each do |entry|
-          next unless entry.transaction? && transaction_ids.include?(entry.entryable_id)
-
-          transfers.each do |transfer|
-            if transfer.inflow_transaction_id == entry.entryable_id ||
-               transfer.outflow_transaction_id == entry.entryable_id
-              result[entry.date] << transfer
-            end
-          end
+        # Prefer already-preloaded transfer associations (ActivityFeedPreloader)
+        # so we don't re-issue the same Transfer IN/OR lookup on every show.
+        if transfers_preloaded?
+          transfers_from_preloaded_associations
+        else
+          transfers_from_query
         end
-
-        # Remove duplicates
-        result.transform_values(&:uniq)
       end
     end
 
+    def transaction_entries
+      @transaction_entries ||= entries.select { |entry| entry.transaction? && entry.entryable_id }
+    end
+
     def transaction_ids
-      @transaction_ids ||= entries
-        .select(&:transaction?)
-        .map(&:entryable_id)
-        .compact
+      @transaction_ids ||= transaction_entries.map(&:entryable_id)
+    end
+
+    def transfers_preloaded?
+      transaction_entries.all? do |entry|
+        transaction = entry.entryable
+        transaction.association(:transfer_as_inflow).loaded? &&
+          transaction.association(:transfer_as_outflow).loaded?
+      end
+    end
+
+    def transfers_from_preloaded_associations
+      result = Hash.new { |h, k| h[k] = [] }
+
+      transaction_entries.each do |entry|
+        transfer = entry.entryable.transfer
+        result[entry.date] << transfer if transfer
+      end
+
+      result.transform_values(&:uniq)
+    end
+
+    def transfers_from_query
+      transfers = Transfer
+        .where(inflow_transaction_id: transaction_ids)
+        .or(Transfer.where(outflow_transaction_id: transaction_ids))
+        .to_a
+
+      transfers_by_transaction_id = Hash.new { |h, k| h[k] = [] }
+      transfers.each do |transfer|
+        transfers_by_transaction_id[transfer.inflow_transaction_id] << transfer if transfer.inflow_transaction_id
+        transfers_by_transaction_id[transfer.outflow_transaction_id] << transfer if transfer.outflow_transaction_id
+      end
+
+      result = Hash.new { |h, k| h[k] = [] }
+      transaction_entries.each do |entry|
+        result[entry.date].concat(transfers_by_transaction_id[entry.entryable_id])
+      end
+
+      result.transform_values(&:uniq)
     end
 end

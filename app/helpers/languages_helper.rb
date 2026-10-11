@@ -49,7 +49,6 @@ module LanguagesHelper
     nl: "Dutch",
     'no-NO': "Norwegian (Norway)",
     pl: "Polish",
-    'pt-PT': "Portuguese (Portugal)",
     'pt-BR': "Portuguese (Brazil)",
     pt: "Portuguese",
     sk: "Slovak",
@@ -167,14 +166,12 @@ module LanguagesHelper
     "ro",   # Romanian
     "ru",   # Russian
     "pl",   # Polish
-    "pt-PT", # Portuguese (Portugal)
     "pt-BR", # Brazilian Portuguese
     "zh-CN", # Chinese (Simplified)
     "zh-TW",  # Chinese (Traditional)
     "nl",   # Dutch
     "hu",   # Hungarian
-    "vi",   # Vietnamese
-    "uk"    # Ukrainian
+    "vi"    # Vietnamese
   ].freeze
 
   COUNTRY_MAPPING = {
@@ -381,7 +378,7 @@ module LanguagesHelper
       english = COUNTRY_MAPPING[key]
       emoji, name = english.split(" ", 2)
       label = I18n.t("countries.#{key}", default: name)
-      [ "#{emoji} #{label}", key.to_s ]
+      [ "#{emoji} #{label}", key ]
     end
   end
 
