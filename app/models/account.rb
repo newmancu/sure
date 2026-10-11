@@ -1,7 +1,34 @@
 class Account < ApplicationRecord
-  include AASM, Syncable, Monetizable, Chartable, Linkable, Enrichable, Anchorable, Reconcileable, TaxTreatable
+  include AASM, Syncable, Monetizable, Chartable, Linkable, Enrichable, Anchorable, Reconcileable, TaxTreatable, Encryptable, IbanNormalizable
+
+  # deterministic: true preserves equality lookups (e.g. find_by(iban:)) and
+  # the family_id+iban+currency uniqueness index, since the same plaintext always
+  # produces the same ciphertext.
+  #
+  # Deliberate tradeoff, not an oversight: unlike MonobankAccount#iban
+  # (encrypted non-deterministically, since it's never looked up by value),
+  # this column's whole purpose requires DB-level equality -- the uniqueness
+  # index and find_by(iban:) lookups can't work without a value-preserving
+  # transform. Splitting into a deterministic lookup column plus a separate
+  # non-deterministic display column (the pattern this codebase uses
+  # elsewhere, e.g. SnaptradeItem's client_id/consumer_key vs
+  # snaptrade_user_secret) wouldn't remove the ciphertext-correlation
+  # property being traded off here either, since IT'S the SAME value in both
+  # roles -- the deterministic column would still leak equality. Accepted
+  # for the user's own account/merchant IBAN; deliberately NOT applied to a
+  # transaction's counterparty_iban (see EnableBankingEntry::Processor),
+  # which has no uniqueness requirement and stays in the existing
+  # unencrypted `extra` jsonb column rather than inheriting this tradeoff.
+  if encryption_ready?
+    encrypts :iban, deterministic: true
+  end
 
   before_validation :assign_default_owner, if: -> { owner_id.blank? }
+  # IbanNormalizable strips everything but letters/digits and upcases, so
+  # provider-supplied IBANs ("DE893704...") and manually-entered ones in any
+  # formatting style ("DE89 3704...", "DE89.3704...", "DE89-3704...")
+  # normalize to the same value — required for both the uniqueness index and
+  # deterministic-encryption equality lookups to actually match.
 
   before_destroy :capture_account_statement_ids_to_move
   before_destroy :cleanup_transfers
@@ -9,6 +36,9 @@ class Account < ApplicationRecord
   after_destroy_commit :move_account_statements_to_inbox
 
   validates :name, :balance, :currency, presence: true
+  # Scoped per currency: Revolut and Wise expose one IBAN for several
+  # currency sub-accounts, and each of them is its own Sure account.
+  validates :iban, uniqueness: { scope: [ :family_id, :currency ] }, allow_nil: true
   validate :owner_belongs_to_family, if: -> { owner_id.present? && family_id.present? }
 
   belongs_to :family
@@ -71,26 +101,6 @@ class Account < ApplicationRecord
     left_joins(:account_shares)
       .where("accounts.owner_id = :uid OR account_shares.user_id = :uid", uid: user.id)
       .distinct
-  }
-
-  # Accounts every active member of the account's family can access (owned or
-  # shared with them), the same test as accessible_by applied to all of them.
-  # Family-wide surfaces such as the insights feed name accounts and amounts
-  # to everyone, so they draw only from this set.
-  scope :accessible_by_all_active_members, -> {
-    where(<<~SQL.squish)
-      NOT EXISTS (
-        SELECT 1 FROM users
-        WHERE users.family_id = accounts.family_id
-          AND users.active = TRUE
-          AND users.id IS DISTINCT FROM accounts.owner_id
-          AND NOT EXISTS (
-            SELECT 1 FROM account_shares
-            WHERE account_shares.account_id = accounts.id
-              AND account_shares.user_id = users.id
-          )
-      )
-    SQL
   }
 
   # Accounts a user can write to (owned or shared with full_control)
