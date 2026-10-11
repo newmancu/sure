@@ -8,5 +8,4 @@ ca:
       show:
         clear: Esborra la categoria
         no_categories: No s'han trobat categories
-        recent: Recents
         search_placeholder: Cerca
