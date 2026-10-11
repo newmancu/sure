@@ -25,7 +25,7 @@ class RegistrationsController < ApplicationController
     else
       family = Family.new
       @user.family = family
-      @creating_new_family = true
+      @user.role = User.role_for_new_family_creator
     end
 
     if signup_with_invite_claim!
@@ -63,11 +63,6 @@ class RegistrationsController < ApplicationController
       success = false
 
       ActiveRecord::Base.transaction do
-        if @creating_new_family
-          User.lock_first_user_role!
-          @user.role = User.role_for_new_family_creator
-        end
-
         unless @user.save
           raise ActiveRecord::Rollback
         end
@@ -77,13 +72,16 @@ class RegistrationsController < ApplicationController
           raise ActiveRecord::Rollback
         end
 
-        @invitation&.update!(accepted_at: Time.current)
-        # Joining an existing family must honor the family's default sharing
-        # policy so the user sees the accounts the family shares.
-        @user.family.auto_share_existing_accounts_with(@user)
-        @session = create_session_for(@user)
-        raise ActiveRecord::Rollback unless @session
+        if @invitation.present?
+          unless @invitation.accept_for(@user)
+            raise ActiveRecord::Rollback
+          end
+        else
+          @user.family.auto_share_existing_accounts_with(@user)
+        end
 
+        @session = create_session_for(@user)
+        @session.set_active_family_id(@invitation.family_id) if @invitation.present?
         success = true
       end
 

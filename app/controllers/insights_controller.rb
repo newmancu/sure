@@ -11,17 +11,12 @@ class InsightsController < ApplicationController
     # hits this GET before the user actually navigates, so skip the write
     # for prefetch requests or badges would clear on hover.
     unless prefetch_request?
-      Current.family.insights.visible.active.update_all(status: "read", read_at: Time.current, updated_at: Time.current)
+      Current.family.insights.active.update_all(status: "read", read_at: Time.current, updated_at: Time.current)
     end
   end
 
   def acknowledge
     @insight.acknowledge!
-    # Both surfaces: the response carries streams for the /insights list and the
-    # dashboard widget, and each page applies only the ones whose targets it has.
-    # The list (not just the acknowledged card) is reloaded so its empty state
-    # can take over when the last insight goes.
-    load_feed
     load_widget_feed
 
     respond_to do |format|
@@ -54,9 +49,7 @@ class InsightsController < ApplicationController
 
   private
     def set_insight
-      # Not `visible`: unacknowledge targets acknowledged rows. The account
-      # check still applies, so a hidden row can't be changed by id.
-      @insight = Current.family.insights.about_shared_accounts.find(params[:id])
+      @insight = Current.family.insights.find(params[:id])
     end
 
     def load_feed

@@ -55,11 +55,6 @@ module ApplicationHelper
     end
   end
 
-  # The chevron for a DS::Disclosure summary_content slot; it turns as the disclosure opens.
-  def disclosure_chevron
-    icon "chevron-right", size: "sm", class: "motion-safe:transition-transform group-open:rotate-90"
-  end
-
   # Convert alpha (0-1) to 8-digit hex (00-FF)
   def hex_with_alpha(hex, alpha)
     alpha_hex = (alpha * 255).round.to_s(16).rjust(2, "0")
@@ -90,25 +85,6 @@ module ApplicationHelper
   def preview_gated_nav_item(item)
     return nil unless preview_features_enabled?
     item.merge(preview: true)
-  end
-
-  # Bills is only meaningful while recurring detection is on, since a family that has
-  # turned it off has nothing to list. Returns nil so the entry drops out of the
-  # `Array#compact` nav list entirely rather than leading to an empty page. The
-  # subsystem also ships as a preview feature, so the entry is preview-gated on
-  # top: hidden without the flag, violet-dotted with it.
-  def bills_nav_item
-    return nil if Current.family.nil? || Current.family.recurring_transactions_disabled?
-
-    preview_gated_nav_item(
-      {
-        name: t("layouts.application.nav.bills"),
-        path: bills_path,
-        icon: "receipt",
-        icon_custom: false,
-        active: page_active?(bills_path)
-      }
-    )
   end
 
   # Budgets and Goals share one nav slot. Preview users get the "Plan" hub
@@ -174,7 +150,6 @@ module ApplicationHelper
     Money.new(number_or_money).format(options)
   end
 
-  # Format each native-currency total independently, preserving order and transfer exclusions.
   def totals_by_currency(collection:, money_method:, separator: " | ", negate: false)
     collection.group_by(&:currency)
               .transform_values { |item| calculate_total(item, money_method, negate) }
@@ -251,21 +226,19 @@ module ApplicationHelper
     ENV.fetch("DEV_WEBHOOKS_URL", root_url).chomp("/") + "/enable_banking_items/callback"
   end
 
-  # Formats a holding quantity with adaptive precision based on the value size.
+  # Formats quantity with adaptive precision based on the value size.
   # Shows more decimal places for small quantities (common with crypto).
   #
   # @param qty [Numeric] The quantity to format
-  # @param exact [Boolean] Show the full stored precision, without rounding
+  # @param max_precision [Integer] Maximum precision for very small numbers
   # @return [String] Formatted quantity with appropriate precision
-  def format_quantity(qty, exact: false)
+  def format_quantity(qty)
     return "0" if qty.nil? || qty.zero?
 
     abs_qty = qty.abs
 
-    precision = if exact
-      18    # Preserve the full stored precision for crypto quantities
-    elsif abs_qty >= 1
-      1     # "10.4"
+    precision = if abs_qty >= 1
+      1     # "10.5"
     elsif abs_qty >= 0.01
       2     # "0.52"
     elsif abs_qty >= 0.0001
@@ -282,8 +255,8 @@ module ApplicationHelper
     def safe_lucide_icon(key, **opts)
       lucide_icon(key, **opts)
     rescue StandardError => e
-      Rails.logger.warn("[ApplicationHelper] Falling back to key for unknown icon #{key.inspect}: #{e.message}")
-      lucide_icon("key", **opts)
+      Rails.logger.warn("[ApplicationHelper] Falling back for icon #{key.inspect}: #{e.message}")
+      content_tag(:span, "", class: opts[:class])
     end
 
     def normalize_icon_key(key)
@@ -293,7 +266,6 @@ module ApplicationHelper
       normalized.downcase
     end
 
-    # Exclude transfers while preserving the original group currency even when its total is zero.
     def calculate_total(item, money_method, negate)
       # Filter out transfer-type transactions from entries
       # Only Entry objects have entryable transactions, Account objects don't
@@ -302,8 +274,7 @@ module ApplicationHelper
         i.entryable.is_a?(Transaction) &&
         i.entryable.transfer?
       end
-      # Keep the group's currency when every entry is excluded from the total.
-      total = items.sum(Money.new(0, item.first.currency), &money_method)
+      total = items.sum(&money_method)
       negate ? -total : total
     end
 end
