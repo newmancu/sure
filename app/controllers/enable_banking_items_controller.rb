@@ -475,7 +475,7 @@ class EnableBankingItemsController < ApplicationController
       # Recompute data needed by Accounts#index partials
       @manual_accounts = Account.uncached {
         Current.family.accounts
-          .visible_manual
+          .visible_manual_for(Current.user)
           .order(:name)
           .to_a
       }
@@ -542,21 +542,13 @@ class EnableBankingItemsController < ApplicationController
     end
 
     def enable_banking_item_params
-      permitted = params.require(:enable_banking_item).permit(
+      params.require(:enable_banking_item).permit(
         :name,
         :sync_start_date,
         :country_code,
         :application_id,
         :client_certificate
       )
-      # The panel never pre-fills the stored credentials, so a blank one on
-      # update means "keep the current value".
-      if @enable_banking_item&.persisted?
-        %i[application_id client_certificate].each do |credential|
-          permitted.delete(credential) if permitted[credential].blank?
-        end
-      end
-      permitted
     end
 
     def enable_banking_callback_url
