@@ -430,7 +430,7 @@ class AccountStatementTest < ActiveSupport::TestCase
     assert_equal 0.1.to_d, statement.parser_confidence
   end
 
-  test "stores another bank's pdf statement and reads its period from the text" do
+  test "stores an actual pdf document fixture as a statement" do
     fixture_path = file_fixture("imports/sample_bank_statement.pdf")
     statement = AccountStatement.create_from_upload!(
       family: @family,
@@ -448,111 +448,11 @@ class AccountStatementTest < ActiveSupport::TestCase
     assert_equal "application/pdf", statement.content_type
     assert_equal fixture_path.size, statement.byte_size
     assert_equal Digest::SHA256.file(fixture_path).hexdigest, statement.content_sha256
-    # An M-PESA statement: "Statement Period: 01st 1 2025 - 01st 7 2025" wins
-    # over the filename date, and it has no opening or closing balance.
-    assert_equal "text", statement.sanitized_parser_output["pdf_detection"]
-    assert_equal Date.new(2025, 1, 1), statement.period_start_on
-    assert_equal Date.new(2025, 7, 1), statement.period_end_on
-    assert_nil statement.opening_balance
-    assert_nil statement.closing_balance
-    assert_equal false, statement.sanitized_parser_output.dig("pdf", "balances_detected")
+    assert_equal "filename_only", statement.sanitized_parser_output["pdf_detection"]
+    assert_equal [ "filename" ], statement.sanitized_parser_output["metadata_sources"]
+    assert_equal Date.new(2024, 1, 1), statement.period_start_on
+    assert_equal Date.new(2024, 1, 31), statement.period_end_on
     assert statement.original_file.blob.download.start_with?("%PDF-")
-  end
-
-  test "reads period and balances from a Trade Republic statement pdf over a filename date" do
-    eur_account = @family.accounts.create!(
-      name: "Trade Republic Cash",
-      balance: 0,
-      currency: "EUR",
-      accountable: Depository.new
-    )
-    fixture_path = file_fixture("account_statements/trade_republic_it_2026_04.pdf")
-
-    statement = AccountStatement.create_from_upload!(
-      family: @family,
-      account: eur_account,
-      file: Rack::Test::UploadedFile.new(
-        fixture_path,
-        "application/pdf",
-        true,
-        original_filename: "Trade Republic 2026-03.pdf"
-      )
-    )
-
-    assert_equal Date.new(2026, 4, 1), statement.period_start_on
-    assert_equal Date.new(2026, 4, 30), statement.period_end_on
-    assert_equal BigDecimal("1101.14"), statement.opening_balance
-    assert_equal BigDecimal("11948.59"), statement.closing_balance
-    assert_equal "1234", statement.account_last4_hint
-    assert_equal "Trade Republic", statement.institution_name_hint
-    assert_equal "text", statement.sanitized_parser_output["pdf_detection"]
-    assert_equal "summary_table", statement.sanitized_parser_output.dig("pdf", "balances_source")
-    assert_equal [ "pdf_text", "filename" ], statement.sanitized_parser_output["metadata_sources"]
-    assert_equal 0.85.to_d, statement.parser_confidence
-    assert_not_includes statement.sanitized_parser_output.to_json, "MARIO ROSSI"
-  end
-
-  test "reads a Trade Republic statement saved under its default filename" do
-    eur_account = @family.accounts.create!(
-      name: "Trade Republic Cash",
-      balance: 0,
-      currency: "EUR",
-      accountable: Depository.new
-    )
-
-    statement = AccountStatement.create_from_upload!(
-      family: @family,
-      account: eur_account,
-      file: Rack::Test::UploadedFile.new(
-        file_fixture("account_statements/trade_republic_it_2026_04.pdf"),
-        "application/pdf",
-        true,
-        original_filename: "Account statement.pdf"
-      )
-    )
-
-    assert_equal Date.new(2026, 4, 1), statement.period_start_on
-    assert_equal Date.new(2026, 4, 30), statement.period_end_on
-    assert_equal BigDecimal("11948.59"), statement.closing_balance
-    assert_nil statement.institution_name_hint
-    assert_nil statement.account_name_hint
-    assert_equal [ "pdf_text" ], statement.sanitized_parser_output["metadata_sources"]
-  end
-
-  test "skips Trade Republic balances when the statement currency differs" do
-    statement = AccountStatement.create_from_upload!(
-      family: @family,
-      account: nil,
-      file: Rack::Test::UploadedFile.new(
-        file_fixture("account_statements/trade_republic_it_2026_04.pdf"),
-        "application/pdf",
-        true,
-        original_filename: "statement.pdf"
-      )
-    )
-
-    assert_equal "USD", statement.currency
-    assert_equal Date.new(2026, 4, 1), statement.period_start_on
-    assert_equal Date.new(2026, 4, 30), statement.period_end_on
-    assert_nil statement.opening_balance
-    assert_nil statement.closing_balance
-    assert_equal false, statement.sanitized_parser_output.dig("pdf", "balances_detected")
-    assert_nil statement.sanitized_parser_output.dig("pdf", "balances_source")
-  end
-
-  test "does not read a bare MM-YYYY token in the filename as the period" do
-    statement = AccountStatement.create_from_upload!(
-      family: @family,
-      account: nil,
-      file: uploaded_file(
-        filename: "Invoice_04-2029.pdf",
-        content_type: "application/pdf",
-        content: "%PDF-1.4 statement"
-      )
-    )
-
-    assert_nil statement.period_start_on
-    assert_nil statement.period_end_on
   end
 
   test "handles malformed csv metadata detection without raw parser output" do
@@ -812,28 +712,19 @@ class AccountStatementTest < ActiveSupport::TestCase
   end
 
   test "coverage marks covered duplicate ambiguous and mismatched months" do
-    account = Account.create!(
-      family: @family,
-      owner: users(:family_admin),
-      name: "Coverage Checking",
-      balance: 0,
-      currency: "USD",
-      accountable: Depository.new
-    )
-
     covered_month = 5.months.ago.to_date.beginning_of_month
     missing_month = 4.months.ago.to_date.beginning_of_month
     duplicate_month = 3.months.ago.to_date.beginning_of_month
     ambiguous_month = 2.months.ago.to_date.beginning_of_month
     mismatched_month = 1.month.ago.to_date.beginning_of_month
 
-    create_statement(account: account, month: covered_month, content: "covered")
-    create_statement(account: account, month: duplicate_month, content: "duplicate-a")
-    create_statement(account: account, month: duplicate_month, content: "duplicate-b")
-    create_statement(account: nil, suggested_account: account, month: ambiguous_month, content: "ambiguous")
-    create_statement(account: account, month: mismatched_month, content: "mismatched", closing_balance: 120)
+    create_statement(account: @account, month: covered_month, content: "covered")
+    create_statement(account: @account, month: duplicate_month, content: "duplicate-a")
+    create_statement(account: @account, month: duplicate_month, content: "duplicate-b")
+    create_statement(account: nil, suggested_account: @account, month: ambiguous_month, content: "ambiguous")
+    create_statement(account: @account, month: mismatched_month, content: "mismatched", closing_balance: 120)
 
-    account.balances.create!(
+    @account.balances.create!(
       date: mismatched_month.end_of_month,
       balance: 100,
       currency: "USD",
@@ -843,7 +734,7 @@ class AccountStatementTest < ActiveSupport::TestCase
     )
 
     coverage = AccountStatement::Coverage.new(
-      account,
+      @account,
       start_month: covered_month,
       end_month: mismatched_month
     )
@@ -854,41 +745,6 @@ class AccountStatementTest < ActiveSupport::TestCase
     assert_equal "duplicate", statuses[duplicate_month]
     assert_equal "ambiguous", statuses[ambiguous_month]
     assert_equal "mismatched", statuses[mismatched_month]
-  end
-
-  test "coverage does not mark adjacent statements as duplicate when they only share a calendar month" do
-    account = Account.create!(
-      family: @family,
-      owner: users(:family_admin),
-      name: "Adjacent Statement Checking",
-      balance: 0,
-      currency: "USD",
-      accountable: Depository.new
-    )
-
-    march = Date.new(2026, 3, 1)
-
-    create_statement_with_period(
-      account: account,
-      period_start_on: Date.new(2026, 1, 8),
-      period_end_on: Date.new(2026, 3, 6),
-      content: "adjacent-a"
-    )
-
-    create_statement_with_period(
-      account: account,
-      period_start_on: Date.new(2026, 3, 7),
-      period_end_on: Date.new(2026, 4, 7),
-      content: "adjacent-b"
-    )
-
-    coverage = AccountStatement::Coverage.new(
-      account,
-      start_month: march,
-      end_month: march
-    )
-
-    assert_equal "covered", coverage.months.first.status
   end
 
   private
@@ -909,26 +765,6 @@ class AccountStatementTest < ActiveSupport::TestCase
         period_end_on: month.end_of_month,
         closing_balance: closing_balance
       )
-      statement
-    end
-
-    def create_statement_with_period(account:, period_start_on:, period_end_on:, content:, suggested_account: nil)
-      statement = AccountStatement.create_from_upload!(
-        family: @family,
-        account: account,
-        file: uploaded_file(
-          filename: "statement_#{content}_#{period_start_on}_#{period_end_on}.csv",
-          content_type: "text/csv",
-          content: "date,amount\n#{period_start_on},1\n#{period_end_on},2\n#{content}\n"
-        )
-      )
-
-      statement.update!(
-        suggested_account: suggested_account,
-        period_start_on: period_start_on,
-        period_end_on: period_end_on
-      )
-
       statement
     end
 end

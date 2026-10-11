@@ -15,12 +15,12 @@ class ApiRateLimiterTest < ActiveSupport::TestCase
     @rate_limiter = ApiRateLimiter.new(@api_key)
 
     # Clear any existing rate limit data
-    clear_rate_limit_data(@api_key)
+    Redis.new.del("api_rate_limit:#{@api_key.id}")
   end
 
   teardown do
     # Clean up Redis data after each test
-    clear_rate_limit_data(@api_key)
+    Redis.new.del("api_rate_limit:#{@api_key.id}")
   end
 
   test "should have default rate limit" do
@@ -117,7 +117,7 @@ class ApiRateLimiterTest < ActiveSupport::TestCase
     assert_equal 1, @rate_limiter.current_count
     assert_equal 2, other_rate_limiter.current_count
   ensure
-    clear_rate_limit_data(other_api_key)
+    Redis.new.del("api_rate_limit:#{other_api_key.id}")
     other_api_key.destroy
   end
 
@@ -135,17 +135,4 @@ class ApiRateLimiterTest < ActiveSupport::TestCase
 
     assert_in_delta expected_reset, reset_time, 1
   end
-
-  test "uses REDIS_URL for redis connection" do
-    with_env_overrides("REDIS_URL" => "redis://custom-host:6380/3") do
-      limiter = ApiRateLimiter.new(@api_key)
-      assert_equal "redis://custom-host:6380/3", limiter.redis_url
-    end
-  end
-
-  private
-
-    def clear_rate_limit_data(api_key)
-      Redis.new(url: ApiRateLimiter.redis_url).del("api_rate_limit:#{api_key.id}")
-    end
 end

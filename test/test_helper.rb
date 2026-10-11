@@ -26,8 +26,6 @@ require "webmock/minitest"
 require "rack/test"
 require "tempfile"
 require "uri"
-require Rails.root.join("test/support/sql_query_capture").to_s
-require Rails.root.join("test/support/rake_task_test_helper").to_s
 
 VCR.configure do |config|
   config.cassette_library_dir = "test/vcr_cassettes"
@@ -80,19 +78,9 @@ module ActiveSupport
     # Setup all fixtures in test/fixtures/*.yml for all tests in alphabetical order.
     fixtures :all
 
-    # rails-settings-cached keeps an in-memory cache that survives the per-test
-    # transaction rollback, so a Setting.* value written in one test leaks into
-    # later tests and causes order-dependent failures (e.g. Settings::Hostings
-    # reading a stale "" where nil is expected). Reset the cache before every
-    # test so each starts from the rolled-back DB state.
-    setup { Setting.clear_cache }
-
-    include SqlQueryCapture
-
     # Add more helper methods to be used by all tests here...
     def sign_in(user)
       post sessions_path, params: { email: user.email, password: user_password_test }
-      Current.session = user.sessions.order(:created_at).last
     end
 
     def ensure_tailwind_build

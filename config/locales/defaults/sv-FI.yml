@@ -42,7 +42,6 @@ sv-FI:
       default: "%-d.%-m.%Y"
       long: "%e %B %Y"
       short: "%e %b"
-      short_with_year: "%-d %b %Y"
     month_names:
     -
     - januari
