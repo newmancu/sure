@@ -515,7 +515,7 @@ class Family < ApplicationRecord
       if duplicates.any?
         duplicate_ids = duplicates.map(&:id)
         categories.where(parent_id: duplicate_ids).update_all(parent_id: keeper.id)
-        Transaction.reassign_category!(transactions.where(category_id: duplicate_ids), keeper.id)
+        Transaction.where(category_id: duplicate_ids).update_all(category_id: keeper.id)
         BudgetCategory.where(category_id: duplicate_ids).update_all(category_id: keeper.id)
         categories.where(id: duplicate_ids).delete_all
       end
@@ -622,6 +622,15 @@ class Family < ApplicationRecord
 
   def oldest_entry_date
     entries.order(:date).first&.date || Date.current
+  end
+
+  # Earliest Transaction/Trade entry date: the family's first real activity.
+  # Unlike oldest_entry_date (any entry type; kept as-is for budgets and the
+  # AI balance sheet), valuations and opening balances don't count here, so a
+  # single old valuation can't stretch All-range charts back for years (#4007).
+  # Returns nil when the family has no Transaction/Trade entries yet.
+  def earliest_activity_date
+    entries.where(entryable_type: %w[Transaction Trade]).minimum(:date)
   end
 
   # Used for invalidating family / balance sheet related aggregation queries
