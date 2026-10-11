@@ -181,9 +181,18 @@ class SimplefinItem::Syncer
 
       # Broadcast UI updates so Providers/Accounts pages refresh without manual reload
       begin
+        # Replace the SimpleFin card
+        card_html = ApplicationController.render(
+          partial: "simplefin_items/simplefin_item",
+          formats: [ :html ],
+          locals: { simplefin_item: simplefin_item }
+        )
+        target_id = ActionView::RecordIdentifier.dom_id(simplefin_item)
+        Turbo::StreamsChannel.broadcast_replace_to(simplefin_item.family, target: target_id, html: card_html)
+
         # Broadcast a refresh signal instead of rendered HTML. Each user's browser
         # re-fetches via their own authenticated request, so the manual accounts
-        # list and the SimpleFIN card are scoped to the current user (#3630).
+        # list is correctly scoped to the current user.
         simplefin_item.family.broadcast_refresh
       rescue => e
         Rails.logger.warn("SimplefinItem::Syncer broadcast failed: #{e.class} - #{e.message}")
@@ -234,7 +243,8 @@ class SimplefinItem::Syncer
         warnings: investment_accounts.size,
         details: [ {
           message: I18n.t("provider_warnings.limited_investment_data"),
-          severity: "warning"
+          severity: "warning",
+          account_names: investment_accounts.filter_map { |sfa| sfa.current_account&.name }.uniq
         } ]
       )
     end
