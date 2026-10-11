@@ -96,13 +96,24 @@ class Api::V1::TransactionsController < Api::V1::BaseController
       return render_existing_idempotent_entry(existing_entry)
     end
 
+    if funding_account_id.present?
+      if funding_account_id == account_id_param
+        render json: {
+          error: "validation_failed",
+          message: "Funding account cannot be the same as transaction account",
+          errors: [ "Funding account cannot be the same as transaction account" ]
+        }, status: :unprocessable_entity
+        return
+      end
+      return create_channel_payment(account, family)
+    end
+
     @entry = account.entries.new(entry_params_for_create)
 
     if @entry.save
+      @entry.sync_account_later
       @entry.lock_saved_attributes!
       @entry.transaction.lock_attr!(:tag_ids) if @entry.transaction.tags.any?
-      @entry.mark_user_modified! if user_modified_requested?
-      @entry.sync_account_later
 
       @transaction = @entry.transaction
       render :show, status: :created
@@ -153,7 +164,6 @@ class Api::V1::TransactionsController < Api::V1::BaseController
 
         @entry.sync_account_later
         @entry.lock_saved_attributes!
-        @entry.mark_user_modified! if user_modified_requested?
 
         @transaction = @entry.transaction
         render :show
@@ -229,12 +239,12 @@ class Api::V1::TransactionsController < Api::V1::BaseController
     def apply_filters(query)
       # Account filtering
       if params[:account_id].present?
-        query = query.where(entries: { account_id: params[:account_id] })
+        query = query.joins(:entry).where(entries: { account_id: params[:account_id] })
       end
 
       if params[:account_ids].present?
         account_ids = Array(params[:account_ids])
-        query = query.where(entries: { account_id: account_ids })
+        query = query.joins(:entry).where(entries: { account_id: account_ids })
       end
 
       # Category filtering
@@ -259,39 +269,37 @@ class Api::V1::TransactionsController < Api::V1::BaseController
 
       # Date range filtering
       if params[:start_date].present?
-        query = query.where("entries.date >= ?", Date.parse(params[:start_date]))
+        query = query.joins(:entry).where("entries.date >= ?", Date.parse(params[:start_date]))
       end
 
       if params[:end_date].present?
-        query = query.where("entries.date <= ?", Date.parse(params[:end_date]))
+        query = query.joins(:entry).where("entries.date <= ?", Date.parse(params[:end_date]))
       end
 
       # Amount filtering
       if params[:min_amount].present?
         min_amount = params[:min_amount].to_f
-        query = query.where("entries.amount >= ?", min_amount)
+        query = query.joins(:entry).where("entries.amount >= ?", min_amount)
       end
 
       if params[:max_amount].present?
         max_amount = params[:max_amount].to_f
-        query = query.where("entries.amount <= ?", max_amount)
+        query = query.joins(:entry).where("entries.amount <= ?", max_amount)
       end
 
       # Tag filtering
       if params[:tag_ids].present?
         tag_ids = Array(params[:tag_ids])
-        query = query.where(
-          id: query.joins(:tags).where(tags: { id: tag_ids }).distinct.select(:id)
-        )
+        query = query.joins(:tags).where(tags: { id: tag_ids })
       end
 
       # Transaction type filtering (income/expense)
       if params[:type].present?
         case params[:type].downcase
         when "income"
-          query = query.where("entries.amount < 0")
+          query = query.joins(:entry).where("entries.amount < 0")
         when "expense"
-          query = query.where("entries.amount > 0")
+          query = query.joins(:entry).where("entries.amount > 0")
         end
       end
 
@@ -301,33 +309,27 @@ class Api::V1::TransactionsController < Api::V1::BaseController
     def apply_search(query)
       search_term = "%#{params[:search]}%"
 
-      query
-        .left_joins(:merchant)
-        .where(
-          "entries.name ILIKE ? OR entries.notes ILIKE ? OR merchants.name ILIKE ?",
-          search_term, search_term, search_term
-        )
+      query.joins(:entry)
+           .left_joins(:merchant)
+           .where(
+             "entries.name ILIKE ? OR entries.notes ILIKE ? OR merchants.name ILIKE ?",
+             search_term, search_term, search_term
+           )
     end
 
     def transaction_params
       params.require(:transaction).permit(
         :date, :amount, :name, :description, :notes, :currency,
-        :category_id, :merchant_id, :nature, :user_modified, tag_ids: []
+        :category_id, :merchant_id, :nature, :funding_account_id, extra: {}, tag_ids: []
       )
-    end
-
-    # An API client can opt a transaction it creates or updates into the
-    # same sync-protection a manual edit gets (Entry#protected_from_sync?) -
-    # useful for a client that owns its own writes into an account also
-    # linked to a bank-sync provider (Plaid/SimpleFin/etc.), so the next
-    # sync only links its external_id to the entry instead of overwriting
-    # the category/name the client already set.
-    def user_modified_requested?
-      ActiveModel::Type::Boolean.new.cast(transaction_params[:user_modified])
     end
 
     def account_id_param
       params.dig(:transaction, :account_id).presence
+    end
+
+    def funding_account_id
+      transaction_params[:funding_account_id].presence
     end
 
     def entry_params_for_create
@@ -456,5 +458,119 @@ class Api::V1::TransactionsController < Api::V1::BaseController
       else
         25  # Default
       end
+    end
+
+    # Extract channel_kind from the extra payload (defaults to "payment").
+    # Old channel payments without channel_kind are treated as payments.
+    def channel_kind_param
+      extra = transaction_params[:extra]
+      return "payment" unless extra.respond_to?(:[])
+      (extra[:channel_kind] || extra["channel_kind"]).presence || "payment"
+    end
+
+    def refund_of_transaction_id_param
+      extra = transaction_params[:extra]
+      return nil unless extra.respond_to?(:[])
+      (extra[:refund_of_transaction_id] || extra["refund_of_transaction_id"]).presence
+    end
+
+    def channel_refund_requested?
+      channel_kind_param == "refund"
+    end
+
+    # Enforces the refund linkage contract. Returns an error message string when
+    # the request is invalid, or nil when it is valid.
+    #   1. refund must carry refund_of_transaction_id
+    #   2. the referenced transaction must exist within the current family
+    #   3. the referenced transaction must itself be a channel payment (not a refund)
+    def channel_refund_error(family)
+      refund_id = refund_of_transaction_id_param
+      return "refund_of_transaction_id is required for refunds" if refund_id.blank?
+
+      original = family.transactions.find_by(id: refund_id)
+      return "Original transaction not found" if original.nil?
+
+      original_extra = original.extra.is_a?(Hash) ? original.extra : {}
+      is_channel_payment = original_extra["channel_payment"].to_s == "true" &&
+                           original_extra["channel_kind"].to_s != "refund"
+      return "Original transaction must be a channel payment" unless is_channel_payment
+
+      nil
+    end
+
+    def create_channel_payment(channel_account, family)
+      if channel_refund_requested? && (refund_error = channel_refund_error(family))
+        render json: {
+          error: "validation_failed",
+          message: refund_error,
+          errors: [ refund_error ]
+        }, status: :unprocessable_entity
+        return
+      end
+
+      funding_account = family.accounts.writable_by(current_resource_owner).find(funding_account_id)
+
+      channel_entry = nil
+      funding_entry = nil
+
+      ApplicationRecord.transaction do
+        # Record A — channel side (e.g. Alipay, excluded from balance)
+        channel_name = transaction_params[:name] || transaction_params[:description] || "Untitled"
+        channel_entry = channel_account.entries.create!(
+          name: channel_name,
+          date: transaction_params[:date],
+          amount: calculate_signed_amount,
+          currency: transaction_params[:currency] || family.currency,
+          notes: transaction_params[:notes],
+          excluded: true,
+          entryable_type: "Transaction",
+          entryable_attributes: {
+            category_id: transaction_params[:category_id],
+            merchant_id: transaction_params[:merchant_id],
+            tag_ids: transaction_params[:tag_ids] || [],
+            extra: (transaction_params[:extra] || {}).merge(
+              "channel_payment" => true,
+              "funding_account_id" => funding_account.id,
+              "channel_kind" => channel_kind_param
+            )
+          }
+        )
+
+        # Record B — funding account side (e.g. bank card)
+        funding_entry = funding_account.entries.create!(
+          name: "#{channel_account.name} - #{channel_name}",
+          date: transaction_params[:date],
+          amount: calculate_signed_amount,
+          currency: transaction_params[:currency] || family.currency,
+          notes: transaction_params[:notes],
+          entryable_type: "Transaction",
+          entryable_attributes: {
+            category_id: transaction_params[:category_id],
+            merchant_id: transaction_params[:merchant_id],
+            tag_ids: transaction_params[:tag_ids] || [],
+            channel_record_parent_id: channel_entry.transaction.id,
+            extra: (transaction_params[:extra] || {}).merge(
+              "channel_auto_record" => true
+            )
+          }
+        )
+      end
+
+      channel_entry.sync_account_later
+      funding_entry.sync_account_later
+      channel_entry.lock_saved_attributes!
+      channel_entry.mark_user_modified!
+      funding_entry.lock_saved_attributes!
+      funding_entry.mark_user_modified!
+
+      @entry = channel_entry
+      @transaction = channel_entry.transaction
+      render :show, status: :created
+    rescue ActiveRecord::RecordNotFound
+      render json: {
+        error: "validation_failed",
+        message: "Funding account not found",
+        errors: [ "Funding account not found" ]
+      }, status: :unprocessable_entity
     end
 end

@@ -1,5 +1,4 @@
 class Tag::DeletionsController < ApplicationController
-  before_action :require_non_guest!
   before_action :set_tag
   before_action :set_replacement_tag, only: :create
 
@@ -14,12 +13,10 @@ class Tag::DeletionsController < ApplicationController
   private
 
     def set_tag
-      @tag = Current.family.tags.find(params[:tag_id])
+      @tag = Current.family.tags.find_by(id: params[:tag_id])
     end
 
     def set_replacement_tag
-      if params[:replacement_tag_id].present?
-        @replacement_tag = Current.family.tags.find(params[:replacement_tag_id])
-      end
+      @replacement_tag = Current.family.tags.find_by(id: params[:replacement_tag_id])
     end
 end

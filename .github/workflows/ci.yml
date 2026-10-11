@@ -2,12 +2,6 @@ name: CI
 
 on:
   workflow_call:
-    inputs:
-      require_js_dependency_audit:
-        description: "Fail the workflow when the importmap JavaScript dependency audit cannot complete"
-        required: false
-        type: boolean
-        default: false
 
 jobs:
   scan_ruby:
@@ -28,6 +22,9 @@ jobs:
       - name: Scan for security vulnerabilities in Ruby dependencies
         run: bin/brakeman --no-pager
 
+      - name: Validate preview deploy workflow hardening
+        run: ruby bin/preview_deploy_security_check.rb
+
   scan_js:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -44,25 +41,7 @@ jobs:
           bundler-cache: true
 
       - name: Scan for security vulnerabilities in JavaScript dependencies
-        continue-on-error: ${{ !inputs.require_js_dependency_audit }}
-        env:
-          REQUIRE_JS_DEPENDENCY_AUDIT: ${{ inputs.require_js_dependency_audit }}
-        run: |
-          attempts=3
-          if [ "$REQUIRE_JS_DEPENDENCY_AUDIT" != "true" ]; then
-            attempts=1
-          fi
-
-          for attempt in $(seq 1 "$attempts"); do
-            echo "Running importmap audit, attempt ${attempt}/${attempts}"
-            bin/importmap audit && exit 0
-
-            if [ "$attempt" = "$attempts" ]; then
-              exit 1
-            fi
-
-            sleep $((attempt * 10))
-          done
+        run: bin/importmap audit
 
   lint:
     runs-on: ubuntu-latest
@@ -111,7 +90,7 @@ jobs:
     env:
       PLAID_CLIENT_ID: foo
       PLAID_SECRET: bar
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432 # pipelock:ignore
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432
       REDIS_URL: redis://localhost:6379
       RAILS_ENV: test
 
@@ -133,7 +112,7 @@ jobs:
 
     steps:
       - name: Install packages
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y curl libvips postgresql-client libpq-dev
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y google-chrome-stable curl libvips postgresql-client libpq-dev
 
       - name: Checkout code
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -157,12 +136,12 @@ jobs:
 
   test_system:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
 
     env:
       PLAID_CLIENT_ID: foo
       PLAID_SECRET: bar
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432 # pipelock:ignore
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432
       REDIS_URL: redis://localhost:6379
       RAILS_ENV: test
 
@@ -184,14 +163,7 @@ jobs:
 
     steps:
       - name: Install packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            google-chrome-stable curl libvips postgresql-client libpq-dev
-          # The runner image ships a chromedriver that lags google-chrome-stable.
-          # Drop it so Selenium Manager resolves a driver matching the Chrome we
-          # just installed, instead of the stale one in PATH.
-          sudo rm -f /usr/bin/chromedriver
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y google-chrome-stable curl libvips postgresql-client libpq-dev
 
       - name: Checkout code
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1

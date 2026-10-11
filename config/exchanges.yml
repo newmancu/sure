@@ -122,9 +122,6 @@ XBER:
 XHAM:
   name: Hamburg
   country: DE
-TGAT:
-  name: Tradegate Exchange
-  country: DE
 XDUS:
   name: Düsseldorf
   country: DE
@@ -319,8 +316,3 @@ XSAU:
 XJSE:
   name: Johannesburg
   country: ZA
-
-# Russia - Moscow Exchange (Operating MIC: MISX)
-MISX:
-  name: Moscow Exchange
-  country: RU
