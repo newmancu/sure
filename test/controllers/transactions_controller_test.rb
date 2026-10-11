@@ -758,7 +758,7 @@ end
       transfer_outflow_money: Money.new(0, "USD")
     )
 
-    Transaction::Search.expects(:new).with(family, filters: {}, accessible_account_ids: [ account.id ]).returns(search)
+    Transaction::Search.expects(:new).with(family, filters: {}, accessible_account_ids: [ account.id ], user: users(:empty)).returns(search)
     search.expects(:totals).once.returns(totals)
 
     get transactions_url
@@ -782,7 +782,7 @@ end
       transfer_outflow_money: Money.new(0, "USD")
     )
 
-    Transaction::Search.expects(:new).with(family, filters: { "categories" => [ "Food" ], "types" => [ "expense" ] }, accessible_account_ids: [ account.id ]).returns(search)
+    Transaction::Search.expects(:new).with(family, filters: { "categories" => [ "Food" ], "types" => [ "expense" ] }, accessible_account_ids: [ account.id ], user: users(:empty)).returns(search)
     search.expects(:totals).once.returns(totals)
 
     get transactions_url(q: { categories: [ "Food" ], types: [ "expense" ] })
@@ -805,7 +805,7 @@ end
       transfer_outflow_money: Money.new(3000, "USD")
     )
 
-    Transaction::Search.expects(:new).with(family, filters: { "types" => [ "transfer" ] }, accessible_account_ids: [ account.id ]).returns(search)
+    Transaction::Search.expects(:new).with(family, filters: { "types" => [ "transfer" ] }, accessible_account_ids: [ account.id ], user: users(:empty)).returns(search)
     search.expects(:totals).once.returns(totals)
 
     get transactions_url(q: { types: [ "transfer" ] })
@@ -1389,9 +1389,6 @@ end
     # Transfer#categorizable? / #payment? walk to_account via
     # transfer.inflow_transaction.entry.account. Without nested includes those
     # become one lookup triad per transfer row during list render.
-    # categorizable? also walks from_account via the outflow leg, which is only
-    # loaded through the inverse_of on Transaction::Transferable; dropping it
-    # makes the transactions.id assertion below fail.
     normalized_queries = queries.map { |sql| normalize_sql_query(sql) }
     assert_empty single_record_lookups(normalized_queries, table: "transactions", column: "id"),
                  "Expected transfer counterparty transactions to be preloaded"
@@ -1699,6 +1696,65 @@ end
     Rails.cache = original_cache
   end
 
+  test "index shows an unread dot once and marks the rows read" do
+    @user.update_column(:transactions_read_before, 1.hour.ago)
+    entry = create_transaction(account: accounts(:depository), external_id: "unread-index", source: "simplefin", name: "Fresh from the bank")
+
+    get transactions_url
+    assert_response :success
+    assert_select "##{dom_id(entry)} span[role=img][title=?]", I18n.t("transactions.transaction.unread")
+    assert_not_includes @user.unread_entries.pluck(:id), entry.id
+
+    get transactions_url
+    assert_select "##{dom_id(entry)} span[role=img][title=?]", I18n.t("transactions.transaction.unread"), count: 0
+  end
+
+  test "index does not mark rows read for hover prefetch requests" do
+    @user.update_column(:transactions_read_before, 1.hour.ago)
+    entry = create_transaction(account: accounts(:depository), external_id: "unread-prefetch", source: "simplefin")
+
+    get transactions_url, headers: { "X-Sec-Purpose" => "prefetch" }
+
+    assert_includes @user.unread_entries.pluck(:id), entry.id
+    # The page marks the rows itself once it is displayed.
+    assert_select "[data-controller=unread-marker][data-unread-marker-entry-ids-value*=?]", entry.id
+  end
+
+  test "index renders no client-side marker for regular requests" do
+    get transactions_url
+
+    assert_select "[data-controller=unread-marker]", count: 0
+  end
+
+  test "paging through the unread filter shows every unread transaction" do
+    @user.update_column(:transactions_read_before, 1.hour.ago)
+    unread_ids = 15.times.map { |i| create_transaction(account: accounts(:depository), external_id: "page-#{i}", source: "simplefin").id }
+
+    get transactions_url(q: { status: [ "unread" ] }, per_page: 10)
+    seen = rendered_entry_ids
+    get transactions_url(q: { status: [ "unread" ] }, per_page: 10, page: 2)
+    seen += rendered_entry_ids
+
+    assert_equal unread_ids.sort, seen.uniq.sort
+    assert_empty @user.unread_entries
+  end
+
+  test "index offers mark all as read only while something is unread" do
+    @user.update_column(:transactions_read_before, 1.hour.ago)
+    Entry.where(account: @user.accessible_accounts).update_all(created_at: 2.hours.ago)
+
+    get transactions_url(per_page: 10)
+    assert_select "form[action^=?]", transactions_read_path, count: 0
+
+    # Ten newer rows push the unread one to page 2, so page 1 does not mark it.
+    10.times { |i| create_transaction(account: accounts(:depository), name: "Manual #{i}") }
+    create_transaction(account: accounts(:depository), external_id: "unread-button", source: "simplefin", date: 1.year.ago.to_date)
+    get transactions_url(per_page: 10)
+    assert_select "form[action^=?]", transactions_read_path
+    # The button carries when the list was loaded, so a later sync stays unread.
+    assert_select "form[action^=?][action*=?]", transactions_read_path, "as_of="
+  end
+
   test "index with ai_status=current renders the AI filter badge" do
     @entry.entryable.enrich_attribute(:category_id, categories(:income).id, source: "ai")
 
@@ -1752,54 +1808,6 @@ end
     assert_response :redirect
     assert_includes response.location, "filter_cleared=1"
     assert_no_match(/ai_status/, response.location)
-  end
-
-  test "update drops a category sent for a matched transfer's inflow leg" do
-    outflow = Transaction.create!(kind: "investment_contribution")
-    Entry.create!(account: accounts(:depository), entryable: outflow, name: "Contribution", amount: 500, currency: "USD", date: Date.current)
-    inflow = Transaction.create!(kind: "funds_movement")
-    inflow_entry = Entry.create!(account: accounts(:investment), entryable: inflow, name: "Contribution", amount: -500, currency: "USD", date: Date.current)
-    Transfer.create!(inflow_transaction: inflow, outflow_transaction: outflow, status: "confirmed")
-
-    patch transaction_url(inflow_entry), params: {
-      entry: {
-        notes: "Monthly savings",
-        entryable_type: "Transaction",
-        entryable_attributes: { id: inflow.id, category_id: categories(:income).id }
-      }
-    }
-
-    assert_nil inflow.reload.category_id
-    assert_equal "Monthly savings", inflow_entry.reload.notes
-  end
-
-  test "update drops a category for a matched inflow leg whose kind was edited to standard" do
-    outflow = Transaction.create!(kind: "investment_contribution")
-    Entry.create!(account: accounts(:depository), entryable: outflow, name: "Contribution", amount: 500, currency: "USD", date: Date.current)
-    inflow = Transaction.create!(kind: "standard")
-    inflow_entry = Entry.create!(account: accounts(:investment), entryable: inflow, name: "Contribution", amount: -500, currency: "USD", date: Date.current)
-    Transfer.create!(inflow_transaction: inflow, outflow_transaction: outflow, status: "confirmed")
-
-    patch transaction_url(inflow_entry), params: {
-      entry: { entryable_type: "Transaction", entryable_attributes: { id: inflow.id, category_id: categories(:income).id } }
-    }
-
-    assert_nil inflow.reload.category_id
-  end
-
-  test "drawer shows a matched transfer's inflow leg with the outflow's category, disabled" do
-    outflow = Transaction.create!(kind: "investment_contribution", category: categories(:income))
-    Entry.create!(account: accounts(:depository), entryable: outflow, name: "Contribution", amount: 500, currency: "USD", date: Date.current)
-    inflow = Transaction.create!(kind: "funds_movement")
-    inflow_entry = Entry.create!(account: accounts(:investment), entryable: inflow, name: "Contribution", amount: -500, currency: "USD", date: Date.current)
-    Transfer.create!(inflow_transaction: inflow, outflow_transaction: outflow, status: "confirmed")
-
-    get transaction_url(inflow_entry), headers: { "Turbo-Frame" => "drawer" }
-
-    assert_response :success
-    assert_select "button#category_id_trigger[disabled]", text: /#{categories(:income).name}/
-    assert_select "input[type=hidden][name='entry[entryable_attributes][category_id]'][disabled]"
-    assert_match I18n.t("transactions.show.category_set_on_outflow"), response.body
   end
 
   private

@@ -1,7 +1,8 @@
 class TransactionsController < ApplicationController
-  include EntryableResource
+  include EntryableResource, UnreadEntriesTrackable
 
   before_action :set_entry_for_unlock, only: :unlock
+  before_action :note_unread_as_of, only: :index
   before_action :set_entry_for_tags, only: :update_tags
   before_action :store_params!, only: :index
 
@@ -22,7 +23,7 @@ class TransactionsController < ApplicationController
   def index
     @q = search_params
     @accessible_account_ids = Current.user.accessible_accounts.pluck(:id)
-    @search = Transaction::Search.new(Current.family, filters: @q, accessible_account_ids: @accessible_account_ids)
+    @search = Transaction::Search.new(Current.family, filters: @q, accessible_account_ids: @accessible_account_ids, user: Current.user)
 
     base_scope = @search.transactions_scope
                        .reverse_chronological
@@ -33,9 +34,8 @@ class TransactionsController < ApplicationController
                          # - outflow rows need inflow_transaction (to_account) for both
                          #   counterpart display and Transfer#categorizable?/#payment?
                          # - inflow rows need outflow_transaction (from_account) for
-                         #   counterpart display, inflow_transaction (to_account)
-                         #   for the category menu on the same row, and the
-                         #   outflow's category, which the inflow row shows
+                         #   counterpart display, and inflow_transaction (to_account)
+                         #   for the category menu on the same row
                          {
                            transfer_as_outflow: {
                              inflow_transaction: { entry: :account }
@@ -44,16 +44,26 @@ class TransactionsController < ApplicationController
                          {
                            transfer_as_inflow: {
                              inflow_transaction: { entry: :account },
-                             outflow_transaction: [ :category, { entry: :account } ]
+                             outflow_transaction: { entry: :account }
                            }
                          }
                        )
 
-    @pagy, @transactions = pagy(base_scope, limit: safe_per_page(stored_params["per_page"]))
+    # Rendering marks rows read, so under the unread filter every render is a
+    # fresh first page of what is still unread. Honouring ?page=2 would offset
+    # past rows that moved up after the previous page was marked read.
+    page_override = @search.unread_filter? ? { page: 1 } : {}
+    @pagy, @transactions = pagy(base_scope, limit: safe_per_page(stored_params["per_page"]), **page_override)
     Transaction::ActivitySecurityPreloader.new(@transactions).preload
 
     # Preload split parent data
     entry_ids = @transactions.map { |t| t.entry.id }
+
+    # With the unread filter the totals must count this page before rendering
+    # it marks the rows read.
+    @search.totals if @search.unread_filter?
+    track_unread_entries(@transactions.map(&:entry))
+    @has_unread = @search.transactions_scope.merge(Entry.unread_by(Current.user)).exists?
 
     # Load split parent entries for grouped display (only when grouping is enabled)
     @split_parents = if Current.user.show_split_grouped?
@@ -709,7 +719,7 @@ class TransactionsController < ApplicationController
     # read_write users can only annotate (category, tags, notes, merchant).
     # read_only users cannot update anything.
     def permitted_entry_params
-      permitted = case entry_permission
+      case entry_permission
       when :owner, :full_control
         entry_params
       when :read_write
@@ -722,35 +732,10 @@ class TransactionsController < ApplicationController
       else
         {} # read_only — no edits allowed
       end
-
-      # A matched transfer's category lives on its outflow leg; a category
-      # sent for the inflow leg would look saved but never reach a budget.
-      if permitted[:entryable_attributes]&.key?(:category_id) && @entry.transaction.category_set_on_transfer_outflow?
-        permitted[:entryable_attributes] = permitted[:entryable_attributes].except(:category_id)
-      end
-
-      permitted
     end
 
     def search_params
-      cleaned_params = params.fetch(:q, {})
-              .permit(
-                :start_date, :end_date, :search, :amount,
-                :amount_operator, :active_accounts_only,
-                accounts: [], account_ids: [],
-                categories: [], merchants: [], types: [], tags: [], status: [], ai_status: []
-              )
-              .to_h
-              .compact_blank
-
-      cleaned_params.delete(:amount_operator) unless cleaned_params[:amount].present?
-
-      if cleaned_params[:ai_status]
-        cleaned_params[:ai_status] &= Transaction::Search::AI_STATUSES
-        cleaned_params.delete(:ai_status) if cleaned_params[:ai_status].empty?
-      end
-
-      cleaned_params
+      Transaction::Search.clean_filters(params.fetch(:q, {}))
     end
 
     def store_params!
