@@ -44,7 +44,6 @@ ru:
       month_year: "%B %Y"
       short: "%-d %b"
       short_month_year: "%b %Y"
-      short_with_year: '%-d %b %Y'
     month_names:
     -
     - января
@@ -213,30 +212,30 @@ ru:
         format: "%n %u"
         units:
           billion:
-            few: миллиарда
+            few: миллиардов
             many: миллиардов
             one: миллиард
-            other: миллиарда
+            other: миллиардов
           million:
-            few: миллиона
+            few: миллионов
             many: миллионов
             one: миллион
-            other: миллиона
+            other: миллионов
           quadrillion:
-            few: квадриллиона
+            few: квадриллионов
             many: квадриллионов
             one: квадриллион
-            other: квадриллиона
+            other: квадриллионов
           thousand:
-            few: тысячи
+            few: тысяч
             many: тысяч
             one: тысяча
-            other: тысячи
+            other: тысяч
           trillion:
-            few: триллиона
+            few: триллионов
             many: триллионов
             one: триллион
-            other: триллиона
+            other: триллионов
           unit: ''
       format:
         delimiter: ''
@@ -276,10 +275,3 @@ ru:
       long: "%d %B %Y, %H:%M"
       short: "%d %b, %H:%M"
     pm: вечера
-  mcp:
-    errors:
-      invalid_session_id: Недействительный идентификатор сеанса MCP
-      unsupported_protocol_version: 'Неподдерживаемая версия протокола MCP: %{version}'
-  oauth:
-    registration:
-      invalid_redirect_uris: redirect_uris должны использовать HTTPS, HTTP для loopback-адреса или URI-схему нативного приложения
