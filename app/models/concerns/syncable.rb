@@ -6,42 +6,12 @@ module Syncable
   end
 
   def syncing?
-    if Current.respond_to?(:syncing_by_syncable) && (syncing_by_syncable = Current.syncing_by_syncable)
-      key = [ self.class.base_class.name, id ]
-      return !!syncing_by_syncable[key] if syncing_by_syncable.key?(key)
-    end
+    # Avoid a query when the syncs association was eager-loaded (e.g. the
+    # accounts index loads every provider item with includes(:syncs) and
+    # renders sync status per item).
+    return syncs.any?(&:visible?) if syncs.loaded?
 
-    if association(:syncs).loaded?
-      syncs.any?(&:visible?)
-    else
-      syncs.visible.any?
-    end
-  end
-
-  def latest_sync_record
-    if Current.respond_to?(:latest_sync_by_syncable) && (latest_sync_by_syncable = Current.latest_sync_by_syncable)
-      key = [ self.class.base_class.name, id ]
-      return latest_sync_by_syncable[key] if latest_sync_by_syncable.key?(key)
-    end
-
-    if association(:syncs).loaded?
-      syncs.max_by { |sync| [ sync.created_at, sync.id ] }
-    else
-      syncs.ordered.first
-    end
-  end
-
-  def latest_completed_sync_record
-    if Current.respond_to?(:latest_completed_sync_by_syncable) && (latest_completed_sync_by_syncable = Current.latest_completed_sync_by_syncable)
-      key = [ self.class.base_class.name, id ]
-      return latest_completed_sync_by_syncable[key] if latest_completed_sync_by_syncable.key?(key)
-    end
-
-    if association(:syncs).loaded?
-      syncs.select(&:completed?).max_by { |sync| [ sync.created_at, sync.id ] }
-    else
-      syncs.completed.ordered.first
-    end
+    syncs.visible.any?
   end
 
   # Schedules a sync for syncable.  If there is an existing sync pending/syncing for this syncable,
@@ -91,26 +61,37 @@ module Syncable
   end
 
   def sync_error
-    latest_sync_record&.error || latest_sync_record&.children&.map(&:error)&.compact&.first
+    latest_sync&.error || latest_sync&.children&.map(&:error)&.compact&.first
   end
 
   def last_synced_at
-    latest_completed_sync_record&.completed_at
+    latest_completed_sync&.completed_at
   end
 
   def last_sync_created_at
-    latest_sync_record&.created_at
+    latest_sync&.created_at
+  end
+
+  # Public so views/models can reuse one lookup instead of re-querying
+  # syncs.ordered.first per status method. Uses the eager-loaded association
+  # when available (provider item lists render several statuses per item).
+  def latest_sync
+    if syncs.loaded?
+      syncs.max_by { |s| [ s.created_at, s.id ] }
+    else
+      syncs.ordered.first
+    end
+  end
+
+  def latest_completed_sync
+    if syncs.loaded?
+      syncs.select(&:completed?).max_by { |s| [ s.created_at, s.id ] }
+    else
+      syncs.completed.ordered.first
+    end
   end
 
   private
-    def latest_sync
-      latest_sync_record
-    end
-
-    def latest_completed_sync
-      latest_completed_sync_record
-    end
-
     def syncer
       self.class::Syncer.new(self)
     end
