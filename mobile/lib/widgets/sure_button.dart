@@ -111,27 +111,16 @@ class _SureButtonState extends State<SureButton> {
           )
         : widget.leading;
 
-    // The button owns the foreground color of its contents: wrap the row in an
-    // IconTheme so leading icons (e.g. a SureIcon) inherit the variant's
-    // foreground automatically — call sites shouldn't pass it (mirrors how
-    // Material's ElevatedButton.icon propagates icon color). Icons that set an
-    // explicit color still win.
-    final content = IconTheme.merge(
-      data: IconThemeData(color: style.foreground),
-      child: Row(
-        mainAxisSize: widget.fullWidth ? MainAxisSize.max : MainAxisSize.min,
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          if (leading != null) ...[
-            leading,
-            const SizedBox(width: SureSpacing.md),
-          ],
-          // Flex only when full-width (bounded). A bare Flexible in a min-size
-          // Row asserts under unbounded horizontal constraints, so an inline
-          // button passes the self-sizing label directly.
-          if (widget.fullWidth) Flexible(child: label) else label,
-        ],
-      ),
+    final content = Row(
+      mainAxisSize: widget.fullWidth ? MainAxisSize.max : MainAxisSize.min,
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        if (leading != null) ...[leading, const SizedBox(width: SureSpacing.md)],
+        // Flex only when full-width (bounded). A bare Flexible in a min-size Row
+        // asserts under unbounded horizontal constraints, so an inline button
+        // passes the self-sizing label directly.
+        if (widget.fullWidth) Flexible(child: label) else label,
+      ],
     );
 
     final button = AnimatedContainer(

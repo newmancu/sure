@@ -8,7 +8,6 @@ class DataEnrichment < ApplicationRecord
     lunchflow: "lunchflow",
     akahu: "akahu",
     up: "up",
-    monobank: "monobank",
     synth: "synth",
     ai: "ai",
     enable_banking: "enable_banking",
@@ -17,11 +16,6 @@ class DataEnrichment < ApplicationRecord
     brex: "brex",
     indexa_capital: "indexa_capital",
     sophtron: "sophtron",
-    ibkr: "ibkr",
-    questrade: "questrade",
-    redbark: "redbark",
-    trade_republic: "trade_republic",
-    bayes: "bayes",
-    fio: "fio"
+    ibkr: "ibkr"
   }
 end
