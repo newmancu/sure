@@ -1,7 +1,16 @@
 class Account::ProviderImportAdapter
+  # Matches a transaction any provider has flagged pending, for the lookups below that
+  # join `transactions` directly. Derived from Transaction::PENDING_PROVIDERS rather
+  # than spelled out, so a newly supported provider cannot silently drop out of
+  # pending→posted reconciliation. Frozen constant built from a frozen provider list:
+  # no user input reaches the SQL (same reasoning as Transaction::PENDING_CHECK_SQL).
+  PENDING_LOOKUP_SQL = Transaction::PENDING_PROVIDERS
+    .map { |provider| "(transactions.extra -> '#{provider}' ->> 'pending')::boolean = true" }
+    .join(" OR ")
+    .freeze
+
   attr_reader :account, :skipped_entries
 
-  # @param account [Account] the account every import through this adapter lands on
   def initialize(account)
     @account = account
     @skipped_entries = []
@@ -27,16 +36,28 @@ class Account::ProviderImportAdapter
   # @param extra [Hash, nil] Optional provider-specific metadata to merge into transaction.extra
   # @param investment_activity_label [String, nil] Optional activity type label (e.g., "Buy", "Dividend")
   # @param allow_heuristic_matching [Boolean] Claim likely duplicates using amount/date matching
-  # @param replace_extra_namespaces [Array<String>] Top-level `extra` keys the provider owns
-  #   outright. Those branches are replaced rather than deep-merged, so a nested value the
-  #   provider stops sending is actually removed instead of lingering.
-  # @param name_extra_keys [Hash{String=>Array<String>}] Keys, per namespace, that `name`
-  #   was built from. When a protected entry keeps its name, these keep their stored values
-  #   too, so the name and the data it came from cannot drift apart.
   # @return [Entry] The created or updated entry
-  def import_transaction(external_id:, amount:, currency:, date:, name:, source:, category_id: nil, kind: nil, merchant: nil, notes: nil, pending_transaction_id: nil, extra: nil, investment_activity_label: nil, allow_heuristic_matching: true, replace_extra_namespaces: [], name_extra_keys: {})
+  def import_transaction(external_id:, amount:, currency:, date:, name:, source:, category_id: nil, kind: nil, merchant: nil, notes: nil, pending_transaction_id: nil, extra: nil, investment_activity_label: nil, allow_heuristic_matching: true)
     raise ArgumentError, "external_id is required" if external_id.blank?
     raise ArgumentError, "source is required" if source.blank?
+
+    # counterparty_iban/counterparty_account_id describe a third party's own
+    # bank account -- unlike everything else callers pass through `extra`,
+    # they get their own deterministically encrypted transaction columns
+    # (see Transaction), not the plain jsonb `extra` column. Popped out here,
+    # before any of the jsonb-merging logic below runs, so they never land in
+    # the unencrypted column even transiently. A nil value from a caller
+    # that always sends the keys (EnableBankingEntry::Processor) means "no
+    # counterparty data in this payload" and never clears a value an earlier
+    # sync captured; a caller that omits the keys entirely (every other
+    # provider) leaves the columns untouched as well.
+    counterparty_keys_present = extra.is_a?(Hash) && (extra.with_indifferent_access.key?(:counterparty_iban) || extra.with_indifferent_access.key?(:counterparty_account_id))
+    if extra.is_a?(Hash)
+      extra = extra.with_indifferent_access
+      incoming_counterparty_iban = IbanNormalizable.normalize(extra[:counterparty_iban])
+      incoming_counterparty_account_id = extra[:counterparty_account_id].presence
+      extra = extra.except(:counterparty_iban, :counterparty_account_id)
+    end
 
     Account.transaction do
       # Find or initialize by both external_id AND source
@@ -54,7 +75,14 @@ class Account::ProviderImportAdapter
 
       # Determine early whether the incoming transaction is pending — needed by both
       # the protection check (pending→booked bypass) and the auto-claim path below.
-      incoming_pending = extra.is_a?(Hash) && Transaction.pending_extra?(extra.with_indifferent_access)
+      incoming_pending = false
+      if extra.is_a?(Hash)
+        pending_extra = extra.with_indifferent_access
+        boolean_type = ActiveModel::Type::Boolean.new
+        incoming_pending = Transaction::PENDING_PROVIDERS.any? do |provider|
+          boolean_type.cast(pending_extra.dig(provider, "pending"))
+        end
+      end
 
       # === PROTECTION CHECK: Skip entries that should not be overwritten ===
       # Check persisted Transaction entries for protection flags before making changes.
@@ -69,37 +97,36 @@ class Account::ProviderImportAdapter
           # through the auto-claim path. Without this, a user who categorised a pending entry
           # (setting user_modified=true) would see the pending badge stuck forever.
           # Excluded and import_locked entries are intentionally left untouched.
-          #
-          # Load-bearing even though the namespace refresh below usually rewrites the
-          # same branch: an entry that is both user_modified and import_locked reaches
-          # here (determine_skip_reason reports user_modified first) but is excluded
-          # from that refresh, so this is the only thing that clears its pending flag.
-          if skip_reason == "user_modified" && !incoming_pending && entry.entryable.is_a?(Transaction)
-            if entry.transaction.pending?
-              entry.transaction.update!(extra: clear_pending_flags_from_extra(entry.transaction.extra))
-            end
-          end
-          # Refresh the provider's own namespaces on a protected entry. Without this
-          # a user-modified entry keeps whatever payload it was created with, and a
-          # field the provider has since dropped shows in the drawer forever.
-          #
-          # Only the declared namespaces, never the whole payload. `extra` is not
-          # uniformly provider-owned: Transaction#exchange_rate reads and writes
-          # extra["exchange_rate"] at the top level, it is user-editable through the
-          # transaction form, and WiseEntry::Processor supplies one too — so merging
-          # the whole hash here would overwrite a rate the user typed and silently
-          # change how their balance converts. replace_extra_namespaces defaults to
-          # empty, so a provider that has not opted in changes nothing on this path.
-          #
-          # determine_skip_reason reports "user_modified" before it checks
-          # import_locked?, so an entry carrying both flags arrives here. Import
-          # ownership is the stronger claim, so those are left alone.
-          if skip_reason == "user_modified" && !entry.import_locked?
-            owned = extra.is_a?(Hash) ? extra.deep_stringify_keys.slice(*replace_extra_namespaces.map(&:to_s)) : nil
-            owned = keep_name_sources(entry, owned, name_extra_keys)
-            apply_provider_extra(entry, owned, replace_extra_namespaces)
-          end
+          if skip_reason == "user_modified" && entry.entryable.is_a?(Transaction)
+            updated_extra = entry.transaction.extra
 
+            if !incoming_pending
+              entry_is_pending = Transaction::PENDING_PROVIDERS.any? { |p| updated_extra&.dig(p, "pending") }
+              updated_extra = clear_pending_flags_from_extra(updated_extra) if entry_is_pending
+            end
+
+            if updated_extra != entry.transaction.extra
+              entry.transaction.extra = updated_extra
+            end
+
+            # counterparty_iban/counterparty_account_id have no corresponding
+            # UI field, so backfilling them here doesn't risk reverting a
+            # user edit the way overwriting name/category/notes would --
+            # unlike those, protecting the user's work gives no reason to
+            # withhold this data. Without this, a transaction the user
+            # touched before this metadata existed would never receive it,
+            # even on later syncs. Purely additive (only fills a currently
+            # blank column), deliberately unlike the unprotected path below,
+            # which always assigns -- even nil -- so a later correction can
+            # clear a stale value there. A protected entry's already-set
+            # value must never be touched, correction or not.
+            if counterparty_keys_present
+              entry.transaction.counterparty_iban = incoming_counterparty_iban if entry.transaction.counterparty_iban.blank?
+              entry.transaction.counterparty_account_id = incoming_counterparty_account_id if entry.transaction.counterparty_account_id.blank?
+            end
+
+            entry.transaction.save! if entry.transaction.changed?
+          end
           record_skip(entry, skip_reason)
           return entry
         end
@@ -175,7 +202,7 @@ class Account::ProviderImportAdapter
       # must clear the stale pending flag here before the final save.
       # (The auto-claim path already clears it in-memory, so this is a no-op there.)
       if !incoming_pending && entry.entryable.is_a?(Transaction)
-        if entry.transaction.pending?
+        if Transaction::PENDING_PROVIDERS.any? { |p| entry.transaction.extra&.dig(p, "pending") }
           entry.transaction.extra = clear_pending_flags_from_extra(entry.transaction.extra)
         end
       end
@@ -198,16 +225,11 @@ class Account::ProviderImportAdapter
         date
       end
 
-      # A date or amount the user changed without marking the entry user_modified
-      # (an API PATCH, for example) is still locked by lock_saved_attributes!.
-      # Respect that lock the way enrich_attribute does for name and category.
-      # Amount and currency only make sense together, so a lock on either keeps both.
-      financial_attributes = { amount: amount, currency: currency, date: effective_date }
-      if entry.persisted?
-        financial_attributes.delete(:date) if entry.locked?(:date)
-        financial_attributes.except!(:amount, :currency) if entry.locked?(:amount) || entry.locked?(:currency)
-      end
-      entry.assign_attributes(financial_attributes)
+      entry.assign_attributes(
+        amount: amount,
+        currency: currency,
+        date: effective_date
+      )
 
       # Use enrichment pattern to respect user overrides
       entry.enrich_attribute(:name, name, source: source)
@@ -226,12 +248,30 @@ class Account::ProviderImportAdapter
       end
 
       # Persist extra provider metadata on the transaction (non-enriched; always merged)
-      apply_provider_extra(entry, extra, replace_extra_namespaces)
+      if entry.entryable.is_a?(Transaction)
+        if extra.present?
+          existing = entry.transaction.extra || {}
+          incoming = extra.is_a?(Hash) ? extra.deep_stringify_keys : {}
+          entry.transaction.extra = existing.deep_merge(incoming)
+        end
+
+        # Unlike the protected path above, a later sync that does carry
+        # counterparty data replaces both columns, so a corrected IBAN wins.
+        # A blank redelivery leaves them alone: some ASPSPs drop the account
+        # data once a pending transaction is booked, and clearing here would
+        # lose an IBAN that an earlier sync of the same transaction captured.
+        if counterparty_keys_present && (incoming_counterparty_iban.present? || incoming_counterparty_account_id.present?)
+          entry.transaction.counterparty_iban = incoming_counterparty_iban
+          entry.transaction.counterparty_account_id = incoming_counterparty_account_id
+        end
+
+        entry.transaction.save! if entry.transaction.changed?
+      end
 
       # Auto-detect investment activity labels for investment accounts
       detected_label = investment_activity_label
       if account.investment? && detected_label.nil? && entry.entryable.is_a?(Transaction)
-        detected_label = detect_activity_label(name, entry.amount)
+        detected_label = detect_activity_label(name, amount)
       end
 
       # Determine the transaction kind. Activity-label and account-type classification
@@ -248,7 +288,7 @@ class Account::ProviderImportAdapter
       elsif detected_label == "Contribution"
         auto_kind = "investment_contribution"
         auto_category = account.family.investment_contributions_category
-      elsif account.accountable_type == "Loan" && entry.amount.negative?
+      elsif account.accountable_type == "Loan" && amount.negative?
         auto_kind = "loan_payment"
       end
       auto_kind ||= kind.presence
@@ -259,15 +299,8 @@ class Account::ProviderImportAdapter
           entry.transaction.assign_attributes(investment_activity_label: detected_label)
         end
 
-        # A leg that is already matched to a Transfer takes its kind from the
-        # transfer, not from this row. Re-classifying it here, e.g. a negative
-        # amount on a Loan turning the matched inflow back into loan_payment,
-        # makes budgets and reports count the same payment as an expense on
-        # both legs. Deriving it from the transfer also repairs legs an earlier
-        # sync already overwrote.
         if auto_kind.present?
-          transfer = matched_transfer_for(entry)
-          entry.transaction.assign_attributes(kind: transfer ? transfer.kind_for_leg(entry.transaction) : auto_kind)
+          entry.transaction.assign_attributes(kind: auto_kind)
         end
 
         if auto_category.present? && entry.transaction.category_id.blank?
@@ -355,18 +388,42 @@ class Account::ProviderImportAdapter
   # @param source [String] Provider name (e.g., "plaid", "simplefin")
   # @param website_url [String, nil] Optional merchant website
   # @param logo_url [String, nil] Optional merchant logo URL
+  # @param iban [String, nil] Optional counterparty IBAN, used as a preferred lookup key when present
   # @return [ProviderMerchant, nil] The merchant object or nil if data is insufficient
-  def find_or_create_merchant(provider_merchant_id:, name:, source:, website_url: nil, logo_url: nil)
+  def find_or_create_merchant(provider_merchant_id:, name:, source:, website_url: nil, logo_url: nil, iban: nil)
     return nil unless provider_merchant_id.present? && name.present?
+
+    normalized_iban = IbanNormalizable.normalize(iban)
+
+    # A FamilyMerchant with a manually-entered IBAN (see FamilyMerchantsController)
+    # is the family's own canonical identity for that counterparty -- typically set
+    # up because the provider's name for them varies across transactions. Prefer it
+    # outright over creating/matching a ProviderMerchant, so future imports keep
+    # landing on the merchant the user configured instead of a fresh provider one.
+    merchant = account.family.merchants.find_by(iban: normalized_iban) if normalized_iban.present?
+    return merchant if merchant
+
+    # IBAN is the most reliable signal when available (stable across
+    # different remittance text for the same real-world payee), but it isn't
+    # provided by every ASPSP/transaction, so it's a preferred lookup, never
+    # a replacement for the name-based identifiers below.
+    merchant = ProviderMerchant.find_by(source: source, iban: normalized_iban) if normalized_iban.present?
 
     # First try to find by provider_merchant_id (stable identifier derived from normalized name)
     # This handles case variations in merchant names (e.g., "ACME Corp" vs "Acme Corp")
-    merchant = ProviderMerchant.find_by(provider_merchant_id: provider_merchant_id, source: source)
+    merchant ||= ProviderMerchant.find_by(provider_merchant_id: provider_merchant_id, source: source)
 
     # If not found by provider_merchant_id, try by exact name match (backwards compatibility)
     merchant ||= ProviderMerchant.find_by(source: source, name: name)
 
     if merchant
+      if normalized_iban.present? && merchant.iban.blank?
+        # A concurrent import can win the (source, iban) unique index between
+        # our find above and this backfill -- when that happens, the winner
+        # (not our stale, still-blank-iban `merchant`) is the one now
+        # authoritative for this iban, so use it instead.
+        merchant = backfill_merchant_iban!(merchant, normalized_iban) || merchant
+      end
       # Update logo if provided and merchant doesn't have one (or has a different one)
       # Best-effort: don't fail transaction import if logo update fails
       if logo_url.present? && merchant.logo_url != logo_url
@@ -386,15 +443,65 @@ class Account::ProviderImportAdapter
         name: name,
         provider_merchant_id: provider_merchant_id,
         website_url: website_url,
-        logo_url: logo_url
+        logo_url: logo_url,
+        iban: normalized_iban
       )
     rescue ActiveRecord::RecordNotUnique
-      # Race condition - another process created the record
-      merchant = ProviderMerchant.find_by(provider_merchant_id: provider_merchant_id, source: source) ||
+      # Race condition - another process created the record; the unique
+      # index on (source, iban) means a concurrent insert could have won on
+      # iban even when provider_merchant_id/name didn't collide, so that
+      # lookup needs to be retried here too.
+      merchant = (ProviderMerchant.find_by(source: source, iban: normalized_iban) if normalized_iban.present?) ||
+                 ProviderMerchant.find_by(provider_merchant_id: provider_merchant_id, source: source) ||
+                 ProviderMerchant.find_by(source: source, name: name)
+    rescue ActiveRecord::RecordInvalid => e
+      # Same race, surfaced through the Rails-level uniqueness validation
+      # instead of the raw DB constraint (a concurrent insert can commit
+      # between our find and this create!, so the validation itself catches
+      # it before an INSERT is even attempted). Re-raise anything else --
+      # only this specific race is safe to recover from by re-querying.
+      raise unless e.record.errors.of_kind?(:iban, :taken)
+      merchant = (ProviderMerchant.find_by(source: source, iban: normalized_iban) if normalized_iban.present?) ||
+                 ProviderMerchant.find_by(provider_merchant_id: provider_merchant_id, source: source) ||
                  ProviderMerchant.find_by(source: source, name: name)
     end
 
     merchant
+  end
+
+  # Backfills iban onto a merchant found by provider_merchant_id/name that
+  # doesn't have one yet. Isolated in its own savepoint (see the identical
+  # pattern in #find_or_create_merchant's create! path just above, and
+  # #import_holding below): a concurrent import could insert the same
+  # (source, iban) between our earlier find and this update, and on
+  # PostgreSQL a failed statement aborts the whole surrounding transaction
+  # unless it's isolated like this.
+  # @return [ProviderMerchant] the merchant that now holds normalized_iban --
+  #   `merchant` itself on success, or the concurrent winner on a race.
+  def backfill_merchant_iban!(merchant, normalized_iban)
+    ProviderMerchant.transaction(requires_new: true) do
+      merchant.update!(iban: normalized_iban)
+    end
+    merchant
+  rescue ActiveRecord::RecordNotUnique, ActiveRecord::RecordInvalid => e
+    # This race can change which merchant a transaction lands on (see the
+    # caller), so it's worth more than a Rails log line -- captured with
+    # family/account context for the support debug UI, per AGENTS.md.
+    # Deliberately excludes normalized_iban from message/metadata: both are
+    # persisted as plain jsonb/text and rendered on the admin debug page,
+    # and merchant_id is enough to look the merchant (and its encrypted
+    # iban) up directly if an admin needs to investigate.
+    DebugLogEntry.capture(
+      category: "provider_sync_warning",
+      level: "warn",
+      message: "Failed to backfill merchant iban: merchant_id=#{merchant.id} error_class=#{e.class}",
+      source: self.class.name,
+      provider_key: merchant.source,
+      family: account.family,
+      account: account,
+      metadata: { merchant_id: merchant.id }
+    )
+    ProviderMerchant.find_by(source: merchant.source, iban: normalized_iban)
   end
 
   # Updates account balance from provider data
@@ -829,7 +936,7 @@ class Account::ProviderImportAdapter
       .where(amount: amount)
       .where(currency: currency)
       .where(date: (date - date_window.days)..date) # Pending must be ON or BEFORE posted date
-      .where(Transaction.pending_sql("transactions"))
+      .where(PENDING_LOOKUP_SQL)
       .order(date: :desc) # Prefer most recent pending transaction
 
     candidates.first
@@ -871,7 +978,7 @@ class Account::ProviderImportAdapter
       .where(currency: currency)
       .where(date: (date - date_window.days)..date) # Pending ON or BEFORE posted
       .where("ABS(entries.amount) BETWEEN ? AND ?", min_pending_abs, max_pending_abs)
-      .where(Transaction.pending_sql("transactions"))
+      .where(PENDING_LOOKUP_SQL)
 
     # If merchant_id is provided, prioritize matching by merchant
     if merchant_id.present?
@@ -936,7 +1043,7 @@ class Account::ProviderImportAdapter
       .where(currency: currency)
       .where(date: (date - date_window.days)..date)
       .where("ABS(entries.amount) BETWEEN ? AND ?", min_pending_abs, max_pending_abs)
-      .where(Transaction.pending_sql("transactions"))
+      .where(PENDING_LOOKUP_SQL)
 
     # For low confidence, require BOTH merchant AND name match (stronger signal needed)
     if merchant_id.present? && name.present?
@@ -1049,20 +1156,6 @@ class Account::ProviderImportAdapter
 
   private
 
-    # Loads the transfer together with both legs, their entries and accounts in
-    # one joined query, so Transfer#kind_for_leg reads them without the lazy
-    # loads it would otherwise pay on every re-imported row. Looked up per row
-    # rather than memoized per adapter: most processors build an adapter per
-    # row, and some link or destroy transfers mid-sync (Trade Republic), so a
-    # memo would be both costlier and stale.
-    def matched_transfer_for(entry)
-      return nil unless entry.persisted?
-
-      transaction_id = entry.transaction.id
-      transfers = Transfer.eager_load(inflow_transaction: { entry: :account }, outflow_transaction: { entry: :account })
-      transfers.where(inflow_transaction_id: transaction_id).or(transfers.where(outflow_transaction_id: transaction_id)).first
-    end
-
     # Memoized per adapter instance (which is per-account). Membership in
     # goal_accounts is stable across a sync batch.
     def account_linked_to_any_goal?
@@ -1071,66 +1164,6 @@ class Account::ProviderImportAdapter
       @account_linked_to_any_goal = account.goal_accounts.exists?
     end
 
-    # Writes provider-owned metadata onto the transaction.
-    #
-    # Namespaces named in replace_extra_namespaces are snapshots, not
-    # accumulations: the whole branch is dropped before merging, so a nested key
-    # the provider stopped sending disappears with it. deep_merge alone recurses
-    # into nested hashes, so a removed payment_meta.payee would otherwise survive
-    # forever and the drawer would keep showing it. Only namespaces the incoming
-    # payload actually carries are replaced.
-    #
-    # @param entry [Entry] the entry being imported
-    # @param extra [Hash, nil] provider metadata to apply
-    # @param replace_extra_namespaces [Array<String>] branches to replace wholesale
-    # @return [void]
-    def apply_provider_extra(entry, extra, replace_extra_namespaces)
-      return unless extra.present? && entry.entryable.is_a?(Transaction)
-
-      existing = entry.transaction.extra || {}
-      incoming = extra.is_a?(Hash) ? extra.deep_stringify_keys : {}
-      replaced = replace_extra_namespaces.map(&:to_s).select { |ns| incoming.key?(ns) }
-
-      entry.transaction.extra = existing.except(*replaced).deep_merge(incoming)
-      entry.transaction.save!
-    end
-
-    # A protected entry keeps its name, so the values that name was built from have
-    # to stay as well. Rule::ConditionFilter::TransactionName rebuilds a Plaid name
-    # from the stored original_description; refreshing that value while the name
-    # stays put would make the rebuilt name disagree with the real one, and flip
-    # `=` and `!=` rules on the entry. The drawer shows the kept value too, so it
-    # agrees with the name the user sees.
-    #
-    # A key with nothing stored yet takes the incoming value: a row imported before
-    # the key existed was never combined, so there is nothing to keep in step.
-    #
-    # @param entry [Entry] the protected entry
-    # @param owned [Hash, nil] the incoming namespaces the provider owns
-    # @param name_extra_keys [Hash{String=>Array<String>}] keys the name was built from
-    # @return [Hash, nil] owned, with those keys carried over from what is stored
-    def keep_name_sources(entry, owned, name_extra_keys)
-      return owned if owned.blank? || name_extra_keys.blank?
-
-      stored = entry.transaction.extra || {}
-      name_extra_keys.each do |namespace, keys|
-        ns = namespace.to_s
-        next unless owned[ns].is_a?(Hash) && stored[ns].is_a?(Hash)
-
-        Array(keys).map(&:to_s).each do |key|
-          owned[ns][key] = stored[ns][key] if stored[ns].key?(key)
-        end
-      end
-
-      owned
-    end
-
-    # Removes the pending flag every provider writes under its own namespace,
-    # dropping a namespace that held nothing else. Used when a booked version of
-    # a transaction arrives and the stale flag would otherwise stick forever.
-    #
-    # @param extra [Hash, nil] the transaction's current extra
-    # @return [Hash] a copy with the pending flags removed
     def clear_pending_flags_from_extra(extra)
       ex = (extra || {}).deep_dup
       ex = {} unless ex.is_a?(Hash)

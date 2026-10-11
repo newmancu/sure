@@ -48,9 +48,7 @@ export default class extends Controller {
 
       if (response.ok) {
         this.retryCount = 0;
-        if (response.status !== 204) {
-          Turbo.renderStreamMessage(await response.text());
-        }
+        Turbo.renderStreamMessage(await response.text());
       } else {
         this.retryCount += 1;
         console.warn(
