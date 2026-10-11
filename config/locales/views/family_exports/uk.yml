@@ -39,7 +39,7 @@ uk:
         status:
           in_progress: "В процесі"
           complete: "Завершено"
-          failed: "Не вдалося"
+          failed: "Невдало"
         actions:
           delete: "Видалити"
           download: "Завантажити"
