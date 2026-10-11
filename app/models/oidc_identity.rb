@@ -104,11 +104,7 @@ class OidcIdentity < ApplicationRecord
 
   # Find the configured provider for this identity
   def provider_config
-    AuthConfig.sso_providers&.find do |p|
-      p_name = p[:name] || p["name"]
-      p_id = p[:id] || p["id"]
-      p_name == provider || p_id == provider
-    end
+    AuthConfig.sso_providers&.find { |p| p[:name] == provider || p[:id] == provider }
   end
 
   # Validate that the stored issuer matches the configured provider's issuer
@@ -117,9 +113,8 @@ class OidcIdentity < ApplicationRecord
     return true if issuer.blank? # Backward compatibility for old records
 
     config = provider_config
-    config_issuer = config&.dig(:issuer) || config&.dig("issuer")
-    return true if config_issuer.blank? # No config to validate against
+    return true if config.blank? || config[:issuer].blank? # No config to validate against
 
-    issuer == config_issuer
+    issuer == config[:issuer]
   end
 end

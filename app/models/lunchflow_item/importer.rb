@@ -23,8 +23,7 @@ class LunchflowItem::Importer
         accounts_failed: 0,
         accounts_pruned: 0,
         transactions_imported: 0,
-        transactions_failed: 0,
-        balances_failed: 0
+        transactions_failed: 0
       }
     end
 
@@ -95,11 +94,11 @@ class LunchflowItem::Importer
 
     Rails.logger.info "LunchflowItem::Importer - Updated #{accounts_updated} accounts, created #{accounts_created} new (#{accounts_failed} failed), pruned #{accounts_pruned}"
 
+    # Step 3: Fetch transactions only for linked accounts with active status
     transactions_imported = 0
     transactions_failed = 0
-    balances_failed = 0
 
-    lunchflow_item.lunchflow_accounts.joins(:account).includes(:account_provider).merge(Account.visible).each do |lunchflow_account|
+    lunchflow_item.lunchflow_accounts.joins(:account).merge(Account.visible).each do |lunchflow_account|
       begin
         result = fetch_and_store_transactions(lunchflow_account)
         if result[:success]
@@ -112,21 +111,18 @@ class LunchflowItem::Importer
         Rails.logger.error "LunchflowItem::Importer - Failed to fetch/store transactions for account #{lunchflow_account.account_id}: #{e.message}"
         # Continue with other accounts even if one fails
       end
-
-      balances_failed += 1 unless fetch_and_update_balance(lunchflow_account)
     end
 
-    Rails.logger.info "LunchflowItem::Importer - Completed import for item #{lunchflow_item.id}: #{accounts_updated} accounts updated, #{accounts_created} new accounts discovered, #{transactions_imported} transactions, #{balances_failed} balance failures"
+    Rails.logger.info "LunchflowItem::Importer - Completed import for item #{lunchflow_item.id}: #{accounts_updated} accounts updated, #{accounts_created} new accounts discovered, #{transactions_imported} transactions"
 
     {
-      success: accounts_failed == 0 && transactions_failed == 0 && balances_failed == 0,
+      success: accounts_failed == 0 && transactions_failed == 0,
       accounts_updated: accounts_updated,
       accounts_created: accounts_created,
       accounts_failed: accounts_failed,
       accounts_pruned: accounts_pruned,
       transactions_imported: transactions_imported,
-      transactions_failed: transactions_failed,
-      balances_failed: balances_failed
+      transactions_failed: transactions_failed
     }
   end
 
@@ -189,8 +185,6 @@ class LunchflowItem::Importer
           rescue => update_error
             Rails.logger.error "LunchflowItem::Importer - Failed to update item status: #{update_error.message}"
           end
-          # Fail the sync instead of completing it with nothing imported
-          raise
         end
         Rails.logger.error "LunchflowItem::Importer - Lunch flow API error: #{e.message}"
         return nil
@@ -356,6 +350,26 @@ class LunchflowItem::Importer
           Rails.logger.info "LunchflowItem::Importer - No transactions to store for account #{lunchflow_account.account_id}"
         end
 
+        # Fetch and update balance
+        begin
+          fetch_and_update_balance(lunchflow_account)
+        rescue => e
+          # Log but don't fail transaction import if balance fetch fails.
+          # current_balance stays nil, so the processor will skip the balance
+          # update for this account — capture the failure, because the sync
+          # still reports success and this is otherwise invisible to support.
+          DebugLogEntry.capture(
+            category: "provider_sync",
+            level: "warn",
+            message: "Balance fetch failed for account #{lunchflow_account.account_id}; keeping previous balance",
+            source: self.class.name,
+            provider_key: "lunchflow",
+            family: lunchflow_item.family,
+            metadata: { account_id: lunchflow_account.account_id, error_class: e.class.name, error: e.message }
+          )
+          Rails.logger.warn "LunchflowItem::Importer - Failed to update balance for account #{lunchflow_account.account_id}: #{e.message}"
+        end
+
         # Fetch holdings for investment/crypto accounts
         begin
           fetch_and_store_holdings(lunchflow_account)
@@ -379,51 +393,46 @@ class LunchflowItem::Importer
     end
 
     def fetch_and_update_balance(lunchflow_account)
-      balance_data = lunchflow_provider.get_account_balance(lunchflow_account.account_id)
+      begin
+        balance_data = lunchflow_provider.get_account_balance(lunchflow_account.account_id)
 
-      return balance_failure(lunchflow_account, "Invalid balance response format") unless balance_data.is_a?(Hash)
+        # Validate response structure
+        unless balance_data.is_a?(Hash)
+          Rails.logger.error "LunchflowItem::Importer - Invalid balance_data format for account #{lunchflow_account.account_id}"
+          return
+        end
 
-      balance_info = balance_data[:balance]
-      return balance_failure(lunchflow_account, "No balance data returned") if balance_info.blank?
-      return balance_failure(lunchflow_account, "Invalid balance data format") unless balance_info.is_a?(Hash)
-      return balance_failure(lunchflow_account, "No amount in balance data") if balance_info[:amount].blank?
+        if balance_data[:balance].present?
+          balance_info = balance_data[:balance]
 
-      amount = BigDecimal(balance_info[:amount].to_s, exception: false)
-      return balance_failure(lunchflow_account, "Invalid balance amount") unless amount&.finite?
+          # Validate balance info structure
+          unless balance_info.is_a?(Hash)
+            Rails.logger.error "LunchflowItem::Importer - Invalid balance info format for account #{lunchflow_account.account_id}"
+            return
+          end
 
-      lunchflow_account.update!(
-        current_balance: amount,
-        currency: balance_info[:currency].presence || lunchflow_account.currency
-      )
-      true
-    rescue => e
-      balance_failure(lunchflow_account, "Balance fetch failed", error: e)
-    end
-
-    def balance_failure(lunchflow_account, reason, error: nil)
-      message = "#{reason} for account #{lunchflow_account.account_id}; keeping previous Sure account balance"
-      metadata = { account_id: lunchflow_account.account_id }
-      if error
-        metadata[:error_class] = error.class.name
-        metadata[:error] = error.message
-        metadata[:error_type] = error.error_type if error.respond_to?(:error_type)
+          # Only update if we have a valid amount
+          if balance_info[:amount].present?
+            lunchflow_account.update!(
+              current_balance: balance_info[:amount],
+              currency: balance_info[:currency].presence || lunchflow_account.currency
+            )
+          else
+            Rails.logger.warn "LunchflowItem::Importer - No amount in balance data for account #{lunchflow_account.account_id}"
+          end
+        else
+          Rails.logger.warn "LunchflowItem::Importer - No balance data returned for account #{lunchflow_account.account_id}"
+        end
+      rescue Provider::Lunchflow::LunchflowError => e
+        Rails.logger.error "LunchflowItem::Importer - Lunchflow API error fetching balance for account #{lunchflow_account.id}: #{e.message}"
+        # Don't fail if balance fetch fails
+      rescue ActiveRecord::RecordInvalid => e
+        Rails.logger.error "LunchflowItem::Importer - Failed to save balance for account #{lunchflow_account.id}: #{e.message}"
+        # Don't fail if balance save fails
+      rescue => e
+        Rails.logger.error "LunchflowItem::Importer - Unexpected error updating balance for account #{lunchflow_account.id}: #{e.class} - #{e.message}"
+        # Don't fail if balance update fails
       end
-
-      DebugLogEntry.capture(
-        category: "provider_sync",
-        level: "warn",
-        message: message,
-        source: self.class.name,
-        provider_key: "lunchflow",
-        family: lunchflow_item.family,
-        account_provider: lunchflow_account.account_provider,
-        metadata: metadata
-      )
-      Rails.logger.warn "LunchflowItem::Importer - #{message}#{": #{error.message}" if error}"
-      false
-    rescue => e
-      Rails.logger.error "LunchflowItem::Importer - Failed to capture balance diagnostic: #{e.class} - #{e.message}"
-      false
     end
 
     def fetch_and_store_holdings(lunchflow_account)

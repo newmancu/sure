@@ -7,7 +7,15 @@
         <div class="flex items-center gap-2">
           <%= icon "chevron-right", class: "group-open:rotate-90 motion-safe:transition-transform motion-safe:duration-150" %>
 
-          <%= render ProviderLogo.new(provider_key: :mercury) %>
+          <div class="flex items-center justify-center h-8 w-8 bg-blue-600/10 rounded-full">
+            <% if mercury_item.logo.attached? %>
+              <%= image_tag mercury_item.logo, class: "rounded-full h-full w-full", loading: "lazy" %>
+            <% else %>
+              <div class="flex items-center justify-center">
+                <%= tag.p mercury_item.name.first.upcase, class: "text-blue-600 text-xs font-medium" %>
+              </div>
+            <% end %>
+          </div>
 
           <div class="pl-1 text-sm">
             <div class="flex items-center gap-2">
@@ -27,10 +35,7 @@
                 <%= tag.span t(".syncing") %>
               </div>
             <% elsif mercury_item.sync_error.present? %>
-              <div class="text-secondary flex items-center gap-1">
-                <%= render DS::Tooltip.new(text: mercury_item.sync_error, icon: "alert-circle", size: "sm", color: "destructive", as: :span) %>
-                <%= tag.span t(".error"), class: "text-destructive" %>
-              </div>
+              <%= render "provider_items/sync_error", provider_item: mercury_item, error_text: t(".error") %>
             <% else %>
               <p class="text-secondary">
                 <% if mercury_item.last_synced_at %>
