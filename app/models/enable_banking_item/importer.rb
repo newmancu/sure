@@ -1,6 +1,4 @@
 class EnableBankingItem::Importer
-  include CurrencyNormalizable
-
   # Maximum number of pagination requests to prevent infinite loops
   # Enable Banking typically returns ~100 transactions per page, so 100 pages = ~10,000 transactions
   MAX_PAGINATION_PAGES = 100
@@ -8,35 +6,13 @@ class EnableBankingItem::Importer
   # Prefer booked ledger balances for net worth/current_balance. Available balances
   # can include an arranged overdraft facility for some ASPSPs (for example CGD PT),
   # so they are only a last-resort fallback.
-  #
-  # OPBD/PRCD rank above XPCD despite being period-boundary snapshots (opening of
-  # the current period / closing of the previous one) rather than "instant" values:
-  # this mirrors CLBD outranking ITBD above, a reconciled booked figure is trusted
-  # over one that includes unconfirmed pending activity, even if it's up to a day
-  # older. That trade-off assumes the staleness is bounded to about a day, so
-  # select_current_balance below guards it with the optional `reference_date` field
-  # (see PERIOD_BOUNDARY_TYPES): if the same response also carries a materially
-  # newer XPCD/CLAV/ITAV, the fresher one wins instead.
   BALANCE_TYPE_PRIORITY = %w[
     CLBD closingBooked
     ITBD interimBooked
-    OPBD openingBooked
-    PRCD previouslyClosedBooked
     XPCD expected
     CLAV closingAvailable
     ITAV interimAvailable
   ].freeze
-
-  PERIOD_BOUNDARY_TYPES = %w[opbd openingbooked prcd previouslyclosedbooked].freeze
-
-  # Only these types may outrank OPBD/PRCD on freshness (see fresher_balance) —
-  # the same accounting-semantics exclusion as BALANCE_TYPE_PRIORITY itself, so a
-  # forward-looking FWAV or an informational INFO/OTHR can't override a legitimate
-  # booked figure just by carrying a later reference_date. Compared against an
-  # already-normalized balance_type (see normalize_balance_type), so both ISO
-  # codes and Enable Banking's descriptive spellings are listed here pre-normalized,
-  # mirroring BALANCE_TYPE_PRIORITY's own XPCD/CLAV/ITAV entries above.
-  FRESHNESS_BALANCE_TYPES = %w[xpcd expected clav closingavailable itav interimavailable].freeze
 
   NETWORK_ERRORS = [
     ::SocketError,
@@ -234,8 +210,7 @@ class EnableBankingItem::Importer
         return false
       end
 
-      currency, kept, skipped = split_balances_by_currency(balances, enable_banking_account)
-      balance = select_current_balance(kept)
+      balance = select_current_balance(balances)
 
       unless balance.present?
         mark_balance_unavailable(enable_banking_account)
@@ -243,6 +218,7 @@ class EnableBankingItem::Importer
       end
 
       amount = balance.dig(:balance_amount, :amount) || balance[:amount]
+      currency = balance.dig(:balance_amount, :currency) || balance[:currency]
 
       unless amount.present?
         mark_balance_unavailable(enable_banking_account)
@@ -258,10 +234,8 @@ class EnableBankingItem::Importer
 
       enable_banking_account.update!(
         current_balance: parsed_amount,
-        currency: balance_currency(balance) || enable_banking_account.currency
+        currency: currency.presence || enable_banking_account.currency
       )
-      # Only now is the chosen-currency balance known to be the one in use.
-      capture_skipped_currency_balances(enable_banking_account, currency, skipped)
 
       true
     rescue Provider::EnableBanking::EnableBankingError => e
@@ -278,105 +252,15 @@ class EnableBankingItem::Importer
       false
     end
 
-    # Multi-currency wallets such as PayPal report one balance per currency
-    # under the same balance type (EUR, CAD, USD, ...). Keep the balances in
-    # the currency the accounts endpoint reports for the account, else in the
-    # first currency listed, which is the wallet's primary one. Otherwise
-    # select_current_balance takes the last entry of each type, so an empty
-    # USD balance replaced the EUR one and switched the account to USD.
-    # Returns the chosen currency, the balances in it and the ones left out.
-    def split_balances_by_currency(balances, enable_banking_account)
-      currencies = balances.filter_map { |balance| balance_currency(balance) }.uniq
-      return [ currencies.first, balances, [] ] if currencies.size <= 1
-
-      account_currency = snapshot_currency(enable_banking_account)
-      currency = currencies.include?(account_currency) ? account_currency : currencies.first
-      kept, skipped = balances.partition { |balance| balance_currency(balance) == currency }
-      [ currency, kept, skipped ]
-    end
-
-    def balance_currency(balance)
-      parse_currency(balance.dig(:balance_amount, :currency) || balance[:currency])
-    end
-
-    # Read from the raw snapshot, not the stored column: the stored currency
-    # may already be the wrong one picked from a multi-currency response.
-    # PayPal reports XXX (no currency) for the wallet; parse_currency turns
-    # that into nil, so the first listed currency is used.
-    def snapshot_currency(enable_banking_account)
-      payload = enable_banking_account.raw_payload
-      parse_currency(payload.with_indifferent_access[:currency]) if payload.is_a?(Hash)
-    end
-
-    # A non-zero balance in another currency is money the account leaves out;
-    # make that visible to support instead of dropping it silently.
-    def capture_skipped_currency_balances(enable_banking_account, currency, skipped)
-      funded = skipped.filter_map do |balance|
-        amount = balance.dig(:balance_amount, :amount) || balance[:amount]
-        next if amount.blank? || amount.to_d.zero?
-
-        { currency: balance_currency(balance), balance_type: balance[:balance_type], amount: amount.to_s }
-      end
-      return if funded.empty?
-
-      DebugLogEntry.capture(
-        category: "provider_sync",
-        level: "info",
-        message: "Enable Banking account holds balances in other currencies; only the #{currency} balance is used",
-        source: self.class.name,
-        provider_key: "enable_banking",
-        family: enable_banking_item.family,
-        account_provider: enable_banking_account.account_provider,
-        metadata: {
-          enable_banking_item_id: enable_banking_item.id,
-          enable_banking_account_id: enable_banking_account.id,
-          uid: enable_banking_account.uid,
-          currency: currency,
-          other_balances: funded
-        }
-      )
-    end
-
     def select_current_balance(balances)
       by_type = balances.index_by { |balance| normalize_balance_type(balance[:balance_type]) }
 
       BALANCE_TYPE_PRIORITY.each do |type|
-        normalized_type = normalize_balance_type(type)
-        balance = by_type[normalized_type]
-        next unless balance.present?
-
-        if PERIOD_BOUNDARY_TYPES.include?(normalized_type)
-          fresher = fresher_balance(balance, balances)
-          return fresher if fresher
-        end
-
-        return balance
+        balance = by_type[normalize_balance_type(type)]
+        return balance if balance.present?
       end
 
       balances.first
-    end
-
-    # Guards the OPBD/PRCD priority (see BALANCE_TYPE_PRIORITY) against picking a
-    # stale period-boundary snapshot when the same response also carries a balance
-    # with a strictly newer `reference_date` — an optional Enable Banking field, so
-    # absence on either side just skips the check rather than treating it as older.
-    def fresher_balance(period_boundary_balance, balances)
-      reference_date = parse_reference_date(period_boundary_balance[:reference_date])
-      return nil unless reference_date
-
-      balances
-        .select { |balance| FRESHNESS_BALANCE_TYPES.include?(normalize_balance_type(balance[:balance_type])) }
-        .filter_map { |balance| [ balance, parse_reference_date(balance[:reference_date]) ] }
-        .select { |_, date| date && date > reference_date }
-        .max_by { |_, date| date }
-        &.first
-    end
-
-    def parse_reference_date(value)
-      return nil if value.blank?
-      Date.parse(value.to_s)
-    rescue ArgumentError, TypeError
-      nil
     end
 
     def normalize_balance_type(type)
@@ -642,18 +526,25 @@ class EnableBankingItem::Importer
           end
         end
 
-        existing_ids = existing_transactions.map { |tx|
+        # IDs present in this fetch, whether or not we already had a stored row
+        # for them. A stored row is *replaced* (not just skipped) when the ASPSP
+        # redelivers the same transaction_id/entry_reference in the current
+        # window: EnableBankingEntry::Processor's counterparty fields are
+        # deliberately assigned even when blank (see its own comment) so a
+        # corrected or removed counterparty IBAN clears the old value -- but
+        # only if the fresh row this fetch just returned actually reaches
+        # storage instead of being discarded as "not new" because the ID
+        # already existed.
+        refetched_ids = all_transactions.map { |tx|
           EnableBankingEntry::Processor.compute_external_id(tx)
         }.compact.to_set
 
-        new_transactions = all_transactions.select do |tx|
+        retained_existing_transactions = existing_transactions.reject do |tx|
           ext_id = EnableBankingEntry::Processor.compute_external_id(tx)
-          ext_id.present? && !existing_ids.include?(ext_id)
+          ext_id.present? && refetched_ids.include?(ext_id)
         end
 
-        if new_transactions.any? || removed_pending
-          enable_banking_account.upsert_enable_banking_transactions_snapshot!(existing_transactions + new_transactions)
-        end
+        enable_banking_account.upsert_enable_banking_transactions_snapshot!(retained_existing_transactions + all_transactions)
       elsif removed_pending
         enable_banking_account.upsert_enable_banking_transactions_snapshot!(
           existing_transactions
@@ -679,21 +570,98 @@ class EnableBankingItem::Importer
     # legitimately distinct transactions with identical content but different
     # transaction_ids (e.g. two laundromat payments on the same day). (Issue #954)
     def deduplicate_api_transactions(transactions)
-      seen = {}
-      duplicates_removed = 0
+      normalized = transactions.map(&:with_indifferent_access)
 
-      result = transactions.select do |tx|
-        tx = tx.with_indifferent_access
-        key = build_transaction_content_key(tx)
+      # Two-pass: IBAN only splits a base-content group into distinct
+      # transactions when at least two DIFFERENT non-blank IBANs actually
+      # appear in that group. A group where the IBAN is simply absent on
+      # some rows (e.g. a pending row settling into a booked row that
+      # gained account data later) must still collapse to one -- otherwise
+      # the same real transaction's pending/booked duplicate representations
+      # would both survive just because one side happened to lack IBAN data.
+      #
+      # Sorted so a blank-IBAN row in an already-split group (below) aliases
+      # to a stable bucket regardless of array order.
+      distinct_ibans_by_base_key = normalized.group_by { |tx| build_transaction_base_key(tx) }
+        .transform_values { |group| group.filter_map { |tx| counterparty_iban_for_content_key(tx, tx[:credit_debit_indicator]) }.uniq.sort }
 
-        if seen[key]
-          duplicates_removed += 1
-          false
+      keyed_with_index = normalized.each_with_index.group_by do |tx, _index|
+        base_key = build_transaction_base_key(tx)
+        if distinct_ibans_by_base_key[base_key].size >= 2
+          iban = counterparty_iban_for_content_key(tx, tx[:credit_debit_indicator])
+          if iban
+            "#{base_key}\x1F#{iban}"
+          else
+            # A blank-IBAN row can't be attributed to any ONE of the >=2
+            # distinct real transactions sharing this content pattern --
+            # picking one (e.g. alphabetically) risks silently merging it
+            # into the wrong transaction (or dropping it if it's actually a
+            # third, distinct payee that also lacks IBAN data), which is
+            # worse than the alternative. It's kept apart from both real
+            # IBAN buckets in its own shared bucket instead: if there turn
+            # out to be several such ambiguous rows, they still collapse
+            # into each other (the "several blank rows can never be told
+            # apart, so nothing is lost by merging them" case), but never
+            # into a bucket with a known, different counterparty.
+            "#{base_key}\x1Fambiguous"
+          end
         else
-          seen[key] = true
-          true
+          base_key
         end
       end
+
+      duplicates_removed = 0
+
+      # Within each duplicate group, keep the richest representative --
+      # BOOK over PDNG, same as before IBAN existed -- rather than whichever
+      # row the API happened to return first. Status ranks above IBAN
+      # presence here (unlike an earlier version of this method): picking a
+      # still-pending row over a settled one just because it had richer
+      # account data would leave the transaction permanently stuck pending
+      # (PENDING_PROVIDERS-gated balances/analytics exclude it) on every
+      # future sync, which is worse than the IBAN gap it would have closed.
+      # Instead, when the BOOK-preferred representative itself lacks IBAN
+      # data that a PDNG sibling in the same group carries (some ASPSPs drop
+      # counterparty data once a transaction settles), that counterparty data
+      # is merged into the representative's own fields below -- so both the
+      # settled status and the counterparty data survive, instead of trading
+      # one for the other. This merges the full set of fields
+      # EnableBankingEntry::Processor reads for the counterparty (the account
+      # hash carrying the IBAN, the additional_identification fallback it
+      # uses when there's no IBAN, and the agent hash it reads the bank name
+      # from), not only an IBAN-bearing account hash -- a PDNG sibling that
+      # carries only additional_identification (no IBAN yet) is a valid
+      # donor too, and any of the three fields the representative itself
+      # lacks should still be filled in even when it does have some data
+      # already (e.g. an IBAN but no bank name).
+      result = keyed_with_index.values.map do |group|
+        duplicates_removed += group.size - 1 if group.size > 1
+
+        representative, index = group.min_by do |tx, index|
+          [
+            tx[:status].to_s == "BOOK" ? 0 : 1,
+            index
+          ]
+        end
+
+        account_key, agent_key, additional_key = counterparty_field_keys(representative[:credit_debit_indicator])
+        missing_keys = [ account_key, agent_key, additional_key ].select { |key| representative[key].blank? }
+
+        if missing_keys.any?
+          donor = group.map(&:first).find do |tx|
+            missing_keys.any? { |key| tx[key].present? }
+          end
+
+          if donor
+            fields_to_merge = missing_keys.each_with_object({}) do |key, hash|
+              hash[key] = donor[key] if donor[key].present?
+            end
+            representative = representative.merge(fields_to_merge) if fields_to_merge.any?
+          end
+        end
+
+        [ representative, index ]
+      end.sort_by { |_tx, index| index }.map(&:first)
 
       if duplicates_removed > 0
         Rails.logger.info(
@@ -705,23 +673,27 @@ class EnableBankingItem::Importer
       result
     end
 
-    # Build a composite key for deduplication. Two transactions with different
-    # entry_reference values but identical content fields (including
-    # transaction_id and credit_debit_indicator) are considered duplicates.
-    # transaction_id is included as one component — not a standalone key —
-    # because the Enable Banking API docs state it is not guaranteed to be
-    # unique. credit_debit_indicator (CRDT/DBIT) is included because
-    # transaction_amount.amount is always positive — without it, a payment
-    # and a same-day refund of the same amount would produce identical keys.
-    # status (BOOK/PDNG) is intentionally excluded: the same logical transaction
-    # may appear as PDNG then BOOK across imports and must not create duplicates.
+    # Base composite key for deduplication, deliberately WITHOUT counterparty
+    # IBAN -- see #deduplicate_api_transactions for why IBAN is applied as a
+    # conditional second pass instead of being folded in here directly.
+    #
+    # Two transactions with different entry_reference values but identical
+    # content fields (including transaction_id and credit_debit_indicator)
+    # are considered duplicates. transaction_id is included as one
+    # component — not a standalone key — because the Enable Banking API docs
+    # state it is not guaranteed to be unique. credit_debit_indicator
+    # (CRDT/DBIT) is included because transaction_amount.amount is always
+    # positive — without it, a payment and a same-day refund of the same
+    # amount would produce identical keys. status (BOOK/PDNG) is
+    # intentionally excluded: the same logical transaction may appear as
+    # PDNG then BOOK across imports and must not create duplicates.
     # Known limitation: when transaction_id is nil for both, pure content
     # comparison applies. This means two genuinely distinct transactions
     # with identical content (same date, amount, direction, creditor, etc.)
     # and no transaction_id would collapse to one. In practice, banks that
     # omit transaction_id rarely produce such exact duplicates in the same
     # API response; timestamps or remittance info usually differ. (Issue #954)
-    def build_transaction_content_key(tx)
+    def build_transaction_base_key(tx)
       date = tx[:booking_date].presence || tx[:value_date].presence || tx[:transaction_date]
       amount = tx.dig(:transaction_amount, :amount).presence || tx[:amount]
       currency = tx.dig(:transaction_amount, :currency).presence || tx[:currency]
@@ -733,6 +705,26 @@ class EnableBankingItem::Importer
       direction = tx[:credit_debit_indicator]
 
       [ date, amount, currency, creditor, debtor, remittance_key, tid, direction ].map(&:to_s).join("\x1F")
+    end
+
+    def counterparty_iban_for_content_key(tx, direction)
+      account_key, = counterparty_field_keys(direction)
+      # Normalized the same way EnableBankingEntry::Processor stores it:
+      # without this, two representations of the same duplicate transaction
+      # with differently-formatted IBANs (spaces/punctuation vs none) would
+      # produce different content keys and defeat the dedup this key exists for.
+      IbanNormalizable.normalize(tx.dig(account_key, :iban))
+    end
+
+    # Mirrors EnableBankingEntry::Processor#counterparty_account_info's own
+    # direction-based key selection, so the fields merged here during
+    # dedup are exactly the fields that processor later reads.
+    def counterparty_field_keys(direction)
+      if direction == "CRDT"
+        [ :debtor_account, :debtor_agent, :debtor_account_additional_identification ]
+      else
+        [ :creditor_account, :creditor_agent, :creditor_account_additional_identification ]
+      end
     end
 
     class PaginationTruncatedError < StandardError; end

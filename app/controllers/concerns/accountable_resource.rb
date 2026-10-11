@@ -1,5 +1,6 @@
 module AccountableResource
   extend ActiveSupport::Concern
+  include WriteOnlyIbanParams
 
   included do
     include Periodable, StreamExtensions
@@ -40,12 +41,33 @@ module AccountableResource
     rescue Date::Error
       nil
     end || (Time.zone.today - 2.years)
-    Account.transaction do
-      @account = Current.family.accounts.create_and_sync(
-        account_params.except(:return_to, :opening_balance_date).merge(owner: Current.user),
-        opening_balance_date: opening_balance_date
-      )
-      @account.lock_saved_attributes!
+    create_params = account_params.except(:return_to, :opening_balance_date)
+    create_params = resolve_write_only_iban(create_params, clear_flag: create_params[:remove_iban]).except(:remove_iban)
+    begin
+      Account.transaction do
+        @account = Current.family.accounts.create_and_sync(
+          create_params.merge(owner: Current.user),
+          opening_balance_date: opening_balance_date
+        )
+        @account.lock_saved_attributes!
+      end
+    rescue ActiveRecord::RecordNotUnique
+      # A raw DB-level race on the partial unique index: two concurrent
+      # requests both passed the Rails uniqueness validation before either
+      # committed, so it surfaces from the adapter instead of being caught
+      # above. Same user-facing outcome, just a different failure point.
+      # create_and_sync itself would have built an accountable from
+      # accountable_attributes; building @account directly from create_params
+      # here does not, so the type-specific fields_for :accountable block in
+      # the re-rendered form (e.g. loans/_form.html.erb's rate fields) would
+      # otherwise silently disappear instead of showing what the user typed.
+      @account = Current.family.accounts.build(create_params)
+      @account.accountable ||= accountable_type.new
+      @account.errors.add(:iban, :taken)
+      @error_message = @account.errors.full_messages.join(", ")
+      set_link_options
+      render :new, status: :unprocessable_entity
+      return
     end
 
     # Prefer the form-carried return_to, then the session value StoreLocation
@@ -64,13 +86,12 @@ module AccountableResource
     # usually the unsaved account with its nested accountable still attached --
     # but the opening valuation's `entries.create!` or `lock_saved_attributes!`
     # can raise too, and then it is an Entry or the accountable, neither of
-    # which the form can render. Recover the account through it, or rebuild
-    # it from what was submitted so the form comes back filled in rather
-    # than blank.
+    # which the form can render. Recover the account through it, or start from
+    # a fresh one as `new` does.
     @account = if e.record.is_a?(Account)
       e.record
     else
-      e.record.try(:account) || rebuilt_account_from_submission
+      e.record.try(:account) || Current.family.accounts.build(currency: Current.family.currency, accountable: accountable_type.new)
     end
     @error_message = e.record.errors.full_messages.join(", ").presence || e.message
     # The `new` template's method-selection branch reads `@provider_configs`,
@@ -84,6 +105,7 @@ module AccountableResource
     # other submitted fields. Keep them available for the 422 form without
     # persisting them.
     update_params = account_params.except(:return_to, :balance, :opening_balance_date)
+    update_params = resolve_write_only_iban(update_params, clear_flag: update_params[:remove_iban]).except(:remove_iban)
 
     # The balance change and the attribute update are one form, so they commit
     # or roll back as one. `set_current_balance` writes a valuation and the
@@ -118,6 +140,12 @@ module AccountableResource
     rescue ActiveRecord::RecordInvalid => e
       @error_message = e.record.errors.full_messages.join(", ").presence || e.message
       raise ActiveRecord::Rollback
+    rescue ActiveRecord::RecordNotUnique
+      # Same raw DB-level race as #create: another request's iban committed
+      # between our validation check and this update's own commit.
+      @account.errors.add(:iban, :taken)
+      @error_message = @account.errors.full_messages.join(", ")
+      raise ActiveRecord::Rollback
     end
 
     unless saved
@@ -129,21 +157,6 @@ module AccountableResource
   end
 
   private
-    # The account the 422 form renders when the exception carried none.
-    #
-    # `accountable_attributes` is defaulted the way `create_and_sync` defaults
-    # it. `accountable_type=` only writes the type column: the accountable
-    # object itself is built as a side effect of `accountable_attributes=` or
-    # of `subtype=`. A submission that names neither -- a loan form whose
-    # nested fields are all blank, say -- rebuilt an account with a nil
-    # `accountable`, and the form came back without any of the type's own
-    # inputs, which is the opposite of what this rescue exists to do.
-    def rebuilt_account_from_submission
-      attributes = account_params.except(:return_to, :opening_balance_date)
-      attributes[:accountable_attributes] ||= {}
-      Current.family.accounts.build(attributes)
-    end
-
     def set_link_options
       account_type_name = accountable_type.name
 
@@ -171,7 +184,7 @@ module AccountableResource
       params.require(:account).permit(
         :name, :balance, :subtype, :currency, :accountable_type, :return_to,
         :opening_balance_date,
-        :institution_name, :institution_domain, :notes, :exclude_from_reports,
+        :institution_name, :institution_domain, :iban, :remove_iban, :notes, :exclude_from_reports,
         :enable_category_matcher,
         accountable_attributes: self.class.permitted_accountable_attributes
       )

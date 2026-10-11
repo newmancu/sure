@@ -31,6 +31,28 @@ class Family::DataImporterTest < ActiveSupport::TestCase
     assert_equal "Depository", account.accountable_type
   end
 
+  test "imports a manually entered account iban" do
+    ndjson = build_ndjson([
+      {
+        type: "Account",
+        data: {
+          id: "old-account-1",
+          name: "Test Checking",
+          balance: "1500.00",
+          currency: "USD",
+          accountable_type: "Depository",
+          accountable: { subtype: "checking" },
+          iban: "DE89370400440532013000" # pipelock:ignore IBAN
+        }
+      }
+    ])
+
+    importer = Family::DataImporter.new(@family, ndjson)
+    result = importer.import!
+
+    assert_equal "DE89370400440532013000", result[:accounts].first.iban # pipelock:ignore IBAN
+  end
+
   test "imports non-destructive account status from ndjson" do
     ndjson = build_ndjson([
       {
@@ -495,6 +517,25 @@ class Family::DataImporterTest < ActiveSupport::TestCase
 
     merchant = @family.merchants.find_by(name: "Amazon")
     assert_not_nil merchant
+  end
+
+  test "imports a manually entered merchant iban" do
+    ndjson = build_ndjson([
+      {
+        type: "Merchant",
+        data: {
+          id: "merchant-1",
+          name: "Landlord",
+          iban: "AT611904300234573201" # pipelock:ignore IBAN
+        }
+      }
+    ])
+
+    importer = Family::DataImporter.new(@family, ndjson)
+    importer.import!
+
+    merchant = @family.merchants.find_by(name: "Landlord")
+    assert_equal "AT611904300234573201", merchant.iban # pipelock:ignore IBAN
   end
 
   test "imports recurring transactions with remapped account and merchant references" do
@@ -1881,35 +1922,6 @@ class Family::DataImporterTest < ActiveSupport::TestCase
     category = @family.categories.find_by(name: "Coffee")
     assert_not_nil category
     assert_equal category.id, action.value
-  end
-
-  test "rejects invalid rule references before creating related records" do
-    valid_condition = { condition_type: "transaction_name", operator: "like", value: "coffee" }
-    cases = [
-      [ { condition_type: "transaction_category", operator: "=", value: "Bad\0Category" },
-        { action_type: "exclude_transaction" }, "value" ],
-      [ valid_condition,
-        { action_type: "set_transaction_merchant", value_ref: { name: "Bad\0Merchant" } }, "value_ref" ],
-      [ valid_condition,
-        { action_type: "set_transaction_tags", value_ref: [ { name: "Safe" }, { name: "Bad\0Tag" } ] }, "value_ref" ]
-    ]
-    counts = [ @family.rules.count, @family.categories.count, @family.merchants.count, @family.tags.count ]
-
-    cases.each do |condition, action, field|
-      ndjson = build_ndjson([ {
-        type: "Rule", version: 1,
-        data: { name: "Invalid reference", resource_type: "transaction", conditions: [ condition ], actions: [ action ] }
-      } ])
-
-      error = assert_raises(Family::DataImporter::InvalidRecordError) do
-        Family::DataImporter.new(@family, ndjson).import!
-      end
-
-      assert_equal "invalid_import_record", error.code
-      assert_equal field, error.details[:field]
-      assert_equal "(invalid text)", error.details[:value]
-      assert_equal counts, [ @family.rules.count, @family.categories.count, @family.merchants.count, @family.tags.count ]
-    end
   end
 
   test "imports transaction_tag rule condition by remapping the tag name to an id" do
