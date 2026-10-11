@@ -82,8 +82,6 @@
                     disabled: @entry.linked? || split_locked || edit_locked,
                     disable_currency: @entry.linked? || split_locked || edit_locked %>
             </div>
-          <% end %>
-          <% if @entry.transaction.category_editable? %>
             <%= f.fields_for :entryable do |ef| %>
               <%= render DS::CategorySelect.new(
                     form: ef,
@@ -94,21 +92,6 @@
                     blank_label: t(".uncategorized")
                   ) %>
             <% end %>
-          <% elsif @entry.transaction.category_set_on_transfer_outflow? %>
-            <% outflow_category = transfer_outflow_category(@entry.transaction) %>
-            <div class="space-y-1">
-              <div class="opacity-60 cursor-not-allowed">
-                <%= f.fields_for :entryable do |ef| %>
-                  <%= render DS::CategorySelect.new(
-                        form: ef,
-                        categories: [],
-                        selected_category: outflow_category || transfer_category,
-                        disabled: true
-                      ) %>
-                <% end %>
-              </div>
-              <p class="text-xs text-secondary"><%= outflow_category ? t(".category_set_on_outflow") : t(".category_set_on_hidden_outflow") %></p>
-            </div>
           <% end %>
         <% end %>
       </div>
@@ -300,6 +283,12 @@
                 <%= f.toggle :excluded, { data: { auto_submit_form_target: "auto" } } %>
               </div>
             <% end %>
+          </div>
+        <% end %>
+        <% if can_edit_entry? && @entry.transaction.correctable_as_income? %>
+          <div class="p-3 space-y-2">
+            <p class="text-sm text-secondary"><%= t("transactions.show.correct_as_income_description") %></p>
+            <%= render DS::Button.new(text: t("transactions.show.correct_as_income"), href: correct_as_income_transaction_path(@entry), method: :post) %>
           </div>
         <% end %>
         <% if @entry.account.investment? || @entry.account.crypto? %>

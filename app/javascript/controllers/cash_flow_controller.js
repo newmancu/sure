@@ -1,5 +1,13 @@
 import { Controller } from "@hotwired/stimulus";
-import { cashFlowChartData } from "utils/cash_flow_chart_data";
+import {
+  cashFlowChartData,
+  formatCashFlowCurrency,
+} from "utils/cash_flow_chart_data";
+
+// Placeholder the server-rendered translation puts where the amount belongs,
+// so word order stays correct per locale. Replaced with the real formatted
+// amount once the async response tells us what it is.
+const NOTE_AMOUNT_PLACEHOLDER = "@@AMOUNT@@";
 
 // One request supplies the inline and expanded renderers. No persistent browser
 // cache: Turbo snapshots must not retain a prior session's financial graph.
@@ -10,27 +18,11 @@ export default class extends Controller {
     "error",
     "empty",
     "content",
-    "groupBySegment",
+    "investmentNote",
   ];
-  static values = {
-    url: String,
-    groupBy: { type: String, default: "category" },
-  };
+  static values = { url: String, noteTemplate: String };
 
   connect() {
-    this.load();
-  }
-
-  // Switches the graph between flows by category and through each account.
-  // The choice is saved to the user's dashboard preferences; the graph is
-  // refetched straight away whether or not that save succeeds.
-  groupBy(event) {
-    const groupBy = event.currentTarget.dataset.groupBy;
-    if (groupBy === this.groupByValue) return;
-
-    this.groupByValue = groupBy;
-    this.#syncGroupBySegments();
-    this.#saveGroupBy(groupBy);
     this.load();
   }
 
@@ -45,6 +37,10 @@ export default class extends Controller {
       chart.removeAttribute("data-preview-sankey-chart-data-value");
       chart.querySelectorAll("svg").forEach((svg) => svg.remove());
     });
+    if (this.hasInvestmentNoteTarget) {
+      this.investmentNoteTarget.hidden = true;
+      this.investmentNoteTarget.textContent = "";
+    }
     this.show("loading");
   }
 
@@ -53,9 +49,7 @@ export default class extends Controller {
     const request = new AbortController();
     this.request = request;
     try {
-      const url = new URL(this.urlValue, window.location.origin);
-      url.searchParams.set("group_by", this.groupByValue);
-      const response = await fetch(url, {
+      const response = await fetch(this.urlValue, {
         headers: { Accept: "application/json" },
         credentials: "same-origin",
         cache: "no-store",
@@ -75,36 +69,36 @@ export default class extends Controller {
           JSON.stringify(data),
         );
       });
+      this.renderInvestmentNote(body);
       this.show(data.links.length ? "content" : "empty", data);
     } catch {
       if (this.request === request) this.show("error");
     }
   }
 
-  #syncGroupBySegments() {
-    this.groupBySegmentTargets.forEach((segment) => {
-      const active = segment.dataset.groupBy === this.groupByValue;
-      segment.classList.toggle("segmented-control__segment--active", active);
-      segment.setAttribute("aria-pressed", active ? "true" : "false");
-    });
-  }
-
-  #saveGroupBy(groupBy) {
-    const csrfToken = document.querySelector(
-      'meta[name="csrf-token"]',
-    )?.content;
-    fetch("/dashboard/preferences", {
-      method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-        "X-CSRF-Token": csrfToken,
-      },
-      body: JSON.stringify({
-        preferences: { cashflow_sankey_group_by: groupBy },
-      }),
-    }).catch(() => {
-      // The chart already shows the new grouping; only the default is lost.
-    });
+  // Money that left an account but isn't spending -- it moved into an
+  // investment/crypto account, so it's called out separately rather than
+  // silently dropped from the chart above (see Transaction::NON_OPERATING_KINDS).
+  renderInvestmentNote(body) {
+    if (!this.hasInvestmentNoteTarget) return;
+    const raw = body.investment_contributions;
+    const amount =
+      typeof raw === "string" && /^\d+(\.\d+)?$/.test(raw) ? Number(raw) : 0;
+    if (amount <= 0) {
+      this.investmentNoteTarget.hidden = true;
+      this.investmentNoteTarget.textContent = "";
+      return;
+    }
+    const formatted = formatCashFlowCurrency(
+      amount,
+      body.currency,
+      navigator.language,
+    );
+    this.investmentNoteTarget.textContent = this.noteTemplateValue.replace(
+      NOTE_AMOUNT_PLACEHOLDER,
+      formatted,
+    );
+    this.investmentNoteTarget.hidden = false;
   }
 
   show(state, graph = null) {

@@ -3251,6 +3251,7 @@ components:
       - basis
       - income
       - spending
+      - invested
       - net_savings
       - nodes
       - links
@@ -3263,9 +3264,9 @@ components:
           type: string
           enum:
           - net_by_category
-          - net_by_account
-          description: net_by_account (group_by=account) replaces the Cash Flow node
-            with one account node per account, each balanced by Surplus or Deficit
+        invested:
+          type: string
+          description: Gross investment contributions, separate from consumption.
         income:
           type: string
         spending:
@@ -3298,9 +3299,9 @@ components:
                 - income
                 - expense
                 - cash_flow
-                - account
                 - surplus
                 - deficit
+                - invested
               value:
                 type: string
                 description: Nonnegative decimal in envelope currency
@@ -3353,6 +3354,7 @@ components:
       - currency
       - period
       - sankey
+      - investment_contributions
       properties:
         as_of:
           type: string
@@ -3365,6 +3367,11 @@ components:
           "$ref": "#/components/schemas/FinancialPeriod"
         sankey:
           "$ref": "#/components/schemas/CashFlowSankey"
+        investment_contributions:
+          type: string
+          description: 'Cash moved into investment/crypto accounts this period. Excluded
+            from the sankey spending figure: it reallocates net worth rather than
+            consuming it.'
     CashFlow:
       type: object
       required:
@@ -3378,6 +3385,7 @@ components:
       - net_savings
       - savings_rate
       - spending_comparison
+      - investment_contributions
       properties:
         month:
           type: string
@@ -3404,6 +3412,11 @@ components:
           nullable: true
           description: Percentage points; null when income is nonpositive. May be
             negative.
+        investment_contributions:
+          type: string
+          description: 'Cash moved into investment/crypto accounts this period. Excluded
+            from spending and savings_rate: it reallocates net worth rather than consuming
+            it.'
         spending_comparison:
           type: object
           required:
@@ -5496,18 +5509,6 @@ paths:
           - sankey
         description: Graph-only envelope; omits daily comparison. Accepts month or
           an explicit date range; cannot combine with include.
-      - name: group_by
-        in: query
-        required: false
-        schema:
-          type: string
-          enum:
-          - category
-          - account
-          default: category
-        description: 'Requires view=sankey. category: flows through one Cash Flow
-          node; account: income categories flow through each account to expense categories
-          (basis net_by_account).'
       - name: start_date
         in: query
         required: false

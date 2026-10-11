@@ -40,15 +40,6 @@ class PagesControllerTest < ActionDispatch::IntegrationTest
     assert_equal "compact", @user.reload.dashboard_section_height("net_worth_chart")
   end
 
-  test "update_preferences saves the preview Sankey grouping and ignores unknown ones" do
-    patch "/dashboard/preferences", params: { preferences: { cashflow_sankey_group_by: "account" } }, as: :json
-    assert_response :success
-    assert_equal "account", @user.reload.cashflow_sankey_group_by
-
-    patch "/dashboard/preferences", params: { preferences: { cashflow_sankey_group_by: "merchant" } }, as: :json
-    assert_equal "account", @user.reload.cashflow_sankey_group_by
-  end
-
   test "update_preferences persists dashboard section width" do
     patch "/dashboard/preferences", params: {
       preferences: { dashboard_section_layout: { cashflow_sankey: { col_span: "single" } } }
@@ -239,6 +230,11 @@ class PagesControllerTest < ActionDispatch::IntegrationTest
       .with(classification: "income", period: kind_of(Period))
       .once
       .returns(fake_income_period_total)
+
+    income_statement.expects(:build_period_total)
+      .with(classification: "investment_contribution", period: kind_of(Period))
+      .once
+      .returns(IncomeStatement::PeriodTotal.new(classification: "investment_contribution", total: 0, currency: @family.currency, category_totals: []))
 
     get root_path
 
