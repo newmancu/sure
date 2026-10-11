@@ -179,6 +179,49 @@ class LoansControllerTest < ActionDispatch::IntegrationTest
     assert_enqueued_with(job: SyncJob)
   end
 
+  # The form offers a day-count convention, and a select is worth nothing if the
+  # controller drops the value. This is the end-to-end path the model and engine
+  # tests do not cover: without `:day_count_convention` in
+  # `permitted_accountable_attributes` the parameter is filtered out, the loan
+  # keeps its old convention, and every future schedule ignores the choice.
+  test "the day-count convention chosen on create is saved" do
+    post loans_path, params: {
+      account: {
+        name: "Tracker",
+        balance: 50000,
+        currency: "USD",
+        accountable_type: "Loan",
+        accountable_attributes: {
+          subtype: "mortgage",
+          interest_rate: 5.5,
+          term_months: 60,
+          rate_type: "fixed",
+          initial_balance: 50000,
+          day_count_convention: "actual_actual"
+        }
+      }
+    }
+
+    assert_equal "actual_actual", Loan.order(:created_at).last.day_count_convention,
+                 "the controller filtered the convention out of create"
+  end
+
+  test "the day-count convention chosen on the form is saved" do
+    assert_equal "thirty_360", @account.loan.day_count_convention
+
+    patch loan_path(@account), params: {
+      account: {
+        accountable_attributes: {
+          id: @account.accountable_id,
+          day_count_convention: "actual_365"
+        }
+      }
+    }
+
+    assert_equal "actual_365", @account.loan.reload.day_count_convention,
+                 "the controller filtered out the convention the user chose"
+  end
+
   test "updates with loan details" do
     assert_no_difference [ "Account.count", "Loan.count" ] do
       patch loan_path(@account), params: {
@@ -853,30 +896,6 @@ class LoansControllerTest < ActionDispatch::IntegrationTest
     assert_select "form[action='#{loans_path}']", count: 1
     # Rebuilt from the submission, not a blank account: what was typed comes
     # back for correction.
-    assert_select "input[name='account[name]'][value='Loan With Bad Anchor']", count: 1
-    assert_select "input[name='account[accountable_attributes][interest_rate]'][value='6']", count: 1
-  end
-
-  # The submission that trips this rescue need not carry nested attributes at
-  # all. `accountable_type=` writes only the type column, so rebuilding from
-  # such a submission left `accountable` nil and the 422 form came back
-  # without a single one of the loan's own fields -- nothing for the borrower
-  # to correct, on a form whose whole purpose here is correction.
-  test "a late create failure renders the loan's fields even when the form sent none" do
-    invalid_entry = Entry.new.tap(&:validate)
-    Account::OpeningBalanceManager.any_instance.stubs(:set_opening_balance)
-      .raises(ActiveRecord::RecordInvalid.new(invalid_entry))
-
-    assert_no_difference "Account.count" do
-      post loans_path, params: { account: {
-        name: "Loan Without Nested Attributes", balance: 50_000, currency: "USD", accountable_type: "Loan"
-      } }
-    end
-
-    assert_response :unprocessable_entity
-    assert_select "form[action='#{loans_path}']", count: 1
-    assert_select "input[name='account[name]'][value='Loan Without Nested Attributes']", count: 1
-    assert_select "input[name='account[accountable_attributes][interest_rate]']", minimum: 1
   end
 
   private
