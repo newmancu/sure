@@ -1,5 +1,4 @@
 class Category::DeletionsController < ApplicationController
-  before_action :require_non_guest!
   before_action :set_category
   before_action :set_replacement_category, only: :create
 
