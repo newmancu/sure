@@ -19,18 +19,6 @@ module Provider::LlmConcept
     raise NotImplementedError, "Subclasses must implement #enhance_provider_merchants"
   end
 
-  # One proposed recurring-bill configuration, inferred from charge history.
-  # Every field is nullable: null means the history cannot support a value
-  # (or, in configure mode, that the current configuration is already right).
-  BillSetupSuggestion = Data.define(
-    :name, :amount, :frequency, :day_of_month, :weekday, :month_of_year,
-    :category_name, :bill_type, :autopay, :confidence, :rationale
-  )
-
-  def suggest_bill_setup(charges:, categories: [], current_config: nil, model: "", family: nil)
-    raise NotImplementedError, "Subclasses must implement #suggest_bill_setup"
-  end
-
   PdfProcessingResult = Data.define(:summary, :document_type, :extracted_data)
 
   def supports_pdf_processing?
@@ -44,11 +32,7 @@ module Provider::LlmConcept
   ChatMessage = Data.define(:id, :output_text)
   ChatStreamChunk = Data.define(:type, :data, :usage)
   ChatResponse = Data.define(:id, :model, :messages, :function_requests)
-  ChatFunctionRequest = Data.define(:id, :call_id, :function_name, :function_args, :extra_content) do
-    def initialize(id:, call_id:, function_name:, function_args:, extra_content: nil)
-      super
-    end
-  end
+  ChatFunctionRequest = Data.define(:id, :call_id, :function_name, :function_args)
 
   def chat_response(
     prompt,
@@ -56,7 +40,6 @@ module Provider::LlmConcept
     instructions: nil,
     functions: [],
     function_results: [],
-    tool_choice: nil,
     messages: nil,
     conversation_history: [],
     streamer: nil,

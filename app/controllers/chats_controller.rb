@@ -1,10 +1,7 @@
 class ChatsController < ApplicationController
   include ActionView::RecordIdentifier
-  include RequiresAiConsent
 
-  before_action :set_chat, only: [ :show, :edit, :update, :destroy, :retry ]
-  before_action :guard_create_ai_enabled, only: :create
-  before_action :guard_retry_ai_enabled, only: :retry
+  before_action :set_chat, only: [ :show, :edit, :update, :destroy ]
 
   def index
     @chat = nil # override application_controller default behavior of setting @chat to last viewed chat
@@ -16,9 +13,7 @@ class ChatsController < ApplicationController
   end
 
   def new
-    @chat = Current.user.chats.new(
-      title: t(".default_title", timestamp: Time.current.strftime("%Y-%m-%d %H:%M"))
-    )
+    @chat = Current.user.chats.new(title: "New chat #{Time.current.strftime("%Y-%m-%d %H:%M")}")
   end
 
   def create
@@ -66,13 +61,5 @@ class ChatsController < ApplicationController
 
     def chat_params
       params.require(:chat).permit(:title, :content, :ai_model)
-    end
-
-    def guard_create_ai_enabled
-      redirect_unless_ai_enabled(chats_path)
-    end
-
-    def guard_retry_ai_enabled
-      redirect_unless_ai_enabled(chat_path(@chat))
     end
 end
