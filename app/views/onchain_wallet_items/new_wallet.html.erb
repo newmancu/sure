@@ -11,8 +11,10 @@
           stops being read at all. %>
       <%= render DS::Alert.new(
             variant: :info,
-            title: t("settings.providers.onchain_wallet_panel.keyless_title"),
-            message: t("settings.providers.onchain_wallet_panel.keyless_body")
+            message: safe_join([
+              content_tag(:p, t("settings.providers.onchain_wallet_panel.keyless_title"), class: "font-medium"),
+              content_tag(:p, t("settings.providers.onchain_wallet_panel.keyless_body"), class: "mt-1")
+            ])
           ) %>
 
       <% if @error_message.present? %>

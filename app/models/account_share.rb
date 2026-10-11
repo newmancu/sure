@@ -3,14 +3,14 @@ class AccountShare < ApplicationRecord
   belongs_to :user
 
   PERMISSIONS = %w[full_control read_write read_only].freeze
-  # Share tiers that may annotate (category, tags, notes, merchant); owners
-  # always can. Single source for the per-account check and bulk scopes.
-  ANNOTATE_PERMISSIONS = %w[full_control read_write].freeze
 
   validates :permission, inclusion: { in: PERMISSIONS }
   validates :user_id, uniqueness: { scope: :account_id }
   validate :cannot_share_with_owner
   validate :user_in_same_family
+
+  before_save :lock_parent_account
+  before_destroy :lock_parent_account
 
   scope :with_permission, ->(permission) { where(permission: permission) }
 
@@ -27,7 +27,7 @@ class AccountShare < ApplicationRecord
   end
 
   def can_annotate?
-    permission.in?(ANNOTATE_PERMISSIONS)
+    full_control? || read_write?
   end
 
   def can_edit?
@@ -35,6 +35,10 @@ class AccountShare < ApplicationRecord
   end
 
   private
+
+    def lock_parent_account
+      account&.lock!
+    end
 
     def cannot_share_with_owner
       if account && user && account.owner_id == user_id

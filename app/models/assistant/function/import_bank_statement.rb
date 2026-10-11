@@ -53,6 +53,10 @@ class Assistant::Function::ImportBankStatement < Assistant::Function
   end
 
   def call(params = {})
+    unless AccountStatement.statement_manager?(user)
+      return { success: false, error: "forbidden", message: "User is not allowed to manage bank statements." }
+    end
+
     pdf_import = family.imports.find_by(id: params["pdf_import_id"], type: "PdfImport")
 
     unless pdf_import
@@ -78,17 +82,17 @@ class Assistant::Function::ImportBankStatement < Assistant::Function
         success: false,
         error: "account_required",
         message: "Please specify which account to import transactions into",
-        available_accounts: family.accounts.visible.depository.map { |a| { id: a.id, name: a.name } }
+        available_accounts: writable_depository_accounts.map { |account| { id: account.id, name: account.name } }
       }
     end
 
-    account = family.accounts.find_by(id: params["account_id"])
+    account = writable_depository_accounts.find_by(id: params["account_id"])
     unless account
       return {
         success: false,
         error: "account_not_found",
         message: "Account not found",
-        available_accounts: family.accounts.visible.depository.map { |a| { id: a.id, name: a.name } }
+        available_accounts: writable_depository_accounts.map { |account| { id: account.id, name: account.name } }
       }
     end
 
@@ -106,7 +110,7 @@ class Assistant::Function::ImportBankStatement < Assistant::Function
 
     response = provider.extract_bank_statement(
       pdf_content: pdf_import.pdf_file_content,
-      model: model_for(provider),
+      model: openai_model,
       family: family
     )
 
@@ -132,21 +136,23 @@ class Assistant::Function::ImportBankStatement < Assistant::Function
     # Create a CSV from extracted transactions
     csv_content = generate_csv(result[:transactions])
 
-    # Create a TransactionImport
-    import = family.imports.create!(
-      type: "TransactionImport",
-      account: account,
-      raw_file_str: csv_content,
-      date_col_label: "date",
-      amount_col_label: "amount",
-      name_col_label: "name",
-      category_col_label: "category",
-      notes_col_label: "notes",
-      date_format: "%Y-%m-%d",
-      signage_convention: "inflows_positive"
-    )
-
-    import.generate_rows_from_csv
+    import = Import.transaction do
+      account = Account::MutationAccess.lock!(accounts: [ account ], user:, level: Account::MutationAccess::WRITE).fetch(account.id.to_s)
+      created = family.imports.create!(
+        type: "TransactionImport",
+        account: account,
+        raw_file_str: csv_content,
+        date_col_label: "date",
+        amount_col_label: "amount",
+        name_col_label: "name",
+        category_col_label: "category",
+        notes_col_label: "notes",
+        date_format: "%Y-%m-%d",
+        signage_convention: "inflows_positive"
+      )
+      created.generate_rows_from_csv
+      created
+    end
 
     {
       success: true,
@@ -156,6 +162,13 @@ class Assistant::Function::ImportBankStatement < Assistant::Function
       statement_period: result[:period],
       account_holder: result[:account_holder],
       message: "Successfully extracted #{result[:transactions].size} transactions. Import created with ID: #{import.id}. Review and publish when ready."
+    }
+  rescue Account::MutationAccess::Denied
+    {
+      success: false,
+      error: "account_not_found",
+      message: "Account is no longer writable. No import was created.",
+      available_accounts: writable_depository_accounts.map { |available| { id: available.id, name: available.name } }
     }
   rescue Provider::Error, Faraday::Error, Timeout::Error, RuntimeError => e
     Rails.logger.error("ImportBankStatement error: #{e.class.name} - #{e.message}")
@@ -168,6 +181,10 @@ class Assistant::Function::ImportBankStatement < Assistant::Function
   end
 
   private
+
+    def writable_depository_accounts
+      family.accounts.writable_by(user).visible.where(accountable_type: "Depository")
+    end
 
     def generate_csv(transactions)
       CSV.generate do |csv|
@@ -184,9 +201,7 @@ class Assistant::Function::ImportBankStatement < Assistant::Function
       end
     end
 
-    # Only OpenAI takes the OpenAI model setting; other providers (Anthropic)
-    # resolve their own default when given nil.
-    def model_for(provider)
-      Provider::Openai.effective_model if provider.is_a?(Provider::Openai)
+    def openai_model
+      ENV["OPENAI_MODEL"].presence || Provider::Openai::DEFAULT_MODEL
     end
 end
