@@ -16,9 +16,7 @@ export default function parseLocaleFloat(value, { separator } = {}) {
     return Number.parseFloat(cleaned.replace(/,/g, "")) || 0
   }
 
-  // Heuristic: detect separator from the string when no hint is available.
-  // parseAmountPaste decides separately which pastes a hint should settle
-  // (AMBIGUOUS_SEPARATOR in parse_amount_paste.js).
+  // Heuristic: detect separator from the string when no hint is available
   const lastComma = cleaned.lastIndexOf(",")
   const lastDot = cleaned.lastIndexOf(".")
 

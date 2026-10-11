@@ -67,7 +67,7 @@ es:
         failed: Fallida
         no_usage_data: No se han encontrado datos de uso para el periodo seleccionado
         cost_estimates_title: Acerca de las estimaciones de coste
-        cost_estimates_description: Los costes se estiman según las tarifas publicadas por los proveedores, verificadas por última vez el %{date}. Los costes reales pueden variar. Las tarifas son por millón de tokens y varían según el modelo. Los modelos personalizados o autoalojados mostrarán "N/D" y no se incluyen en los totales de coste.
+        cost_estimates_description: Los costes se estiman según las tarifas de OpenAI a fecha de 2025. Los costes reales pueden variar. Las tarifas son por millón de tokens y varían según el modelo. Los modelos personalizados o autoalojados mostrarán "N/D" y no se incluyen en los totales de coste.
     ai_prompts:
       show:
         page_title: Indicaciones de IA
@@ -397,7 +397,6 @@ es:
         connect_button: Conectar Coinbase
         syncing: Sincronizando...
         sync: Sincronizar
-        disconnect: Desconectar
         disconnect_confirm: ¿Estás seguro de que deseas desconectar esta conexión de Coinbase? Tus cuentas sincronizadas pasarán a ser cuentas manuales.
       binance_panel:
         setup_instructions: 'Para conectar Binance, crea una clave API de solo lectura:'
@@ -419,7 +418,6 @@ es:
         historical_import: Ajustes de importación histórica
         sync_start_date_label: Importar datos desde
         sync_start_date_help: Selecciona hasta cuándo retroceder para obtener operaciones históricas.
-        disconnect: Desconectar
         disconnect_confirm: ¿Seguro que quieres desconectar Binance?
       kraken_panel:
         step1_html: Ve a los <a href="https://pro.kraken.com/app/settings/api" target="_blank" rel="noopener noreferrer" class="underline">ajustes de API de Kraken</a>
@@ -455,7 +453,6 @@ es:
         application_id_placeholder_new: Introduce el Application ID
         application_id_placeholder_update: Introduce un nuevo ID para actualizarlo
         client_certificate_label: Certificado de cliente (con clave privada)
-        keep_client_certificate_hint: "Déjalo en blanco para conservar el certificado actual"
         save_and_connect: Guardar y conectar
         update_connection: Actualizar conexión
         connected_bank: Banco conectado
@@ -550,6 +547,13 @@ es:
           all_other_options: 'Todas las demás opciones de configuración: "No"'
         report_window_note: Los informes Flex de IBKR se limitan a la ventana de consulta que configuraste en IBKR. Sure importará todas las posiciones actuales más hasta los últimos 365 días de actividad de este informe.
         sync: Sincronizar
+        syncing: Sincronizando
+        remove: Eliminar
+        setup_accounts: Configurar cuentas
+        add_connection: Añadir conexión
+        new_connection_title: Nueva conexión
+        connection_name_label: Nombre de la conexión
+        connection_name_placeholder: Interactive Brokers
         disconnect_confirm: ¿Desconectar Interactive Brokers?
         query_id_label: Query ID
         query_id_placeholder_new: Introduce tu Flex Query ID de IBKR
@@ -559,9 +563,6 @@ es:
         token_placeholder_existing: Deja en blanco para conservar el token actual
         save_configuration: Guardar configuración
         update_configuration: Actualizar configuración
-        status_configured_prefix: '%{summary}. Visita la pestaña'
-        accounts_tab: Cuentas
-        status_configured_suffix: para gestionar las cuentas detectadas.
         not_configured: Sin configurar.
       show:
         coinbase_title: Coinbase

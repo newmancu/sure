@@ -31,7 +31,7 @@ hu:
         failed: "Sikertelen"
         no_usage_data: "Nem található használati adat a kiválasztott időszakra"
         cost_estimates_title: "A költségbecslésekről"
-        cost_estimates_description: "A költségek a szolgáltatók közzétett árai alapján becsültek, utoljára ellenőrizve: %{date}. A tényleges költségek eltérhetnek. Az árazás millió tokenenként van megadva, és modellenként változik. Az egyéni vagy önállóan üzemeltetett modellek \"N/A\"-t mutatnak, és nem szerepelnek a költségösszesítőkben."
+        cost_estimates_description: "A költségek a szolgáltatók közzétett árazása alapján vannak becsülve, beleértve az OpenAI 2026. júliusi árait. A tényleges költségek eltérhetnek. Az árazás millió tokenenként van megadva, és modellenként változik. Az egyéni vagy önállóan üzemeltetett modellek \"N/A\"-t mutatnak, és nem szerepelnek a költségösszesítőkben."
     ai_prompts:
       show:
         page_title: MI promptok
@@ -316,7 +316,6 @@ hu:
         connect_button: Coinbase csatlakoztatása
         syncing: Szinkronizálás...
         sync: Szinkronizálás
-        disconnect: Lecsatlakozás
         disconnect_confirm: Biztosan le szeretnéd választani ezt a Coinbase-kapcsolatot? A szinkronizált számlák manuális számlákká válnak.
       binance_panel:
         setup_instructions: "A Binance csatlakoztatásához hozz létre egy csak olvasási jogosultsággal rendelkező API-kulcsot:"
@@ -336,7 +335,6 @@ hu:
         connect_button: Binance csatlakoztatása
         syncing: Szinkronizálás...
         sync: Szinkronizálás
-        disconnect: Lecsatlakozás
         disconnect_confirm: "Biztosan le szeretnéd választani a Binance-t?"
       kraken_panel:
         step1_html: 'Nyisd meg a <a href="https://pro.kraken.com/app/settings/api" target="_blank" rel="noopener noreferrer" class="underline">Kraken API-beállításait</a>'
@@ -372,7 +370,6 @@ hu:
         application_id_placeholder_new: "Add meg az alkalmazásazonosítót"
         application_id_placeholder_update: "Add meg az új azonosítót a frissítéshez"
         client_certificate_label: "Ügyfél-tanúsítvány (privát kulccsal)"
-        keep_client_certificate_hint: "Hagyd üresen az aktuális tanúsítvány megtartásához"
         save_and_connect: "Mentés és csatlakozás"
         update_connection: "Kapcsolat frissítése"
         connected_bank: "Csatlakoztatott bank"
@@ -459,6 +456,13 @@ hu:
           all_other_options: 'Minden egyéb konfigurációs opció: „Nem"'
         report_window_note: "Az IBKR Flex-jelentések az IBKR-ben konfigurált lekérdezési ablakra korlátozódnak. A Sure a teljes aktuális pozíciókat, valamint a jelentésből legfeljebb 365 nap tevékenységet importál."
         sync: Szinkronizálás
+        syncing: Szinkronizálás
+        remove: Eltávolítás
+        setup_accounts: Számlák beállítása
+        add_connection: Kapcsolat hozzáadása
+        new_connection_title: Új kapcsolat
+        connection_name_label: Kapcsolat neve
+        connection_name_placeholder: Interactive Brokers
         disconnect_confirm: Leválasztja az Interactive Brokers-t?
         query_id_label: Lekérdezés azonosítója
         query_id_placeholder_new: Add meg az IBKR Flex lekérdezés azonosítóját
@@ -468,7 +472,4 @@ hu:
         token_placeholder_existing: Hagyd üresen a meglévő token megtartásához
         save_configuration: Konfiguráció mentése
         update_configuration: Konfiguráció frissítése
-        status_configured_prefix: "%{summary}. Látogasd meg a"
-        accounts_tab: Számlák
-        status_configured_suffix: fület a felderített számlák kezeléséhez.
         not_configured: Nincs konfigurálva.

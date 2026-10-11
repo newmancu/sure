@@ -67,7 +67,7 @@ zh-CN:
         failed: 失败
         no_usage_data: 所选时间段内未找到用量数据
         cost_estimates_title: 关于费用预估
-        cost_estimates_description: "费用根据各提供商公布的定价估算，最近核实日期为 %{date}。实际费用可能不同。定价按每 100 万 token 计算，并随模型而异。自定义或自托管模型将显示为“N/A”，且不计入总费用。"
+        cost_estimates_description: "费用根据各提供商公布的定价估算，包括截至 2026 年 7 月的 OpenAI 定价。实际费用可能不同。定价按每 100 万 token 计算，并随模型而异。自定义或自托管模型将显示为“N/A”，且不计入总费用。"
     ai_prompts:
       show:
         page_title: AI 提示词
@@ -359,7 +359,6 @@ zh-CN:
         connect_button: 连接 Coinbase
         syncing: 正在同步...
         sync: 同步
-        disconnect: 断开连接
         disconnect_confirm: 确定要断开此 Coinbase 连接吗？同步的账户会变为手动账户。
       binance_panel:
         setup_instructions: 连接 Binance，请创建一个只读 API key：
@@ -378,7 +377,6 @@ zh-CN:
         connect_button: 连接 Binance
         syncing: 正在同步...
         sync: 同步
-        disconnect: 断开连接
         disconnect_confirm: 确定要断开 Binance 吗？
         historical_import: 历史导入设置
         sync_start_date_label: 导入起始日期
@@ -417,7 +415,6 @@ zh-CN:
         application_id_placeholder_new: 输入 application ID
         application_id_placeholder_update: 输入新 ID 以更新
         client_certificate_label: Client Certificate（包含 Private Key）
-        keep_client_certificate_hint: "留空以保留当前证书"
         save_and_connect: 保存并连接
         update_connection: 更新连接
         connected_bank: 已连接的银行
@@ -504,6 +501,13 @@ zh-CN:
           all_other_options: 其他所有配置选项：“No”
         report_window_note: IBKR Flex reports 受您在 IBKR 中配置的查询窗口限制。Sure 将从此报告导入完整的当前持仓，以及最多最近 365 天的活动。
         sync: 同步
+        syncing: 正在同步
+        remove: 移除
+        setup_accounts: 设置账户
+        add_connection: 添加连接
+        new_connection_title: 新连接
+        connection_name_label: 连接名称
+        connection_name_placeholder: Interactive Brokers
         disconnect_confirm: 断开 Interactive Brokers？
         query_id_label: Query ID
         query_id_placeholder_new: 输入您的 IBKR Flex Query ID
@@ -513,9 +517,6 @@ zh-CN:
         token_placeholder_existing: 留空以保留当前 Token
         save_configuration: 保存配置
         update_configuration: 更新配置
-        status_configured_prefix: "%{summary}。请访问"
-        accounts_tab: 账户
-        status_configured_suffix: 标签页以管理已发现的账户。
         not_configured: 未配置。
       akahu_panel:
         step_1_html: 前往 %{link} 并创建个人应用。
