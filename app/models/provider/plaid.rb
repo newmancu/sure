@@ -185,9 +185,6 @@ class Provider::Plaid
       [ transactions, securities ]
     end
 
-    # The primary Plaid product to request for a given Sure account type.
-    # Investments map to the `investments` product, liability accounts
-    # (CreditCard/Loan) to `liabilities`, everything else to `transactions`.
     def get_primary_product(accountable_type)
       return "transactions" if eu?
 
@@ -201,22 +198,10 @@ class Provider::Plaid
       end
     end
 
-    # Additional Plaid products to consent to alongside the primary product.
-    #
-    # We only request the `liabilities` product when the account being linked is
-    # itself a liability (CreditCard/Loan). Plaid's Link filters out any
-    # institution that does not support every requested product, so asking for
-    # `liabilities` on e.g. an Investment link silently hides investment-only
-    # brokerages like E*TRADE that don't offer it.
     def get_additional_consented_products(accountable_type)
       return [] if eu?
 
-      case get_primary_product(accountable_type)
-      when "liabilities"
-        SUPPORTED_PLAID_PRODUCTS - [ "liabilities" ]
-      else
-        SUPPORTED_PLAID_PRODUCTS - [ get_primary_product(accountable_type), "liabilities" ]
-      end
+      SUPPORTED_PLAID_PRODUCTS - [ get_primary_product(accountable_type) ]
     end
 
     def eu?

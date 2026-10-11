@@ -4,7 +4,6 @@ module Localize
   included do
     around_action :switch_locale
     around_action :switch_timezone
-    helper_method :locale_from_param
   end
 
   private
