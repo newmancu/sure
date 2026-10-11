@@ -5,8 +5,6 @@ class TransactionsController < ApplicationController
   before_action :set_entry_for_tags, only: :update_tags
   before_action :store_params!, only: :index
 
-  helper_method :new_transaction_idempotency_key
-
   def show
     super
     assign_mark_recurring_state
@@ -33,9 +31,8 @@ class TransactionsController < ApplicationController
                          # - outflow rows need inflow_transaction (to_account) for both
                          #   counterpart display and Transfer#categorizable?/#payment?
                          # - inflow rows need outflow_transaction (from_account) for
-                         #   counterpart display, inflow_transaction (to_account)
-                         #   for the category menu on the same row, and the
-                         #   outflow's category, which the inflow row shows
+                         #   counterpart display, and inflow_transaction (to_account)
+                         #   for the category menu on the same row
                          {
                            transfer_as_outflow: {
                              inflow_transaction: { entry: :account }
@@ -44,7 +41,7 @@ class TransactionsController < ApplicationController
                          {
                            transfer_as_inflow: {
                              inflow_transaction: { entry: :account },
-                             outflow_transaction: [ :category, { entry: :account } ]
+                             outflow_transaction: { entry: :account }
                            }
                          }
                        )
@@ -76,28 +73,16 @@ class TransactionsController < ApplicationController
       Set.new
     end
 
-    @uncategorized_count = Rails.cache.fetch(uncategorized_count_cache_key) do
-      Current.accessible_entries.uncategorized_transactions.count
-    end
+    @uncategorized_count = Current.accessible_entries.uncategorized_transactions.count
 
-    # Load projected recurring transactions for next 10 days. Only the IDs are
-    # cached: cached ActiveRecord objects outlive schema changes across
-    # upgrades and raise MissingAttributeError for columns added since.
-    projected_recurring_ids = Rails.cache.fetch(projected_recurring_cache_key, expires_in: 1.day) do
-      Current.family.recurring_transactions
-                    .accessible_by(Current.user)
-                    .active
-                    .where("next_expected_date <= ? AND next_expected_date >= ?",
-                           10.days.from_now.to_date,
-                           Date.current)
-                    .pluck(:id)
-    end
-    @projected_recurring = if projected_recurring_ids.empty?
-      []
-    else
-      Current.family.recurring_transactions.accessible_by(Current.user)
-                    .where(id: projected_recurring_ids).includes(:merchant).to_a
-    end
+    # Load projected recurring transactions for next 10 days
+    @projected_recurring = Current.family.recurring_transactions
+                                  .accessible_by(Current.user)
+                                  .active
+                                  .where("next_expected_date <= ? AND next_expected_date >= ?",
+                                         10.days.from_now.to_date,
+                                         Date.current)
+                                  .includes(:merchant)
 
     @breadcrumbs = [ [ t("breadcrumbs.home"), root_path ], [ t("breadcrumbs.transactions"), nil ] ]
   end
@@ -144,19 +129,7 @@ class TransactionsController < ApplicationController
 
     return unless require_account_permission!(account)
 
-    idempotency_key = submitted_idempotency_key
-
-    # Sequential double-submit guard: the form was already submitted
-    # successfully once (double-click, browser retry, user reopening the
-    # dialog after a slow response) and the first request already committed
-    # by the time this one runs. Treat it as a success instead of creating a
-    # second, identical entry.
-    if idempotency_key && (existing_entry = find_duplicate_manual_entry(account, idempotency_key))
-      respond_with_created_entry(existing_entry)
-      return
-    end
-
-    @entry = account.entries.new(entry_params_with_idempotency_key(idempotency_key))
+    @entry = account.entries.new(entry_params)
 
     if @entry.save
       @entry.sync_account_later
@@ -164,22 +137,16 @@ class TransactionsController < ApplicationController
       @entry.mark_user_modified!
       @entry.transaction.lock_attr!(:tag_ids) if @entry.transaction.tags.any?
 
-      respond_with_created_entry(@entry)
+      flash[:notice] = t(".created")
+
+      respond_to do |format|
+        format.html { redirect_back_or_to account_path(@entry.account) }
+        format.turbo_stream { stream_redirect_back_or_to(account_path(@entry.account)) }
+      end
     else
       set_new_transaction_form_options
       render :new, status: :unprocessable_entity
     end
-  rescue ActiveRecord::RecordNotUnique
-    # Concurrent-request backstop: two near-simultaneous submissions both
-    # passed the pre-check above (neither saw the other's row yet) and both
-    # reached #save. The partial unique index on
-    # entries(account_id, idempotency_key) lets exactly one INSERT win;
-    # this rescues the loser and redirects it to the winning entry instead of
-    # creating a duplicate or surfacing a 500 to the user.
-    existing_entry = idempotency_key && find_duplicate_manual_entry(account, idempotency_key)
-    raise unless existing_entry
-
-    respond_with_created_entry(existing_entry)
   end
 
   def update
@@ -250,46 +217,15 @@ class TransactionsController < ApplicationController
   def update_tags
     return unless require_account_permission!(@entry.account, :annotate, redirect_path: transaction_path(@entry))
 
-    # The transaction-row tag picker toggles one tag at a time; the drawer's
-    # multiselect sends the full set.
-    if params[:toggle_tag_id].present?
-      @toggled_tag = Current.family.tags.find(params[:toggle_tag_id])
-      @entry.transaction.toggle_tag!(@toggled_tag)
-    else
-      @entry.transaction.tag_ids = Current.family.tags.where(id: tag_ids_param).pluck(:id)
-    end
+    tag_ids = Current.family.tags.where(id: tag_ids_param).pluck(:id)
 
+    @entry.transaction.tag_ids = tag_ids
     @entry.lock_saved_attributes!
     @entry.mark_user_modified!
     @entry.transaction.lock_attr!(:tag_ids)
     @entry.sync_account_later
 
-    respond_to do |format|
-      # JSON stays first so Accept: */* callers keep the original response.
-      format.json { render json: { tag_ids: @entry.transaction.tag_ids } }
-      # Without Turbo the row picker's button_to posts as plain HTML.
-      format.html { redirect_back_or_to transaction_path(@entry) }
-      format.turbo_stream do
-        transaction = @entry.transaction
-        streams = %i[desktop mobile].map do |variant|
-          turbo_stream.replace(
-            dom_id(transaction, "tag_summary_#{variant}"),
-            partial: "tags/summary",
-            locals: { transaction: transaction, variant: variant }
-          )
-        end
-        if @toggled_tag
-          # autofocus hands keyboard focus back to the re-rendered option,
-          # which Turbo focuses after the stream renders.
-          streams << turbo_stream.replace(
-            "#{dom_id(@entry, :tag_option)}_#{@toggled_tag.id}",
-            partial: "tag/dropdowns/row",
-            locals: { tag: @toggled_tag, entry: @entry, selected: transaction.tag_ids.include?(@toggled_tag.id), autofocus: true }
-          )
-        end
-        render turbo_stream: streams
-      end
-    end
+    render json: { tag_ids: @entry.transaction.tag_ids }
   end
 
   def merge_duplicate
@@ -330,14 +266,13 @@ class TransactionsController < ApplicationController
     redirect_back_or_to transactions_path
   end
 
-  # Offer transaction conversion only for account types that can own trades.
   def convert_to_trade
     @transaction = accessible_transactions.includes(entry: :account).find(params[:id])
     @entry = @transaction.entry
 
     return unless require_account_permission!(@entry.account)
 
-    unless @entry.account.supports_trades?
+    unless @entry.account.investment?
       flash[:alert] = t("transactions.convert_to_trade.errors.not_investment_account")
       redirect_back_or_to transactions_path
       return
@@ -346,7 +281,6 @@ class TransactionsController < ApplicationController
     render :convert_to_trade
   end
 
-  # Lock and recheck the source entry before creating a trade and excluding the transaction.
   def create_trade_from_transaction
     @transaction = accessible_transactions.includes(entry: :account).find(params[:id])
     @entry = @transaction.entry
@@ -354,7 +288,7 @@ class TransactionsController < ApplicationController
     return unless require_account_permission!(@entry.account)
 
     # Pre-transaction validations
-    unless @entry.account.supports_trades?
+    unless @entry.account.investment?
       flash[:alert] = t("transactions.convert_to_trade.errors.not_investment_account")
       redirect_back_or_to transactions_path
       return
@@ -370,25 +304,15 @@ class TransactionsController < ApplicationController
     security = resolve_security_for_conversion
     return if performed? # Early exit if redirect already happened
 
+    # Validate and calculate qty/price before transaction
+    qty, price = calculate_qty_and_price
+    return if performed? # Early exit if redirect already happened
+
     activity_label = params[:investment_activity_label].presence
-    # Serialize replacements on the source, including requests already in flight.
+    # Infer sell from amount sign: negative amount = money coming in = sell
+    is_sell = activity_label == "Sell" || (activity_label.blank? && @entry.amount < 0)
+
     ActiveRecord::Base.transaction do
-      # Entry#transaction is its delegated transaction record, so use an
-      # explicit DB transaction rather than ActiveRecord's instance with_lock.
-      @entry.lock!
-      if @entry.excluded?
-        flash[:alert] = t("transactions.convert_to_trade.errors.already_converted")
-        redirect_back_or_to transactions_path
-        next
-      end
-
-      # Infer missing values from the locked source amount, including edits
-      # committed while the security was being resolved.
-      qty, price = calculate_qty_and_price
-      next if performed?
-
-      # Infer sell from the refreshed source: negative amount means money in.
-      is_sell = activity_label == "Sell" || (activity_label.blank? && @entry.amount < 0)
       # For trades: positive qty = buy (money out), negative qty = sell (money in)
       signed_qty = is_sell ? -qty : qty
       trade_amount = qty * price
@@ -425,8 +349,6 @@ class TransactionsController < ApplicationController
       # Mark original transaction as excluded (soft delete)
       @entry.update!(excluded: true)
     end
-
-    return if performed?
 
     flash[:notice] = t("transactions.convert_to_trade.success")
     redirect_to account_path(@entry.account), status: :see_other
@@ -524,32 +446,6 @@ class TransactionsController < ApplicationController
   end
 
   private
-    # Scoped by user (not just family) because Current.accessible_entries is
-    # user-scoped for family sharing (see Current#accessible_entries).
-    #
-    # Includes Family#accounts_status_version because `uncategorized_transactions`
-    # filters on account status (draft/active), and toggling an account's
-    # active status (AccountsController#toggle_active) doesn't touch `entries`
-    # or `AccountShare`, so it wouldn't otherwise bust this cache.
-    def uncategorized_count_cache_key
-      "transactions_uncategorized_count/v4/#{Current.family.id}/#{Current.user.id}/" \
-        "#{Current.family.entries_version}/#{Current.family.accounts_status_version}/#{Current.account_share_version}"
-    end
-
-    # Scoped additionally by Date.current since the "next 10 days" window is
-    # date-dependent and would otherwise return a stale window on a cache hit
-    # from an earlier day.
-    #
-    # Includes Family#recurring_transaction_merchants_version because the
-    # cached records are preloaded with :merchant and rendered with its
-    # name/logo, but editing a FamilyMerchant or a shared ProviderMerchant
-    # doesn't touch `recurring_transactions`.
-    def projected_recurring_cache_key
-      "transactions_projected_recurring/v6/#{Current.family.id}/#{Current.user.id}/#{Date.current}/" \
-        "#{Current.family.recurring_transactions_version}/#{Current.family.accounts_status_version}/" \
-        "#{Current.family.recurring_transaction_merchants_version}/#{Current.account_share_version}"
-    end
-
     # The "Mark as Recurring" block is only ever rendered under these same
     # conditions (see transactions/show.html.erb), so skip the extra query
     # entirely when it won't be used — this runs on every show/failed-update
@@ -638,50 +534,6 @@ class TransactionsController < ApplicationController
       entry_params
     end
 
-    def entry_params_with_idempotency_key(idempotency_key)
-      return entry_params unless idempotency_key
-
-      # A dedicated column, deliberately not external_id/source: those are
-      # provider-linkage fields (Entry#linked? = external_id.present?), and
-      # reusing them here would make a manual entry look provider-synced -
-      # disabling its date/nature/amount/currency fields in the editor, and
-      # hiding it from future provider dedup matching.
-      entry_params.merge(idempotency_key: idempotency_key)
-    end
-
-    def find_duplicate_manual_entry(account, idempotency_key)
-      account.entries.find_by(idempotency_key: idempotency_key)
-    end
-
-    # The hidden "entry[idempotency_key]" field is rendered fresh (a random
-    # UUID) every time the new-transaction form loads, and echoed back
-    # unchanged by the browser on submit. It's never trusted for anything but
-    # de-duplication scoped to the current user's own account (see #create),
-    # so we only require that it looks like a UUID we could have generated -
-    # anything else (missing field, tampered value, non-string type from a
-    # malformed request) just disables the idempotency check for that
-    # request rather than being treated as an error.
-    UUID_FORMAT = /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
-    private_constant :UUID_FORMAT
-
-    def submitted_idempotency_key
-      key = params.dig(:entry, :idempotency_key)
-      key if key.is_a?(String) && key.match?(UUID_FORMAT)
-    end
-
-    def new_transaction_idempotency_key
-      @new_transaction_idempotency_key ||= submitted_idempotency_key || SecureRandom.uuid
-    end
-
-    def respond_with_created_entry(entry)
-      flash[:notice] = t(".created")
-
-      respond_to do |format|
-        format.html { redirect_back_or_to account_path(entry.account) }
-        format.turbo_stream { stream_redirect_back_or_to(account_path(entry.account)) }
-      end
-    end
-
     def tag_ids_param
       Array(params[:tag_ids]).reject(&:blank?)
     end
@@ -700,7 +552,7 @@ class TransactionsController < ApplicationController
         .alphabetically
         .includes(:account_providers, logo_attachment: :blob)
         .to_a
-      @categories = Current.family.categories.alphabetically_by_hierarchy.to_a
+      @categories = Current.family.categories.alphabetically.to_a
       @merchants = Current.family.available_merchants_for(Current.user).alphabetically.to_a
       @tags = Current.family.tags.alphabetically.to_a
     end
@@ -709,7 +561,7 @@ class TransactionsController < ApplicationController
     # read_write users can only annotate (category, tags, notes, merchant).
     # read_only users cannot update anything.
     def permitted_entry_params
-      permitted = case entry_permission
+      case entry_permission
       when :owner, :full_control
         entry_params
       when :read_write
@@ -722,14 +574,6 @@ class TransactionsController < ApplicationController
       else
         {} # read_only — no edits allowed
       end
-
-      # A matched transfer's category lives on its outflow leg; a category
-      # sent for the inflow leg would look saved but never reach a budget.
-      if permitted[:entryable_attributes]&.key?(:category_id) && @entry.transaction.category_set_on_transfer_outflow?
-        permitted[:entryable_attributes] = permitted[:entryable_attributes].except(:category_id)
-      end
-
-      permitted
     end
 
     def search_params
@@ -738,17 +582,13 @@ class TransactionsController < ApplicationController
                 :start_date, :end_date, :search, :amount,
                 :amount_operator, :active_accounts_only,
                 accounts: [], account_ids: [],
-                categories: [], merchants: [], types: [], tags: [], status: [], ai_status: []
+                categories: [], merchants: [], types: [], tags: [], status: []
               )
               .to_h
               .compact_blank
 
       cleaned_params.delete(:amount_operator) unless cleaned_params[:amount].present?
 
-      if cleaned_params[:ai_status]
-        cleaned_params[:ai_status] &= Transaction::Search::AI_STATUSES
-        cleaned_params.delete(:ai_status) if cleaned_params[:ai_status].empty?
-      end
 
       cleaned_params
     end
@@ -783,7 +623,6 @@ class TransactionsController < ApplicationController
 
     # Helper methods for convert_to_trade
 
-    # Resolve the allowed ticker/provider before locking the source, avoiding network calls under its lock.
     def resolve_security_for_conversion
       user_country = Current.family.country
 
@@ -852,7 +691,6 @@ class TransactionsController < ApplicationController
       end
     end
 
-    # Validate submitted trade values and infer a missing value from the locked amount.
     def calculate_qty_and_price
       amount = @entry.amount.abs
       qty = params[:qty].present? ? params[:qty].to_d.abs : nil

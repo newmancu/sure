@@ -46,10 +46,6 @@ class BinanceAccount::Processor
     end
 
     fetch_and_process_trades
-
-    # The account was created, and anchored, before any of this history
-    # existed. Now that it does, the anchor has to precede it.
-    binance_account.current_account.ensure_opening_anchor_precedes_entries
   end
 
   private

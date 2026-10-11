@@ -2,6 +2,7 @@ class Import::UploadsController < ApplicationController
   layout "imports"
 
   before_action :set_import
+  before_action :set_account_options, only: %i[show update]
 
   def show
   end
@@ -19,7 +20,7 @@ class Import::UploadsController < ApplicationController
     elsif @import.is_a?(SureImport)
       update_sure_import_upload
     elsif csv_valid?(csv_str)
-      @import.account = import_account_id.present? ? accessible_accounts.find(import_account_id) : nil
+      @import.account = import_account_id.present? ? Import::AccountMapping.importable_accounts(@import).find(import_account_id) : nil
       @import.assign_attributes(raw_file_str: csv_str, col_sep: upload_params[:col_sep])
       @import.save!(validate: false)
 
@@ -66,22 +67,26 @@ class Import::UploadsController < ApplicationController
       @import = Current.family.imports.find(params[:import_id])
     end
 
+    def set_account_options
+      writable_accounts = Current.family.accounts.writable_by(Current.user).visible.alphabetically
+      @qif_account_options = writable_accounts.pluck(:name, :id)
+      @csv_account_options = Import::AccountMapping.importable_accounts(@import).visible.alphabetically.pluck(:name, :id)
+    end
+
     def handle_qif_upload
       unless QifParser.valid?(csv_str)
         flash.now[:alert] = "Must be a valid QIF file"
         render :show, status: :unprocessable_entity and return
       end
 
-      normalized_qif = QifParser.normalize_encoding(csv_str)
-
-      unless import_account_id.present? || QifParser.parse_accounts(normalized_qif).any?
-        flash.now[:alert] = t(".qif_account_required")
+      unless import_account_id.present?
+        flash.now[:alert] = "Please select an account for the QIF import"
         render :show, status: :unprocessable_entity and return
       end
 
       ActiveRecord::Base.transaction do
-        @import.account = accessible_accounts.find(import_account_id) if import_account_id.present?
-        @import.raw_file_str = normalized_qif
+        @import.account = Current.family.accounts.writable_by(Current.user).find(import_account_id)
+        @import.raw_file_str = QifParser.normalize_encoding(csv_str)
         @import.save!(validate: false)
         @import.generate_rows_from_csv
         @import.sync_mappings
