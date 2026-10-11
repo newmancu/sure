@@ -6,6 +6,7 @@ import {
   shift,
 } from "@floating-ui/dom";
 import { Controller } from "@hotwired/stimulus";
+import { fixedStrategyPlatform } from "utils/floating_position";
 
 /**
  * Strict action-list menu. Container is `role="menu"`, items are
@@ -27,9 +28,6 @@ export default class extends Controller {
     this.boundUpdate = this.update.bind(this);
     this.addEventListeners();
     this.startAutoUpdate();
-    // Every menu renders closed, so one that connects open is a copy Turbo
-    // cached while it was open, brought back by Back.
-    this.close();
   }
 
   // Derived from the content element's own class rather than tracked as
@@ -174,6 +172,7 @@ export default class extends Controller {
       placement: useMobileFullwidth ? "bottom" : this.placementValue,
       middleware: [offset(this.offsetValue), flip({ padding: 5 }), shift({ padding: 5 })],
       strategy: "fixed",
+      platform: fixedStrategyPlatform,
     }).then(({ x, y }) => {
       if (useMobileFullwidth) {
         Object.assign(this.contentTarget.style, {
