@@ -162,7 +162,7 @@ class Transfer::Creator
 
     def outflow_transaction
       name = "#{name_prefix} to #{destination_account.name}"
-      kind = outflow_transaction_kind
+      kind = transfer_kinds[:outflow]
 
       Transaction.new(
         kind: kind,
@@ -188,7 +188,7 @@ class Transfer::Creator
       net_inflow = inflow_converted_amount
 
       Transaction.new(
-        kind: "funds_movement",
+        kind: transfer_kinds[:inflow],
         entry: destination_account.entries.build(
           amount: net_inflow * -1,
           currency: destination_account.currency,
@@ -243,8 +243,8 @@ class Transfer::Creator
            ).amount
     end
 
-    def outflow_transaction_kind
-      Transfer.kind_for_account(destination_account, from_account: source_account)
+    def transfer_kinds
+      @transfer_kinds ||= Transfer.kinds_for(source_account: source_account, destination_account: destination_account)
     end
 
     def name_prefix

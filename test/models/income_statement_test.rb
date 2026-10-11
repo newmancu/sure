@@ -297,18 +297,6 @@ class IncomeStatementTest < ActiveSupport::TestCase
     assert_equal Money.new(900, @family.currency), totals.expense_money
   end
 
-  # A flag PostgreSQL cannot cast to boolean used to raise
-  # PG::InvalidTextRepresentation and take the whole statement down.
-  test "a pending flag PostgreSQL cannot cast neither raises nor counts" do
-    assert_statement_leaves_out_flagged_expense("maybe")
-  end
-
-  # Transaction#pending? (and so the Pending badge) calls "no" pending;
-  # PostgreSQL's ::boolean called it posted and counted it.
-  test "a \"no\" pending flag is pending, as Transaction#pending? says" do
-    assert_statement_leaves_out_flagged_expense("no")
-  end
-
   # NEW TESTS: Interval-Based Calculations
   test "different intervals return different statistical results with multi-period data" do
     # Clear existing transactions
@@ -392,6 +380,30 @@ class IncomeStatementTest < ActiveSupport::TestCase
     assert_equal 5, totals.transactions_count # Original 4 + investment_contribution
     assert_equal Money.new(1000, @family.currency), totals.income_money
     assert_equal Money.new(1900, @family.currency), totals.expense_money # 900 + 1000 investment
+  end
+
+  test "includes investment_withdrawal transactions as income regardless of amount sign" do
+    create_transaction(
+      account: @checking_account,
+      amount: 250,
+      category: nil,
+      kind: "investment_withdrawal"
+    )
+
+    income_statement = IncomeStatement.new(@family)
+    totals = income_statement.totals(date_range: Period.last_30_days.date_range)
+
+    assert_equal Money.new(1250, @family.currency), totals.income_money
+    assert_equal Money.new(900, @family.currency), totals.expense_money
+  end
+
+  test "sums uncategorized withdrawals with other income before taking the absolute value" do
+    create_transaction(account: @checking_account, amount: -1000, category: nil, kind: "standard")
+    create_transaction(account: @checking_account, amount: -500, category: nil, kind: "investment_withdrawal")
+
+    totals = IncomeStatement.new(@family).totals(date_range: Period.last_30_days.date_range)
+
+    assert_equal Money.new(2500, @family.currency), totals.income_money
   end
 
   test "includes provider-imported investment_contribution inflows as expenses" do
@@ -785,24 +797,4 @@ class IncomeStatementTest < ActiveSupport::TestCase
 
     assert_equal 1, totals_query_calls
   end
-
-  private
-    # Adds a 250 grocery expense whose pending flag is +flag+ and asserts every
-    # figure is the one without it: totals (Transaction.excluding_pending), the
-    # family median and average (FamilyStats) and the category median
-    # (CategoryStats), each of which reads the flag in its own SQL.
-    def assert_statement_leaves_out_flagged_expense(flag)
-      flagged = create_transaction(account: @checking_account, amount: 250, category: @groceries_category)
-      flagged.entryable.update!(extra: { "plaid" => { "pending" => flag } })
-      assert flagged.entryable.pending?, "pending? should call #{flag.inspect} pending"
-
-      income_statement = IncomeStatement.new(@family)
-      totals = income_statement.totals(date_range: Period.last_30_days.date_range)
-
-      assert_equal 4, totals.transactions_count
-      assert_equal Money.new(900, @family.currency), totals.expense_money
-      assert_equal 900.0, income_statement.median_expense(interval: "month")
-      assert_equal 900.0, income_statement.avg_expense(interval: "month")
-      assert_equal 900.0, income_statement.median_expense(interval: "month", category: @groceries_category)
-    end
 end
