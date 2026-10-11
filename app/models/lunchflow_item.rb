@@ -1,5 +1,5 @@
 class LunchflowItem < ApplicationRecord
-  include Syncable, Provided, Unlinking, Encryptable, DestroyableLater
+  include Syncable, Provided, Unlinking, Encryptable
 
   DEFAULT_BASE_URL = "https://lunchflow.app/api/v1".freeze
 
@@ -25,6 +25,11 @@ class LunchflowItem < ApplicationRecord
   scope :syncable, -> { active }
   scope :ordered, -> { order(created_at: :desc) }
   scope :needs_update, -> { where(status: :requires_update) }
+
+  def destroy_later
+    update!(scheduled_for_deletion: true)
+    DestroyJob.perform_later(self)
+  end
 
   def import_latest_lunchflow_data
     provider = lunchflow_provider

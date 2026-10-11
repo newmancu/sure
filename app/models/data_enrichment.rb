@@ -21,7 +21,6 @@ class DataEnrichment < ApplicationRecord
     questrade: "questrade",
     redbark: "redbark",
     trade_republic: "trade_republic",
-    bayes: "bayes",
-    fio: "fio"
+    bayes: "bayes"
   }
 end
