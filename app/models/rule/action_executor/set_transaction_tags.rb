@@ -1,6 +1,6 @@
 class Rule::ActionExecutor::SetTransactionTags < Rule::ActionExecutor
   def type
-    "multi_select"
+    "select"
   end
 
   def options
@@ -8,9 +8,8 @@ class Rule::ActionExecutor::SetTransactionTags < Rule::ActionExecutor
   end
 
   def execute(transaction_scope, value: nil, ignore_attribute_locks: false, rule_run: nil)
-    tag_ids = Array(value).compact_blank
-    selected_tag_ids = family.tags.where(id: tag_ids).pluck(:id)
-    return 0 if selected_tag_ids.empty?
+    tag = family.tags.find_by_id(value)
+    return 0 unless tag
 
     scope = transaction_scope
 
@@ -19,22 +18,17 @@ class Rule::ActionExecutor::SetTransactionTags < Rule::ActionExecutor
     end
 
     count_modified_resources(scope) do |txn|
-      # `with_lock` closes the read-modify-write race window: without it, two
-      # concurrent rule applications on the same transaction could each read
-      # the same "before" tag_ids and one write could clobber the other.
-      txn.with_lock do
-        # Merge the selected tags with existing tags instead of replacing them
-        # This preserves tags set by users or other rules
-        existing_tag_ids = txn.tag_ids || []
-        merged_tag_ids = (existing_tag_ids + selected_tag_ids).uniq
+      # Merge the new tag with existing tags instead of replacing them
+      # This preserves tags set by users or other rules
+      existing_tag_ids = txn.tag_ids || []
+      merged_tag_ids = (existing_tag_ids + [ tag.id ]).uniq
 
-        txn.enrich_attribute(
-          :tag_ids,
-          merged_tag_ids,
-          source: "rule",
-          ignore_locks: ignore_attribute_locks
-        )
-      end
+      txn.enrich_attribute(
+        :tag_ids,
+        merged_tag_ids,
+        source: "rule",
+        ignore_locks: ignore_attribute_locks
+      )
     end
   end
 end
