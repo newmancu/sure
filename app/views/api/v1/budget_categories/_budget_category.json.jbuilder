@@ -23,9 +23,8 @@ if include_derived_amounts
   # Sits with the derived amounts because it is what makes available_to_spend
   # exceed budgeted_spending: without it a client sees the larger number with
   # nothing to account for the difference.
-  displayed_rollover = Money.new(budget_category.display_rolled_over_amount, budget_category.currency)
-  json.rolled_over_amount displayed_rollover.format
-  json.rolled_over_amount_cents money_to_minor_units.call(displayed_rollover)
+  json.rolled_over_amount budget_category.rolled_over_amount_money.format
+  json.rolled_over_amount_cents money_to_minor_units.call(budget_category.rolled_over_amount_money)
   json.available_to_spend budget_category.available_to_spend_money.format
   json.available_to_spend_cents money_to_minor_units.call(budget_category.available_to_spend_money)
 end

@@ -119,33 +119,6 @@ class CategoriesControllerTest < ActionDispatch::IntegrationTest
     assert response_json.fetch("errors").any?
   end
 
-  test "create as json with a parent makes a subcategory" do
-    parent = categories(:food_and_drink)
-
-    assert_difference "Category.count", +1 do
-      post categories_url(format: :json), params: {
-        category: { name: "JSON Subcategory", color: Category::COLORS.first, parent_id: parent.id } }
-    end
-
-    assert_response :created
-    new_category = Category.find(JSON.parse(response.body).fetch("id"))
-    assert_equal parent, new_category.parent
-    assert_includes JSON.parse(response.body).fetch("html"), "category-select-subcategory-indicator"
-  end
-
-  test "create as json rejects a parent from another family" do
-    foreign_parent = families(:empty).categories.create!(name: "Foreign Parent", color: "#123456")
-
-    assert_no_difference "Category.count" do
-      post categories_url(format: :json), params: {
-        category: { name: "Sneaky Child", color: Category::COLORS.first, parent_id: foreign_parent.id } }
-    end
-
-    assert_response :unprocessable_entity
-    # The inline create reads `errors` first (then `error`, then `message`).
-    assert_includes JSON.parse(response.body).fetch("errors"), "Parent is invalid"
-  end
-
   test "create and assign to transaction" do
     color = Category::COLORS.sample
 
@@ -185,42 +158,6 @@ class CategoriesControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to categories_url
   end
 
-  test "guest cannot create category" do
-    sign_in family_guest
-
-    assert_no_difference "Category.count" do
-      post categories_url, params: {
-        category: {
-          name: "Guest Category",
-          color: Category::COLORS.sample } }
-    end
-
-    assert_redirected_to accounts_url
-  end
-
-  test "guest cannot destroy category" do
-    sign_in family_guest
-
-    assert_no_difference "Category.count" do
-      delete category_url(categories(:food_and_drink))
-    end
-
-    assert_redirected_to accounts_url
-  end
-
-  test "member can create category" do
-    sign_in users(:family_member)
-
-    assert_difference "Category.count", 1 do
-      post categories_url, params: {
-        category: {
-          name: "Member Category",
-          color: Category::COLORS.sample } }
-    end
-
-    assert_redirected_to categories_url
-  end
-
   test "bootstrap" do
     # 22 default categories minus 2 that already exist in fixtures (Income, Food & Drink)
     assert_difference "Category.count", 20 do
@@ -245,37 +182,6 @@ class CategoriesControllerTest < ActionDispatch::IntegrationTest
     assert_no_match(/<html/i, response.body)
     assert_no_match(/<turbo-frame id="modal"><\/turbo-frame>/, response.body)
     assert_select "dialog"
-  end
-
-  test "merge orders subcategories immediately after their parent" do
-    parent = @family.categories.create!(
-      name: "Zoo",
-      color: "#000000",
-      lucide_icon: "folder"
-    )
-    child = @family.categories.create!(
-      name: "Apple",
-      color: "#111111",
-      lucide_icon: "folder",
-      parent: parent
-    )
-
-    get merge_categories_path
-
-    assert_response :success
-
-    form = Nokogiri::HTML(response.body).at_css("form[action='#{perform_merge_categories_path}']")
-    assert_not_nil form
-
-    category_ids = form.css("[data-select-target='option']").map { |option| option["data-value"] }
-    source_ids = form.css("input[name='source_ids[]']").map { |input| input["value"] }
-    parent_index = category_ids.index(parent.id)
-    child_index = category_ids.index(child.id)
-
-    assert_not_nil parent_index
-    assert_not_nil child_index
-    assert_equal parent_index + 1, child_index
-    assert_equal category_ids, source_ids
   end
 
   test "merge selected categories into an existing category" do

@@ -48,7 +48,6 @@ export default class extends Controller {
     const height = this.element.clientHeight;
     const {
       days = 30,
-      current_days: currentDays = days,
       axis_labels: axisLabels = [],
       current = [],
       previous = [],
@@ -85,7 +84,7 @@ export default class extends Controller {
       .range([innerHeight, 0]);
 
     this._drawGridlines(group, y, innerWidth, innerHeight);
-    this._drawXAxis(group, x, days, innerHeight, axisLabels, currentDays);
+    this._drawXAxis(group, x, days, innerHeight, axisLabels);
 
     const line = d3
       .line()
@@ -172,10 +171,8 @@ export default class extends Controller {
       .style("font-weight", "500");
   }
 
-  _drawXAxis(group, x, days, innerHeight, axisLabels, currentDays = days) {
-    const mobile = !window.matchMedia("(min-width: 640px)").matches;
-    const span = mobile ? Math.min(days, currentDays) : days;
-    const tickDays = [...new Set([1, Math.round((1 + span) / 2), span])];
+  _drawXAxis(group, x, days, innerHeight, axisLabels) {
+    const tickDays = [...new Set([1, Math.round((1 + days) / 2), days])];
 
     group
       .append("g")
