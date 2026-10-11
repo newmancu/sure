@@ -25,17 +25,63 @@ class IndexaCapitalItemsController < ApplicationController
     @indexa_capital_item.name ||= "IndexaCapital Connection"
 
     if @indexa_capital_item.save
-      redirect_to settings_providers_path, notice: t(".success"), status: :see_other
+      if turbo_frame_request?
+        flash.now[:notice] = t(".success", default: "Successfully configured IndexaCapital.")
+        @indexa_capital_items = Current.family.indexa_capital_items.ordered
+        render turbo_stream: [
+          turbo_stream.replace(
+            "indexa_capital-providers-panel",
+            partial: "settings/providers/indexa_capital_panel",
+            locals: { indexa_capital_items: @indexa_capital_items }
+          ),
+          *flash_notification_stream_items
+        ]
+      else
+        redirect_to settings_providers_path, notice: t(".success"), status: :see_other
+      end
     else
-      render_provider_panel("indexa_capital", alert: @indexa_capital_item.errors.full_messages.join(", "))
+      @error_message = @indexa_capital_item.errors.full_messages.join(", ")
+
+      if turbo_frame_request?
+        render turbo_stream: turbo_stream.replace(
+          "indexa_capital-providers-panel",
+          partial: "settings/providers/indexa_capital_panel",
+          locals: { error_message: @error_message }
+        ), status: :unprocessable_entity
+      else
+        redirect_to settings_providers_path, alert: @error_message, status: :unprocessable_entity
+      end
     end
   end
 
   def update
     if @indexa_capital_item.update(indexa_capital_item_params)
-      render_provider_panel("indexa_capital", notice: t(".success"))
+      if turbo_frame_request?
+        flash.now[:notice] = t(".success", default: "Successfully updated IndexaCapital configuration.")
+        @indexa_capital_items = Current.family.indexa_capital_items.ordered
+        render turbo_stream: [
+          turbo_stream.replace(
+            "indexa_capital-providers-panel",
+            partial: "settings/providers/indexa_capital_panel",
+            locals: { indexa_capital_items: @indexa_capital_items }
+          ),
+          *flash_notification_stream_items
+        ]
+      else
+        redirect_to settings_providers_path, notice: t(".success"), status: :see_other
+      end
     else
-      render_provider_panel("indexa_capital", alert: @indexa_capital_item.errors.full_messages.join(", "))
+      @error_message = @indexa_capital_item.errors.full_messages.join(", ")
+
+      if turbo_frame_request?
+        render turbo_stream: turbo_stream.replace(
+          "indexa_capital-providers-panel",
+          partial: "settings/providers/indexa_capital_panel",
+          locals: { error_message: @error_message }
+        ), status: :unprocessable_entity
+      else
+        redirect_to settings_providers_path, alert: @error_message, status: :unprocessable_entity
+      end
     end
   end
 
