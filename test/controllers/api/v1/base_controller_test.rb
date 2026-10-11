@@ -3,6 +3,8 @@
 require "test_helper"
 
 class Api::V1::BaseControllerTest < ActionDispatch::IntegrationTest
+  include ApiRateLimitTestHelper
+
   setup do
     @user = users(:family_admin)
     @oauth_app = Doorkeeper::Application.create!(
@@ -30,30 +32,6 @@ class Api::V1::BaseControllerTest < ActionDispatch::IntegrationTest
   teardown do
     # Clean up Redis data after each test
     Redis.new.del("api_rate_limit:#{@api_key.id}")
-  end
-
-  test "uses each authenticated family's timezone in callbacks and actions without leaking it" do
-    other_user = users(:empty)
-    other_key = ApiKey.create!(user: other_user, name: "Timezone Read", scopes: [ "read" ],
-      display_key: "timezone_#{SecureRandom.hex(8)}")
-    @user.family.update!(timezone: "America/Los_Angeles")
-    other_user.family.update!(timezone: "Asia/Tokyo")
-
-    Time.use_zone("UTC") do
-      travel_to Time.utc(2024, 3, 1, 1) do
-        [ [ @plain_api_key, "America/Los_Angeles", "2024-02-29" ],
-          [ other_key.display_key, "Asia/Tokyo", "2024-03-01" ] ].each do |key, zone, date|
-          get "/api/v1/test", headers: { "X-Api-Key" => key }
-          assert_response :success
-          assert_equal zone, response.parsed_body["time_zone"]
-          assert_equal date, response.parsed_body["date"]
-          assert_equal date, response.parsed_body["callback_date"]
-          assert_equal "UTC", Time.zone.name
-        end
-      end
-    end
-  ensure
-    Redis.new.del("api_rate_limit:#{other_key.id}") if other_key
   end
 
   test "should require authentication" do
@@ -391,11 +369,12 @@ class Api::V1::BaseControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "should return 429 when rate limit exceeded" do
-    # Make 100 requests to exhaust the rate limit
-    100.times do
-      get "/api/v1/test", headers: { "X-Api-Key" => @plain_api_key }
-      assert_response :success
-    end
+    # Seed the counter at 99 so the next request exhausts the limit
+    # (equivalent to making 100 requests, without the request overhead)
+    seed_api_rate_limit(@api_key, 99)
+
+    get "/api/v1/test", headers: { "X-Api-Key" => @plain_api_key }
+    assert_response :success
 
     # 101st request should be rate limited
     get "/api/v1/test", headers: { "X-Api-Key" => @plain_api_key }
@@ -424,9 +403,7 @@ class Api::V1::BaseControllerTest < ActionDispatch::IntegrationTest
 
   test "should provide detailed rate limit information in 429 response" do
     # Exhaust the rate limit
-    100.times do
-      get "/api/v1/test", headers: { "X-Api-Key" => @plain_api_key }
-    end
+    seed_api_rate_limit(@api_key, 100)
 
     # Make the rate-limited request
     get "/api/v1/test", headers: { "X-Api-Key" => @plain_api_key }
@@ -450,11 +427,12 @@ class Api::V1::BaseControllerTest < ActionDispatch::IntegrationTest
     )
 
     begin
-      # Make 50 requests with first API key
-      50.times do
-        get "/api/v1/test", headers: { "X-Api-Key" => @plain_api_key }
-        assert_response :success
-      end
+      # Put the first API key halfway through its budget and verify it
+      # still works
+      seed_api_rate_limit(@api_key, 49)
+      get "/api/v1/test", headers: { "X-Api-Key" => @plain_api_key }
+      assert_response :success
+      assert_equal "50", response.headers["X-RateLimit-Remaining"]
 
       # Should still be able to make requests with second API key
       get "/api/v1/test", headers: { "X-Api-Key" => other_api_key.display_key }

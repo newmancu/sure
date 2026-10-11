@@ -39,18 +39,17 @@ function setStatus(msg: string, kind: "info" | "error" = "info") {
 
 async function connect(rawUrl: string) {
   setStatus(S.checking, "info");
-  // Remember the base check_server resolved to, not the raw input.
-  let base: string | null;
+  let healthy: boolean;
   try {
-    base = await invoke<string | null>("check_server", { url: rawUrl });
+    healthy = await invoke<boolean>("check_server", { url: rawUrl });
   } catch (e) {
     setStatus(serverErrorMessage(e), "error");
     return;
   }
-  if (!base) { setStatus(S.unreachable, "error"); return; }
+  if (!healthy) { setStatus(S.unreachable, "error"); return; }
   try {
-    const list = await invoke<ServerEntry[]>("add_server", { url: base, label: "" });
-    const canonical = list.find((s) => s.url === base)?.url ?? list[0].url;
+    const list = await invoke<ServerEntry[]>("add_server", { url: rawUrl, label: "" });
+    const canonical = list.find((s) => s.url === rawUrl)?.url ?? list[0].url;
     await invoke("set_active_server", { url: canonical });
     goToServer(canonical);
   } catch (e) {

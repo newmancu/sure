@@ -27,7 +27,6 @@ require "rack/test"
 require "tempfile"
 require "uri"
 require Rails.root.join("test/support/sql_query_capture").to_s
-require Rails.root.join("test/support/rake_task_test_helper").to_s
 
 VCR.configure do |config|
   config.cassette_library_dir = "test/vcr_cassettes"
@@ -92,7 +91,6 @@ module ActiveSupport
     # Add more helper methods to be used by all tests here...
     def sign_in(user)
       post sessions_path, params: { email: user.email, password: user_password_test }
-      Current.session = user.sessions.order(:created_at).last
     end
 
     def ensure_tailwind_build
