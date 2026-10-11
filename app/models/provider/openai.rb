@@ -1,3 +1,5 @@
+require "base64"
+
 class Provider::Openai < Provider
   include LlmConcept
 
@@ -5,90 +7,65 @@ class Provider::Openai < Provider
   Error = Class.new(Provider::Error)
 
   DEFAULT_MODEL = "gpt-4.1".freeze
-  DEFAULT_REQUEST_TIMEOUT = 60
-  MIN_REQUEST_TIMEOUT = 1
-  SUPPORTED_MODELS = %w[gpt-4 gpt-5 gpt-6 o1 o3].freeze
-  VISION_CAPABLE_MODEL_PREFIXES = %w[gpt-4o gpt-4-turbo gpt-4.1 gpt-5 gpt-6 o1 o3].freeze
-  PDF_COMPLETION_LIMIT_MODEL_PREFIXES = %w[gpt-6 o1 o3].freeze
-
-  # Keep the provider's response budget and the PDF request parameter in sync.
-  # @return [Boolean] whether native PDF vision uses max_completion_tokens
-  def self.native_pdf_completion_limit?(model:, custom_provider:)
-    !custom_provider && PDF_COMPLETION_LIMIT_MODEL_PREFIXES.any? { |prefix| model.to_s.start_with?(prefix) }
-  end
+  CODEX_DEFAULT_MODEL = "gpt-5.6".freeze
+  CODEX_URI_BASE = "https://chatgpt.com/backend-api/codex".freeze
+  CODEX_ORIGINATOR = "codex_cli_rs".freeze
+  SUPPORTED_MODELS = %w[gpt-4 gpt-5 o1 o3].freeze
+  VISION_CAPABLE_MODEL_PREFIXES = %w[gpt-4o gpt-4-turbo gpt-4.1 gpt-5 o1 o3].freeze
 
   # Returns the effective model that would be used by the provider.
-  # Priority: explicit ENV > Setting > DEFAULT_MODEL. A blank ENV value is
-  # treated as unset and falls through to the Setting.
+  # Priority: explicit ENV > Setting > DEFAULT_MODEL.
   def self.effective_model
-    configured_model = ENV["OPENAI_MODEL"].presence || Setting.openai_model
-    configured_model.presence || DEFAULT_MODEL
+    configured_model = ENV.fetch("OPENAI_MODEL") { Setting.openai_model }.presence
+    configured_model || (oauth_configured? ? CODEX_DEFAULT_MODEL : DEFAULT_MODEL)
   end
 
   def self.configured?
-    ENV["OPENAI_ACCESS_TOKEN"].present? || Setting.openai_access_token.present?
+    oauth_configured? || ENV["OPENAI_ACCESS_TOKEN"].present? || Setting.openai_access_token.present?
   end
 
-  # Effective per-request HTTP timeout for OpenAI-compatible calls.
-  # Precedence matches other self-hosting settings: ENV > Setting > default.
-  #
-  # @return [Integer] timeout in seconds, at least MIN_REQUEST_TIMEOUT
-  def self.request_timeout
-    configured = ENV["OPENAI_REQUEST_TIMEOUT"].to_s.strip.to_i
-    configured = Setting.openai_request_timeout.to_i unless configured.positive?
-    return DEFAULT_REQUEST_TIMEOUT unless configured.positive?
-
-    [ configured, MIN_REQUEST_TIMEOUT ].max
+  def self.oauth_configured?
+    ENV["OPENAI_OAUTH_TOKEN"].present? || Setting.openai_oauth_token.present?
   end
 
-  # Extra HTTP headers for OpenAI-compatible requests, parsed from the
-  # OPENAI_EXTRA_HEADERS env var (a JSON object). ENV-only: no Setting
-  # fallback. Keys and values are stringified for Faraday; blank values are
-  # dropped. Nested JSON values are Ruby-inspect-stringified, not
-  # JSON-serialized. Fail-closed: any parse problem yields {} plus an error
-  # log (raw value never logged) so chat never breaks from bad config.
-  #
-  # @return [Hash<String, String>] parsed headers, {} when unset or invalid
-  def self.extra_headers
-    raw = ENV["OPENAI_EXTRA_HEADERS"].presence
-    return {} unless raw
+  def self.oauth_account_id(access_token)
+    payload = access_token.to_s.split(".", 3).second
+    return if payload.blank?
 
-    parsed = JSON.parse(raw)
-    unless parsed.is_a?(Hash)
-      Rails.logger.error("OPENAI_EXTRA_HEADERS must be a JSON object; ignoring")
-      return {}
-    end
-    parsed.transform_keys(&:to_s).transform_values(&:to_s).compact_blank
-  rescue JSON::ParserError, TypeError
-    Rails.logger.error("OPENAI_EXTRA_HEADERS is not valid JSON; ignoring")
-    {}
+    payload = payload.ljust((payload.length + 3) / 4 * 4, "=")
+    claims = JSON.parse(Base64.urlsafe_decode64(payload))
+    claims["chatgpt_account_id"].presence ||
+      claims.dig("https://api.openai.com/auth", "chatgpt_account_id").presence
+  rescue ArgumentError, JSON::ParserError
+    nil
   end
 
-  # Builds a client that uses the effective request timeout for every OpenAI call.
-  # Static extra headers from OPENAI_EXTRA_HEADERS are attached at construction;
-  # session-valued headers are withheld for per-request resolution.
-  #
-  # @param access_token [String] API token for the OpenAI-compatible endpoint
-  # @param uri_base [String, nil] custom endpoint base URL (OpenAI when nil)
-  # @param model [String, nil] default model; required when uri_base is set
-  # @return [void]
-  def initialize(access_token, uri_base: nil, model: nil)
+  def initialize(access_token, uri_base: nil, model: nil, oauth: false, account_id: nil)
     client_options = { access_token: access_token }
-    llm_uri_base = uri_base.presence
+    @oauth = oauth
+    llm_uri_base = oauth? ? CODEX_URI_BASE : uri_base.presence
     llm_model = model.presence
     client_options[:uri_base] = llm_uri_base if llm_uri_base.present?
-    client_options[:request_timeout] = self.class.request_timeout
-    parsed_headers = self.class.extra_headers
-    @session_extra_headers = parsed_headers.select { |_, value| value.include?("{session_id}") }
-    static_headers = parsed_headers.except(*@session_extra_headers.keys)
-    client_options[:extra_headers] = static_headers if static_headers.present?
+    client_options[:request_timeout] = ENV.fetch("OPENAI_REQUEST_TIMEOUT", 60).to_i
+
+    if oauth?
+      oauth_account_id = account_id.presence || self.class.oauth_account_id(access_token)
+      if oauth_account_id.blank?
+        raise Error, "ChatGPT account ID is required when using a Codex OAuth token"
+      end
+
+      client_options[:extra_headers] = {
+        "ChatGPT-Account-ID" => oauth_account_id,
+        "originator" => CODEX_ORIGINATOR
+      }
+    end
 
     @client = ::OpenAI::Client.new(**client_options)
     @uri_base = llm_uri_base
     if custom_provider? && llm_model.blank?
       raise Error, "Model is required when using a custom OpenAI‑compatible provider"
     end
-    @default_model = llm_model.presence || self.class.effective_model
+    @default_model = llm_model.presence || (oauth? ? CODEX_DEFAULT_MODEL : self.class.effective_model)
   end
 
   def supports_model?(model)
@@ -111,6 +88,8 @@ class Provider::Openai < Provider
   end
 
   def provider_name
+    return "OpenAI (Codex subscription)" if oauth?
+
     custom_provider? ? "Custom OpenAI-compatible (#{@uri_base})" : "OpenAI"
   end
 
@@ -123,7 +102,11 @@ class Provider::Openai < Provider
   end
 
   def custom_provider?
-    @uri_base.present?
+    @uri_base.present? && !oauth?
+  end
+
+  def oauth?
+    @oauth
   end
 
   # Token-budget knobs. Precedence: ENV > Setting > default. Defaults match
@@ -131,47 +114,21 @@ class Provider::Openai < Provider
   # out of the box. Users on larger-context cloud models can raise via ENV or
   # via the Self-Hosting settings page.
   def context_window
-    # Single source of truth shared with prompt assembly, so the assistant's
-    # collapse-to-counts decision always agrees with the window used here.
-    Assistant::TokenBudget.context_window
+    positive_budget(ENV["LLM_CONTEXT_WINDOW"], Setting.llm_context_window, 2048)
   end
 
   def max_response_tokens
     positive_budget(ENV["LLM_MAX_RESPONSE_TOKENS"], Setting.llm_max_response_tokens, 512)
   end
 
-  # The response cap is only sent to the provider when someone explicitly
-  # configured it (ENV or a stored Setting). The 512 fallback above exists for
-  # budget math and must not silently truncate replies on stock installs.
-  def explicit_max_response_tokens
-    explicit = ENV["LLM_MAX_RESPONSE_TOKENS"].to_s.strip.to_i
-    return explicit if explicit.positive?
-
-    from_setting = Setting.llm_max_response_tokens.to_i
-    return from_setting if from_setting.positive?
-
-    nil
-  end
-
   def system_prompt_reserve
     positive_budget(ENV["LLM_SYSTEM_PROMPT_RESERVE"], nil, 256)
   end
 
-  def max_history_tokens(instructions: nil)
+  def max_history_tokens
     explicit = ENV["LLM_MAX_HISTORY_TOKENS"].presence&.to_i
     return explicit if explicit&.positive?
-
-    # When the actual instructions are in hand, budget against their real
-    # estimated size instead of the flat reserve; the prompt with session
-    # context routinely exceeds the historical 256-token figure.
-    prompt_reserve =
-      if instructions.present?
-        Assistant::TokenEstimator.estimate(instructions.to_s)
-      else
-        system_prompt_reserve
-      end
-
-    [ context_window - max_response_tokens - prompt_reserve, 256 ].max
+    [ context_window - max_response_tokens - system_prompt_reserve, 256 ].max
   end
 
   # Budget available for a one-shot (non-chat) request's full input,
@@ -218,31 +175,6 @@ class Provider::Openai < Provider
       end
 
       upsert_langfuse_trace(trace: trace, output: result.map(&:to_h))
-
-      result
-    end
-  end
-
-  def suggest_bill_setup(charges: [], categories: [], current_config: nil, model: "", family: nil)
-    with_provider_response do
-      effective_model = model.presence || @default_model
-
-      trace = create_langfuse_trace(
-        name: "openai.suggest_bill_setup",
-        input: { charges: charges, configure_mode: current_config.present? }
-      )
-
-      result = BillSetupSuggester.new(
-        client,
-        model: effective_model,
-        charges: charges,
-        categories: categories,
-        current_config: current_config,
-        langfuse_trace: trace,
-        family: family
-      ).suggest
-
-      upsert_langfuse_trace(trace: trace, output: result.to_h)
 
       result
     end
@@ -319,11 +251,6 @@ class Provider::Openai < Provider
     VISION_CAPABLE_MODEL_PREFIXES.any? { |prefix| model.start_with?(prefix) }
   end
 
-  # Analyze PDF bytes with the selected model and attribute usage to the family.
-  # @param pdf_content [String] PDF bytes
-  # @param model [String] optional override of the configured model
-  # @param family [Family, nil] usage attribution
-  # @return [Provider::Response] structured result or provider failure
   def process_pdf(pdf_content:, model: "", family: nil)
     with_provider_response do
       effective_model = model.presence || @default_model
@@ -334,14 +261,6 @@ class Provider::Openai < Provider
         input: { pdf_size: pdf_content&.bytesize }
       )
 
-      # Reasoning-model completion limits include reasoning; the fallback is a budget reserve.
-      response_limit =
-        if self.class.native_pdf_completion_limit?(model: effective_model, custom_provider: custom_provider?)
-          explicit_max_response_tokens
-        else
-          max_response_tokens
-        end
-
       result = PdfProcessor.new(
         client,
         model: effective_model,
@@ -349,7 +268,7 @@ class Provider::Openai < Provider
         custom_provider: custom_provider?,
         langfuse_trace: trace,
         family: family,
-        max_response_tokens: response_limit
+        max_response_tokens: max_response_tokens
       ).process
 
       upsert_langfuse_trace(trace: trace, output: result.to_h)
@@ -385,7 +304,6 @@ class Provider::Openai < Provider
     instructions: nil,
     functions: [],
     function_results: [],
-    tool_choice: nil,
     messages: nil,
     conversation_history: [],
     streamer: nil,
@@ -404,7 +322,6 @@ class Provider::Openai < Provider
         instructions: instructions,
         functions: functions,
         function_results: function_results,
-        tool_choice: tool_choice,
         streamer: streamer,
         previous_response_id: previous_response_id,
         session_id: session_id,
@@ -418,7 +335,6 @@ class Provider::Openai < Provider
         instructions: instructions,
         functions: functions,
         function_results: function_results,
-        tool_choice: tool_choice,
         messages: messages,
         streamer: streamer,
         session_id: session_id,
@@ -430,26 +346,6 @@ class Provider::Openai < Provider
 
   private
     attr_reader :client
-
-    # Substitutes {session_id} into session-valued extra headers for this chat
-    # request. Static headers were already set at construction; a session
-    # header without a session_id is simply never applied. Returns a
-    # request-scoped client copy carrying the resolved headers — session
-    # headers must not persist on the shared client, so later batch requests
-    # (which reuse this provider instance's client) never see them.
-    #
-    # @param session_id [String, nil] chat session UUID to substitute
-    # @return [OpenAI::Client] scoped copy when session headers apply, otherwise
-    #   the shared client
-    def with_session_headers(session_id:)
-      return client if @session_extra_headers.blank? || session_id.blank?
-
-      session_client = client.dup
-      session_client.add_headers(
-        @session_extra_headers.transform_values { |value| value.gsub("{session_id}") { session_id } }
-      )
-      session_client
-    end
 
     # Returns the first positive integer among env, setting, default. Treats
     # zero or negative values as "unset" and falls through — a 0-token budget
@@ -480,7 +376,6 @@ class Provider::Openai < Provider
       instructions: nil,
       functions: [],
       function_results: [],
-      tool_choice: nil,
       streamer: nil,
       previous_response_id: nil,
       session_id: nil,
@@ -488,8 +383,6 @@ class Provider::Openai < Provider
       family: nil
     )
       with_provider_response do
-        session_client = with_session_headers(session_id: session_id)
-
         chat_config = ChatConfig.new(
           functions: functions,
           function_results: function_results
@@ -514,18 +407,14 @@ class Provider::Openai < Provider
         input_payload = chat_config.build_input(prompt: prompt)
 
         begin
-          request_params = {
+          raw_response = client.responses.create(parameters: {
             model: model,
             input: input_payload,
             instructions: instructions,
             tools: chat_config.tools,
             previous_response_id: previous_response_id,
             stream: stream_proxy
-          }
-          request_params[:tool_choice] = "none" if tool_choice == :none && chat_config.tools.present?
-          request_params[:max_output_tokens] = explicit_max_response_tokens if explicit_max_response_tokens
-
-          raw_response = session_client.responses.create(parameters: request_params)
+          })
 
           # If streaming, Ruby OpenAI does not return anything, so to normalize this method's API, we search
           # for the "response chunk" in the stream and return it (it is already parsed)
@@ -590,7 +479,6 @@ class Provider::Openai < Provider
       instructions: nil,
       functions: [],
       function_results: [],
-      tool_choice: nil,
       messages: nil,
       streamer: nil,
       session_id: nil,
@@ -598,8 +486,6 @@ class Provider::Openai < Provider
       family: nil
     )
       with_provider_response do
-        session_client = with_session_headers(session_id: session_id)
-
         messages = build_generic_messages(
           prompt: prompt,
           instructions: instructions,
@@ -615,11 +501,9 @@ class Provider::Openai < Provider
           messages: messages
         }
         params[:tools] = tools if tools.present?
-        params[:tool_choice] = "none" if tool_choice == :none && tools.present?
-        params[:max_tokens] = explicit_max_response_tokens if explicit_max_response_tokens
 
         begin
-          raw_response = session_client.chat(parameters: params)
+          raw_response = client.chat(parameters: params)
 
           parsed = GenericChatParser.new(raw_response).parsed
 
@@ -678,7 +562,7 @@ class Provider::Openai < Provider
       # LocalAI) don't silently truncate. tool_call/tool_result pairs are
       # preserved atomically by HistoryTrimmer.
       if messages.present?
-        trimmed = Assistant::HistoryTrimmer.new(messages, max_tokens: max_history_tokens(instructions: instructions)).call
+        trimmed = Assistant::HistoryTrimmer.new(messages, max_tokens: max_history_tokens).call
         payload.concat(trimmed)
       elsif prompt.present?
         payload << { role: "user", content: prompt }
@@ -689,11 +573,11 @@ class Provider::Openai < Provider
       if function_results.any?
         # Build assistant message with tool_calls
         tool_calls = function_results.map do |fn_result|
-          # Shared with ToolCall::Function.serialize_arguments so history and
-          # follow-up payloads stay in sync for strict OpenAI-compatible endpoints.
-          arguments_str = ToolCall::Function.serialize_arguments(fn_result[:arguments])
+          # Convert arguments to JSON string if it's not already a string
+          arguments = fn_result[:arguments]
+          arguments_str = arguments.is_a?(String) ? arguments : arguments.to_json
 
-          call = {
+          {
             id: fn_result[:call_id],
             type: "function",
             function: {
@@ -701,8 +585,6 @@ class Provider::Openai < Provider
               arguments: arguments_str
             }
           }
-          call[:extra_content] = fn_result[:extra_content] if fn_result[:extra_content].present?
-          call
         end
 
         payload << {
@@ -728,6 +610,7 @@ class Provider::Openai < Provider
           payload << {
             role: "tool",
             tool_call_id: fn_result[:call_id],
+            name: fn_result[:name],
             content: content
           }
         end

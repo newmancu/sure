@@ -10,7 +10,6 @@ es:
       rate_type: Tipo de interés
       term_months: Plazo (meses)
       term_months_placeholder: '360'
-      none: Ninguno
       subtype_prompt: Selecciona el tipo de préstamo
       subtype_none: Ninguno
     new:
@@ -24,14 +23,3 @@ es:
       term: Plazo
       type: Tipo
       unknown: Desconocido
-    tabs:
-      overview:
-        interest_rate: Tipo de interés
-        monthly_payment: Cuota mensual
-        not_applicable: N/D
-        original_principal: Capital inicial
-        remaining_principal: Capital pendiente
-        term: Plazo
-        type: Tipo
-        unknown: Desconocido
-        edit_loan_details: Editar detalles del préstamo
