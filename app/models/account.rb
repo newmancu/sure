@@ -9,6 +9,7 @@ class Account < ApplicationRecord
   after_destroy_commit :move_account_statements_to_inbox
 
   validates :name, :balance, :currency, presence: true
+  validates :ownership_percentage, numericality: { greater_than_or_equal_to: 0, less_than_or_equal_to: 100 }
   validate :owner_belongs_to_family, if: -> { owner_id.present? && family_id.present? }
 
   belongs_to :family
@@ -71,26 +72,6 @@ class Account < ApplicationRecord
     left_joins(:account_shares)
       .where("accounts.owner_id = :uid OR account_shares.user_id = :uid", uid: user.id)
       .distinct
-  }
-
-  # Accounts every active member of the account's family can access (owned or
-  # shared with them), the same test as accessible_by applied to all of them.
-  # Family-wide surfaces such as the insights feed name accounts and amounts
-  # to everyone, so they draw only from this set.
-  scope :accessible_by_all_active_members, -> {
-    where(<<~SQL.squish)
-      NOT EXISTS (
-        SELECT 1 FROM users
-        WHERE users.family_id = accounts.family_id
-          AND users.active = TRUE
-          AND users.id IS DISTINCT FROM accounts.owner_id
-          AND NOT EXISTS (
-            SELECT 1 FROM account_shares
-            WHERE account_shares.account_id = accounts.id
-              AND account_shares.user_id = users.id
-          )
-      )
-    SQL
   }
 
   # Accounts a user can write to (owned or shared with full_control)
@@ -763,6 +744,34 @@ class Account < ApplicationRecord
 
   def shared?
     account_shares.any?
+  end
+
+  # Percentage (0-100) of this account that +user+ counts towards their own net
+  # worth. The owner's share lives on the account; co-owners' shares live on
+  # their AccountShare. Anyone else (or no user) sees the full account.
+  def ownership_percentage_for(user)
+    return BigDecimal("100") if user.nil?
+    return ownership_percentage if owned_by?(user)
+
+    share = if account_shares.loaded?
+      account_shares.find { |s| s.user_id == user.id }
+    else
+      account_shares.find_by(user: user)
+    end
+
+    share ? share.ownership_percentage : BigDecimal("100")
+  end
+
+  def ownership_fraction_for(user)
+    ownership_percentage_for(user) / 100
+  end
+
+  def owned_balance_for(user)
+    balance * ownership_fraction_for(user)
+  end
+
+  def owned_balance_money_for(user)
+    Money.new(owned_balance_for(user), currency)
   end
 
   def permission_for(user)
