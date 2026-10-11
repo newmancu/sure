@@ -73,26 +73,6 @@ class Account < ApplicationRecord
       .distinct
   }
 
-  # Accounts every active member of the account's family can access (owned or
-  # shared with them), the same test as accessible_by applied to all of them.
-  # Family-wide surfaces such as the insights feed name accounts and amounts
-  # to everyone, so they draw only from this set.
-  scope :accessible_by_all_active_members, -> {
-    where(<<~SQL.squish)
-      NOT EXISTS (
-        SELECT 1 FROM users
-        WHERE users.family_id = accounts.family_id
-          AND users.active = TRUE
-          AND users.id IS DISTINCT FROM accounts.owner_id
-          AND NOT EXISTS (
-            SELECT 1 FROM account_shares
-            WHERE account_shares.account_id = accounts.id
-              AND account_shares.user_id = users.id
-          )
-      )
-    SQL
-  }
-
   # Accounts a user can write to (owned or shared with full_control)
   scope :writable_by, ->(user) {
     left_joins(:account_shares)
@@ -704,6 +684,13 @@ class Account < ApplicationRecord
     accountable_class.long_subtype_label_for(subtype) || accountable_class.display_name
   end
 
+  # Bond-specific helper for rendering tax wrapper where needed.
+  def bond_wrapper_label(format: :short)
+    return unless bond? && accountable.respond_to?(:wrapper_label)
+
+    accountable.wrapper_label(format: format)
+  end
+
   def supports_default?
     depository? || credit_card?
   end
@@ -739,7 +726,7 @@ class Account < ApplicationRecord
       :cash
     when "Property", "Vehicle", "OtherAsset", "Loan", "OtherLiability"
       :non_cash
-    when "Investment", "Crypto"
+    when "Investment", "Crypto", "Bond"
       :investment
     else
       raise "Unknown account type: #{accountable_type}"
