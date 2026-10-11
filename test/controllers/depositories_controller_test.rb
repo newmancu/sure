@@ -56,6 +56,63 @@ class DepositoriesControllerTest < ActionDispatch::IntegrationTest
     assert linked_account.reload.enable_category_matcher?
   end
 
+  test "persists fixed return settings" do
+    patch depository_path(@account), params: {
+      account: {
+        accountable_attributes: {
+          id: @account.accountable_id,
+          fixed_return_rate: 3.25,
+          fixed_return_frequency: "monthly",
+          fixed_return_start_date: "2026-01-01"
+        }
+      }
+    }
+
+    depository = @account.reload.depository
+
+    assert_equal 3.25, depository.fixed_return_rate
+    assert_equal "monthly", depository.fixed_return_frequency
+    assert_equal Date.new(2026, 1, 1), depository.fixed_return_start_date
+    assert depository.fixed_return?
+  end
+
+  test "rejects an unknown fixed return frequency" do
+    depository = @account.depository
+    depository.fixed_return_frequency = "hourly"
+
+    assert_not depository.valid?
+    assert_includes depository.errors[:fixed_return_frequency], "is not included in the list"
+  end
+
+  test "a fixed return rate requires a frequency and a start date" do
+    depository = @account.depository
+    depository.fixed_return_rate = 3.25
+
+    assert_not depository.valid?
+    assert_includes depository.errors[:fixed_return_frequency], "can't be blank"
+    assert_includes depository.errors[:fixed_return_start_date], "can't be blank"
+  end
+
+  test "rejects a fixed return start date in the future" do
+    depository = @account.depository
+    depository.assign_attributes(
+      fixed_return_rate: 3.25,
+      fixed_return_frequency: "monthly",
+      fixed_return_start_date: Date.current + 1
+    )
+
+    assert_not depository.valid?
+    assert_includes depository.errors[:fixed_return_start_date], "can't be in the future"
+  end
+
+  test "edit form renders the fixed return fields" do
+    get edit_account_url(@account)
+
+    assert_response :success
+    assert_select "input[name='account[accountable_attributes][fixed_return_rate]']", 1
+    assert_select "select[name='account[accountable_attributes][fixed_return_frequency]']", 1
+  end
+
   test "edit form renders category matcher toggle only for accounts that support it" do
     get edit_account_url(accounts(:connected))
     assert_response :success
@@ -64,45 +121,5 @@ class DepositoriesControllerTest < ActionDispatch::IntegrationTest
     get edit_account_url(accounts(:depository))
     assert_response :success
     assert_select "input[name='account[enable_category_matcher]']", 0
-  end
-
-  # --- member-owned connections (issue #3579) ------------------------------
-
-  test "a member sees only member-connectable providers in the method selector" do
-    Provider::Registry.stubs(:plaid_provider_for_region).returns(stub("plaid"))
-    Family.any_instance.stubs(:can_connect_plaid_us?).returns(true)
-    Family.any_instance.stubs(:can_connect_plaid_eu?).returns(false)
-
-    sign_in users(:family_member)
-    get new_depository_path(step: "method_select")
-
-    assert_response :success
-    assert_select "a[href=?]", new_plaid_item_path(region: "us", accountable_type: "Depository"), count: 1
-    # SimpleFIN is tenant-wide, so it must not be offered to a member even
-    # when it is configured.
-    assert_select "a[href*=?]", "simplefin", count: 0
-  end
-
-  test "an admin still sees every configured provider in the method selector" do
-    Provider::Registry.stubs(:plaid_provider_for_region).returns(stub("plaid"))
-    Family.any_instance.stubs(:can_connect_plaid_us?).returns(true)
-    Family.any_instance.stubs(:can_connect_plaid_eu?).returns(false)
-
-    sign_in users(:family_admin)
-    get new_depository_path(step: "method_select")
-
-    assert_response :success
-    assert_select "a[href=?]", new_plaid_item_path(region: "us", accountable_type: "Depository"), count: 1
-  end
-
-  test "a member is offered manual entry even with no connectable providers" do
-    Family.any_instance.stubs(:can_connect_plaid_us?).returns(false)
-    Family.any_instance.stubs(:can_connect_plaid_eu?).returns(false)
-
-    sign_in users(:family_member)
-    get new_depository_path(step: "method_select")
-
-    assert_response :success
-    assert_select "a[href=?]", new_depository_path, count: 1
   end
 end

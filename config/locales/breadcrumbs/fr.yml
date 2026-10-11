@@ -16,7 +16,6 @@ fr:
     budgets: Budgets
     categories: Catégories
     categorize: Catégoriser
-    changelog: Nouveautés
     chats: Discussions
     coinbase_items: Coinbase
     coinstats_items: CoinStats
@@ -30,7 +29,6 @@ fr:
     exports: Exports
     family_exports: Exportations
     family_merchants: Marchands
-    feedback: Retours
     guides: Guides
     holdings: Holdings
     home: Accueil
@@ -60,14 +58,12 @@ fr:
     payments: Paiements
     pending_duplicate_merges: Avis en double
     plaid_items: Plaid
-    plan: Plan
     preferences: Préférences
     profile: Informations sur le profil
     profiles: Informations sur le profil
     properties: Propriétés
     providers: Fournisseurs
     recurring_transactions: Récurrent
-    redbark_items: Redbark
     registrations: Inscrivez-vous
     reports: Rapports
     rules: Règles
