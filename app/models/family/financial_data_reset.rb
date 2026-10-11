@@ -40,7 +40,6 @@ class Family::FinancialDataReset
   ].freeze
   STATUS_COUNT_KEYS = (COUNT_KEYS - %i[syncs]) + %i[plaid_items]
   PROVIDER_ITEM_ASSOCIATIONS = %i[
-    financekit_items
     binance_items
     brex_items
     coinbase_items
@@ -53,14 +52,11 @@ class Family::FinancialDataReset
     lunchflow_items
     redbark_items
     mercury_items
-    onchain_wallet_items
     plaid_items
     simplefin_items
     snaptrade_items
     sophtron_items
     up_items
-    monobank_items
-    fio_items
   ].freeze
 
   Result = Struct.new(:user, :family, :dry_run, :before_counts, :deleted_counts, :after_counts, keyword_init: true)
@@ -79,7 +75,10 @@ class Family::FinancialDataReset
 
   attr_reader :user, :family
 
-  def initialize(user: nil, family: nil, dry_run: true, confirmed: false)
+  # report: false skips the ~33 COUNT queries taken before and after the
+  # deletion. Callers that discard the Result's counts (e.g. FamilyResetJob)
+  # can opt out; the returned Result then carries empty count hashes.
+  def initialize(user: nil, family: nil, dry_run: true, confirmed: false, report: true)
     if user && family && user.family != family
       raise ArgumentError, "user and family must belong to the same family"
     end
@@ -88,12 +87,13 @@ class Family::FinancialDataReset
     @family = family || user&.family
     @dry_run = ActiveModel::Type::Boolean.new.cast(dry_run)
     @confirmed = ActiveModel::Type::Boolean.new.cast(confirmed)
+    @report = ActiveModel::Type::Boolean.new.cast(report)
 
     raise ArgumentError, "user or family is required" unless @family
   end
 
   def call
-    before_counts = counts
+    before_counts = report? ? counts : {}
     if destructive_without_confirmation?
       raise ConfirmationRequiredError, "Pass confirmed: true to Family::FinancialDataReset to delete financial data."
     end
@@ -108,7 +108,7 @@ class Family::FinancialDataReset
       end
       purge_unattached_blobs(blob_ids)
       family.reload
-      after_counts = counts
+      after_counts = report? ? counts : {}
     end
 
     Result.new(
@@ -123,6 +123,10 @@ class Family::FinancialDataReset
 
   def dry_run?
     @dry_run
+  end
+
+  def report?
+    @report
   end
 
   private
@@ -161,7 +165,6 @@ class Family::FinancialDataReset
       scope(:tags).destroy_all
       scope(:merchants).destroy_all
       delete_provider_items!
-      family.financekit_account_lineages.destroy_all
       scope(:accounts).destroy_all
     end
 
