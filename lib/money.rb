@@ -10,7 +10,9 @@ class Money
       @to_currency = to_currency
       @date = date
 
-      super("Couldn't find exchange rate from #{from_currency} to #{to_currency} on #{date}")
+      error_message = message || "Couldn't find exchange rate from #{from_currency} to #{to_currency} on #{date}"
+
+      super(error_message)
     end
   end
 
@@ -64,11 +66,6 @@ class Money
 
       Money.new(amount * exchange_rate, other_iso_code)
     end
-  end
-
-  # Rounded to the precision `format` actually prints.
-  def for_display
-    self.class.new(amount.round(currency.default_precision), currency)
   end
 
   def as_json
