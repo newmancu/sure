@@ -29,7 +29,7 @@ class RegistrationsControllerTest < ActionDispatch::IntegrationTest
 
   test "first user of instance becomes super_admin" do
     # Clear all users to simulate fresh instance
-    User.connection.disable_referential_integrity { User.delete_all }
+    User.destroy_all
 
     assert_difference "User.count", +1 do
       post registration_url, params: { user: {

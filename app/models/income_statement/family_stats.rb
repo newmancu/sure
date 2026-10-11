@@ -1,5 +1,5 @@
 class IncomeStatement::FamilyStats
-  include IncomeStatement::ScopedTransactionsQuery
+  include IncomeStatement::ExpensePredicates
 
   def initialize(family, interval: "month", account_ids: nil)
     @family = family
@@ -30,7 +30,11 @@ class IncomeStatement::FamilyStats
     end
 
     def sql_params
-      base_sql_params(interval: @interval)
+      {
+        target_currency: @family.currency,
+        interval: @interval,
+        family_id: @family.id
+      }.merge(tax_advantaged_params)
     end
 
     def query_sql
@@ -38,12 +42,16 @@ class IncomeStatement::FamilyStats
         WITH period_totals AS (
           SELECT
             date_trunc(:interval, ae.date) as period,
-            #{classification_sql("t")} as classification,
-            SUM(#{converted_amount_sql("t")}) as total
+            CASE WHEN t.kind IN ('investment_contribution', 'loan_payment') THEN 'expense' WHEN ae.amount < 0 THEN 'income' ELSE 'expense' END as classification,
+            SUM(CASE WHEN t.kind IN ('investment_contribution', 'loan_payment') THEN ABS(ae.amount * COALESCE(er.rate, 1)) ELSE ae.amount * COALESCE(er.rate, 1) END) as total
           FROM transactions t
-          #{entries_join_sql("t")}
-          #{accounts_join_sql}
-          #{exchange_rates_join_sql}
+          JOIN entries ae ON ae.entryable_id = t.id AND ae.entryable_type = 'Transaction'
+          JOIN accounts a ON a.id = ae.account_id
+          LEFT JOIN exchange_rates er ON (
+            er.date = ae.date AND
+            er.from_currency = ae.currency AND
+            er.to_currency = :target_currency
+          )
           WHERE a.family_id = :family_id
             AND t.kind NOT IN (#{budget_excluded_kinds_sql})
             AND ae.excluded = false
@@ -51,7 +59,7 @@ class IncomeStatement::FamilyStats
             #{pending_providers_sql}
             #{exclude_tax_advantaged_sql}
             #{scope_to_account_ids_sql}
-          GROUP BY period, #{classification_sql("t")}
+          GROUP BY period, CASE WHEN t.kind IN ('investment_contribution', 'loan_payment') THEN 'expense' WHEN ae.amount < 0 THEN 'income' ELSE 'expense' END
         )
         SELECT
           classification,
