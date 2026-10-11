@@ -5,7 +5,6 @@ class ApplicationController < ActionController::Base
           PreviewGateable
   include Pundit::Authorization
   include CodespacesForgeryProtection
-  include DailyWebUsageTracking
 
   include Pagy::Backend
 
@@ -48,19 +47,6 @@ class ApplicationController < ActionController::Base
 
       respond_to do |format|
         format.html { redirect_to accounts_path, alert: t("shared.require_admin") }
-        format.turbo_stream { head :forbidden }
-        format.json { head :forbidden }
-        format.any { head :forbidden }
-      end
-    end
-
-    # Guests are read-only by design: they may view family configuration but
-    # never change it.
-    def require_non_guest!
-      return if Current.user && !Current.user.guest?
-
-      respond_to do |format|
-        format.html { redirect_to accounts_path, alert: t("shared.require_non_guest") }
         format.turbo_stream { head :forbidden }
         format.json { head :forbidden }
         format.any { head :forbidden }

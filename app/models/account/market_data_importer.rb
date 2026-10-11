@@ -1,8 +1,25 @@
 class Account::MarketDataImporter
   attr_reader :account
 
+  # Track rejected provider quotes separately from existing shared price history.
   def initialize(account)
     @account = account
+    @invalid_price_currency_security_ids = Set.new
+  end
+
+  # Count unresolved quote currencies only for securities and dates this account needs.
+  def invalid_price_currency_count
+    invalid_persisted_ids = Security::Price.with_unrecovered_currency
+      .where(security_id: security_ids, date: ..Date.current)
+      .group(:security_id)
+      .maximum(:date)
+      .filter_map { |security_id, date| security_id if date >= first_required_price_dates[security_id] }
+
+    retry_ids = Security::Price.requiring_currency_retry.where(security_id: security_ids, date: ..Date.current)
+      .group(:security_id).maximum(:date)
+      .filter_map { |security_id, date| security_id if date >= first_required_price_dates[security_id] }
+
+    (@invalid_price_currency_security_ids | invalid_persisted_ids | retry_ids).size
   end
 
   # Prices are imported first so their currencies are known when deciding
@@ -59,33 +76,66 @@ class Account::MarketDataImporter
     end
   end
 
+  # Import required quotes and retain account-local diagnostics until rejected dates recover.
   def import_security_prices
     return unless Security.provider
 
-    return if price_windows.empty?
+    current_security_ids = account.current_holdings.pluck(:security_id).to_set
+    traded_security_ids  = account.trades.pluck(:security_id).uniq
 
-    securities = Security.online.where(id: price_windows.keys).index_by(&:id)
+    all_security_ids = (current_security_ids | traded_security_ids)
+    return if all_security_ids.empty?
 
-    price_windows.each do |security_id, window|
+    securities = Security.online.where(id: all_security_ids).index_by(&:id)
+
+    start_dates    = first_required_price_dates
+    historical_ids = traded_security_ids - current_security_ids.to_a
+
+    # For securities no longer held, cap end_date at the last holding date so
+    # all_prices_exist? stays stable and we don't call the provider every sync.
+    last_holding_date = account.holdings
+                               .where(security_id: historical_ids)
+                               .group(:security_id)
+                               .maximum(:date)
+
+    # import_market_data runs before materialize_balances in Account::Syncer, so
+    # current_holdings can reflect a stale pre-trade snapshot. If a historical
+    # security has a trade newer than its last holding date the position was
+    # reopened this sync; fetch prices through today so the forthcoming
+    # materialization has a price available.
+    latest_trade_date = account.trades
+                               .where(security_id: historical_ids)
+                               .group(:security_id)
+                               .maximum("entries.date")
+
+    all_security_ids.each do |security_id|
       security = securities[security_id]
       next unless security
 
-      security.import_provider_prices(start_date: window.start_date, end_date: window.end_date)
+      end_date = if current_security_ids.include?(security_id)
+        Date.current
+      else
+        holding_date = last_holding_date[security_id]
+        trade_date   = latest_trade_date[security_id]
+        reopened     = trade_date && holding_date && trade_date > holding_date
+        reopened ? Date.current : (holding_date || Date.current)
+      end
+
+      _, provider_error = security.import_provider_prices(start_date: start_dates[security_id], end_date: end_date)
+      if provider_error == Security::Price::Importer::INVALID_CURRENCY_ERROR
+        @invalid_price_currency_security_ids.add(security_id)
+      end
       security.import_provider_details
     end
   end
 
   private
-    def price_windows
-      @price_windows ||= Security::Price::ImportWindows.new(account).to_h
-    end
-
     def security_ids
-      price_windows.keys
+      @security_ids ||= (account.current_holdings.pluck(:security_id) | account.trades.pluck(:security_id))
     end
 
     def first_required_price_dates
-      price_windows.transform_values(&:start_date)
+      @first_required_price_dates ||= batch_first_required_price_dates(security_ids)
     end
 
     # Earliest required date per price currency that differs from the account currency.
@@ -93,7 +143,7 @@ class Account::MarketDataImporter
     # Currencies whose prices all predate the account's first required date are skipped.
     def security_price_currency_start_dates
       @security_price_currency_start_dates ||= begin
-        latest_foreign_price_dates = Security::Price.where(security_id: security_ids)
+        latest_foreign_price_dates = Security::Price.with_known_currency.where(security_id: security_ids)
                                                     .where.not(currency: account.currency)
                                                     .group(:security_id, :currency)
                                                     .maximum(:date)
@@ -102,8 +152,31 @@ class Account::MarketDataImporter
           start_date = first_required_price_dates[security_id]
           next if latest_date < start_date
 
+          currency = Security::Price.normalized_currency(currency)
+          next if currency == account.currency
+
           dates[currency] = [ dates[currency], start_date ].compact.min
         end
+      end
+    end
+
+    # Replaces 2-queries-per-security with 3 queries total.
+    def batch_first_required_price_dates(security_ids)
+      # account.trades is a has_many :through :entries, so entries is already joined
+      trade_start_dates = account.trades.group(:security_id).minimum("entries.date")
+
+      provider_holding_security_ids = account.holdings
+                                             .where(security_id: security_ids)
+                                             .where.not(account_provider_id: nil)
+                                             .pluck(:security_id)
+                                             .to_set
+
+      account_start_date = account.start_date
+
+      security_ids.each_with_object({}) do |security_id, hash|
+        trade_date   = trade_start_dates[security_id]
+        holding_date = provider_holding_security_ids.include?(security_id) ? account_start_date : nil
+        hash[security_id] = [ trade_date, holding_date ].compact.min || account_start_date
       end
     end
 

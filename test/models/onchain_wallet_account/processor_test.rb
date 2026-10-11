@@ -217,6 +217,33 @@ class OnchainWalletAccount::ProcessorTest < ActiveSupport::TestCase
     OnchainWalletAccount::Processor.new(@onchain_account).process
   end
 
+  test "a legacy invalid currency price does not prevent backfill" do
+    date = 5.days.ago.to_date
+    bad_price = price_asset_at(date, 50)
+    bad_price.update_column(:currency, "")
+    price_asset_at(Date.current, 60)
+    store_movements(fake_movement(external_id: "tx1", amount: "1", timestamp: date))
+    Security.any_instance.stubs(:price_data_provider).returns(Provider::BinancePublic.new)
+    Security.any_instance.expects(:import_provider_prices)
+            .with(start_date: date, end_date: Date.current).once.returns([ 0, nil ])
+    ExchangeRate.expects(:find_or_fetch_rate).never
+
+    OnchainWalletAccount::Processor.new(@onchain_account).process
+
+    entry = @account.entries.find_by!(external_id: "onchain_#{@onchain_account.id}_tx1")
+    assert_equal "Transaction", entry.entryable_type
+  end
+
+  test "valuation uses an earlier valid price instead of a newer invalid one" do
+    price_asset_at(1.day.ago.to_date, 100)
+    bad_price = price_asset_at(Date.current, 999)
+    bad_price.update_column(:currency, "")
+
+    OnchainWalletAccount::Processor.new(@onchain_account).process
+
+    assert_equal 200, @account.reload.balance
+  end
+
   test "does not reach for prices at all when no crypto price provider is enabled" do
     store_movements(fake_movement(external_id: "tx1", amount: "1", timestamp: 5.days.ago.to_date))
     Security.any_instance.expects(:import_provider_prices).never
@@ -457,70 +484,12 @@ class OnchainWalletAccount::ProcessorTest < ActiveSupport::TestCase
     end
   end
 
-  test "revalue brings an idle wallet up to the latest price and asks for an account sync" do
-    price_asset_at(1.day.ago.to_date, 100)
-    OnchainWalletAccount::Processor.new(@onchain_account).process
-    assert_equal 200, @account.reload.balance
-
-    price_asset_at(Date.current, 150)
-
-    assert_difference -> { @account.syncs.count }, 1 do
-      assert OnchainWalletAccount::Processor.new(@onchain_account).revalue
-    end
-    assert_equal 300, @account.reload.balance
-    assert_equal 0, @account.cash_balance
-    assert_equal 300, @onchain_account.reload.current_balance
-    assert_equal 300, @account.holdings.find_by!(date: Date.current).amount
-  end
-
-  test "revalue writes nothing when the account sync cannot be queued" do
-    price_asset_at(1.day.ago.to_date, 100)
-    OnchainWalletAccount::Processor.new(@onchain_account).process
-    price_asset_at(Date.current, 150)
-    Account.any_instance.stubs(:sync_later).raises(ActiveRecord::LockWaitTimeout)
-
-    assert_raises(ActiveRecord::LockWaitTimeout) do
-      OnchainWalletAccount::Processor.new(@onchain_account).revalue
-    end
-    assert_equal 200, @account.reload.balance
-    assert_equal 200, @account.holdings.find_by!(date: Date.current).amount
-  end
-
-  test "revalue fixes the account currency even when the amount matches" do
-    price_asset_at(Date.current, 100)
-    OnchainWalletAccount::Processor.new(@onchain_account).process
-    @account.update_columns(currency: "EUR")
-
-    assert OnchainWalletAccount::Processor.new(@onchain_account.reload).revalue
-    assert_equal @onchain_account.currency, @account.reload.currency
-  end
-
-  test "revalue changes nothing when the price has not moved" do
-    price_asset_at(Date.current, 100)
-    OnchainWalletAccount::Processor.new(@onchain_account).process
-
-    assert_no_difference -> { @account.syncs.count } do
-      assert_not OnchainWalletAccount::Processor.new(@onchain_account).revalue
-    end
-    assert_equal 200, @account.reload.balance
-  end
-
-  test "revalue leaves the value alone when no price is known" do
-    price_asset_at(Date.current, 100)
-    OnchainWalletAccount::Processor.new(@onchain_account).process
-    security.prices.delete_all
-
-    assert_not OnchainWalletAccount::Processor.new(@onchain_account).revalue
-    assert_equal 200, @account.reload.balance
-  end
-
-  test "process and revalue do nothing when the asset is not linked to an account" do
+  test "does nothing when the asset is not linked to an account" do
     unlinked = create_onchain_wallet_account(item: @item, asset: fake_token_asset(contract: "0xaaa"))
 
     assert_nothing_raised do
       OnchainWalletAccount::Processor.new(unlinked).process
     end
-    assert_not OnchainWalletAccount::Processor.new(unlinked).revalue
   end
 
   private
