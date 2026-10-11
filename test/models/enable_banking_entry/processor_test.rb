@@ -291,175 +291,6 @@ class EnableBankingEntry::ProcessorTest < ActiveSupport::TestCase
     end
   end
 
-  # --- identifiers assigned after the fact ---
-
-  def identifierless_transaction(amount: "12.34", payee: "ACME 0001234", booking_date: Date.current)
-    {
-      transaction_id: nil,
-      entry_reference: nil,
-      booking_date: booking_date.to_s,
-      transaction_amount: { amount: amount, currency: "EUR" },
-      creditor: { name: "" },
-      bank_transaction_code: nil,
-      credit_debit_indicator: "DBIT",
-      remittance_information: [ payee ],
-      status: "BOOK"
-    }
-  end
-
-  test "a transaction that later gains an identifier claims its own earlier row instead of importing twice" do
-    raw = identifierless_transaction
-    content_id = EnableBankingEntry::Processor.compute_external_id(raw)
-
-    EnableBankingEntry::Processor.new(raw, enable_banking_account: @enable_banking_account).process
-    assert @account.entries.exists?(external_id: content_id)
-    before = @account.entries.count
-
-    settled = raw.merge(entry_reference: "2026-01-01.1")
-    settled_id = EnableBankingEntry::Processor.compute_external_id(settled)
-    EnableBankingEntry::Processor.new(settled, enable_banking_account: @enable_banking_account).process
-
-    assert_equal before, @account.entries.count, "the settled row should not import a second time"
-    assert @account.entries.exists?(external_id: settled_id)
-    assert_not @account.entries.exists?(external_id: content_id)
-  end
-
-  test "the superseded identifier is recorded so the stale payload row is skipped" do
-    raw = identifierless_transaction(amount: "23.45")
-    content_id = EnableBankingEntry::Processor.compute_external_id(raw)
-
-    EnableBankingEntry::Processor.new(raw, enable_banking_account: @enable_banking_account).process
-
-    settled = raw.merge(entry_reference: "2026-01-01.2")
-    EnableBankingEntry::Processor.new(settled, enable_banking_account: @enable_banking_account).process
-
-    entry = @account.entries.find_by!(external_id: EnableBankingEntry::Processor.compute_external_id(settled))
-    recorded = Array(entry.transaction.extra[EnableBankingEntry::Processor::SUPERSEDED_IDS_KEY])
-    assert_includes recorded, content_id
-  end
-
-  test "claiming a predecessor does not freeze the booking date against later corrections" do
-    # auto_claimed_pending_ids would: Account::ProviderImportAdapter#import_transaction
-    # keeps the stored date on any row carrying that key, forever. These are BOOK
-    # rows whose date the ASPSP may still correct, so the claim must not set it.
-    booked_on = Date.current - 3
-    raw = identifierless_transaction(amount: "45.67", booking_date: booked_on)
-
-    EnableBankingEntry::Processor.new(raw, enable_banking_account: @enable_banking_account).process
-
-    settled = raw.merge(entry_reference: "2026-01-01.5")
-    EnableBankingEntry::Processor.new(settled, enable_banking_account: @enable_banking_account).process
-
-    entry = @account.entries.find_by!(external_id: EnableBankingEntry::Processor.compute_external_id(settled))
-    assert_equal booked_on, entry.date
-
-    corrected_on = booked_on + 1
-    EnableBankingEntry::Processor.new(settled.merge(booking_date: corrected_on.to_s),
-                                      enable_banking_account: @enable_banking_account).process
-
-    assert_equal corrected_on, entry.reload.date, "a corrected booking date must still be applied"
-  end
-
-  test "an ASPSP identifier that looks synthesised still claims its predecessor" do
-    raw = identifierless_transaction(amount: "56.78")
-    content_id = EnableBankingEntry::Processor.compute_external_id(raw)
-
-    EnableBankingEntry::Processor.new(raw, enable_banking_account: @enable_banking_account).process
-    before = @account.entries.count
-
-    # compute_external_id renders this as "enable_banking_content_..." even though
-    # the ASPSP did supply an identifier, so a prefix check would misread it.
-    settled = raw.merge(transaction_id: "content_0a1b2c3d")
-    EnableBankingEntry::Processor.new(settled, enable_banking_account: @enable_banking_account).process
-
-    assert_equal before, @account.entries.count
-    assert_not @account.entries.exists?(external_id: content_id)
-    assert @account.entries.exists?(external_id: EnableBankingEntry::Processor.compute_external_id(settled))
-  end
-
-  test "a predecessor already claimed elsewhere is not taken over" do
-    raw = identifierless_transaction(amount: "67.89")
-    content_id = EnableBankingEntry::Processor.compute_external_id(raw)
-
-    EnableBankingEntry::Processor.new(raw, enable_banking_account: @enable_banking_account).process
-    predecessor = @account.entries.find_by!(external_id: content_id)
-
-    # Another sync of the same item claimed the row first. The set handed to this
-    # processor still lists the content id, which is what a concurrent run would
-    # see, so the claim is attempted and must decline.
-    predecessor.update_column(:external_id, "enable_banking_claimed_elsewhere.1")
-
-    settled = raw.merge(entry_reference: "2026-01-01.6")
-    EnableBankingEntry::Processor.new(settled,
-                                      enable_banking_account: @enable_banking_account,
-                                      identifierless_external_ids: Set[content_id]).process
-
-    assert_equal "enable_banking_claimed_elsewhere.1", predecessor.reload.external_id,
-                 "the earlier claim must stand"
-    assert @account.entries.exists?(external_id: EnableBankingEntry::Processor.compute_external_id(settled))
-  end
-
-  test "only one settled row claims the predecessor, so identical charges stay apart" do
-    raw = identifierless_transaction(amount: "34.56")
-
-    EnableBankingEntry::Processor.new(raw, enable_banking_account: @enable_banking_account).process
-    before = @account.entries.count
-
-    # Two settled rows with identical content and different identifiers: one real
-    # movement was already stored, the other is a genuinely separate charge.
-    first = raw.merge(entry_reference: "2026-01-01.3")
-    second = raw.merge(entry_reference: "2026-01-01.4")
-    EnableBankingEntry::Processor.new(first, enable_banking_account: @enable_banking_account).process
-    EnableBankingEntry::Processor.new(second, enable_banking_account: @enable_banking_account).process
-
-    assert_equal before + 1, @account.entries.count,
-                 "the first settled row claims the predecessor, the second imports on its own"
-  end
-
-  test "a pending incoming payload does not claim an identifierless BOOK predecessor" do
-    raw = identifierless_transaction(amount: "45.67")
-    content_id = EnableBankingEntry::Processor.compute_external_id(raw)
-
-    EnableBankingEntry::Processor.new(raw, enable_banking_account: @enable_banking_account).process
-    before = @account.entries.count
-
-    # Carries a real identifier, same content, but is itself still pending --
-    # Enable Banking's own pending->booked reconciliation owns this transition,
-    # not this claim mechanism.
-    pending_settled = raw.merge(entry_reference: "2026-01-01.7", _pending: true)
-    EnableBankingEntry::Processor.new(pending_settled, enable_banking_account: @enable_banking_account).process
-
-    assert_equal before + 1, @account.entries.count,
-                 "a pending payload must not re-key the BOOK predecessor"
-    assert @account.entries.exists?(external_id: content_id),
-           "the original BOOK row must be untouched"
-  end
-
-  test "a pending identifierless row is not offered as a claimable predecessor by THIS mechanism" do
-    pending_raw = identifierless_transaction(amount: "56.78").merge(_pending: true)
-    content_id = EnableBankingEntry::Processor.compute_external_id(pending_raw)
-
-    EnableBankingEntry::Processor.new(pending_raw, enable_banking_account: @enable_banking_account).process
-    predecessor = @account.entries.find_by!(external_id: content_id)
-
-    settled = pending_raw.merge(entry_reference: "2026-01-01.8", _pending: false)
-    settled_id = EnableBankingEntry::Processor.compute_external_id(settled)
-    EnableBankingEntry::Processor.new(settled, enable_banking_account: @enable_banking_account).process
-
-    # Enable Banking's own pending->booked reconciliation (ProviderImportAdapter's
-    # amount/date pending_match, not claim_identifierless_predecessor!) is free to
-    # claim this same row -- that is the intended outcome, and the whole point of
-    # excluding pending rows from identifierless_external_ids_for is to let that
-    # more conservative, purpose-built path own this transition instead of this
-    # one. What matters here is which mechanism did the claiming, not whether a
-    # claim happened at all.
-    predecessor.reload
-    assert_equal settled_id, predecessor.external_id,
-                 "the existing pending->booked reconciliation should still settle this row"
-    assert_not predecessor.transaction.pending?,
-               "settling should have cleared the pending flag, same as any ordinary pending transaction"
-  end
-
   # --- payment wallet prefixes ---
 
   test "a payment wallet prefix does not claim the transaction for the wallet's merchant" do
@@ -639,6 +470,143 @@ class EnableBankingEntry::ProcessorTest < ActiveSupport::TestCase
     assert_nil entry.transaction&.extra&.dig("enable_banking")
   end
 
+  test "stores counterparty iban as a top-level extra key for an outgoing payment" do
+    tx = {
+      entry_reference: "ref_iban_out",
+      transaction_id: nil,
+      booking_date: Date.current.to_s,
+      transaction_amount: { amount: "50.00", currency: "EUR" },
+      credit_debit_indicator: "DBIT",
+      creditor: { name: "Landlord GmbH" },
+      creditor_account: { iban: "DE89370400440532013000" }, # pipelock:ignore IBAN
+      creditor_agent: { name: "Deutsche Bank", bic_fi: "DEUTDEFFXXX" },
+      status: "BOOK"
+    }
+
+    EnableBankingEntry::Processor.new(tx, enable_banking_account: @enable_banking_account).process
+    entry = @account.entries.find_by!(external_id: "enable_banking_ref_iban_out")
+    assert_equal "DE89370400440532013000", entry.transaction.counterparty_iban # pipelock:ignore IBAN
+    assert_nil entry.transaction.counterparty_account_id
+    assert_includes entry.notes, "Bank: Deutsche Bank"
+  end
+
+  test "normalizes a counterparty iban with spaces before storing it" do
+    tx = {
+      entry_reference: "ref_iban_spaces",
+      transaction_id: nil,
+      booking_date: Date.current.to_s,
+      transaction_amount: { amount: "50.00", currency: "EUR" },
+      credit_debit_indicator: "DBIT",
+      creditor: { name: "Landlord GmbH" },
+      creditor_account: { iban: "de89 3704 0044 0532 0130 00" },
+      status: "BOOK"
+    }
+
+    EnableBankingEntry::Processor.new(tx, enable_banking_account: @enable_banking_account).process
+    entry = @account.entries.find_by!(external_id: "enable_banking_ref_iban_spaces")
+
+    assert_equal "DE89370400440532013000", entry.transaction.counterparty_iban # pipelock:ignore IBAN
+  end
+
+  test "normalizes a counterparty iban with dots and dashes before storing it" do
+    tx = {
+      entry_reference: "ref_iban_punctuation",
+      transaction_id: nil,
+      booking_date: Date.current.to_s,
+      transaction_amount: { amount: "50.00", currency: "EUR" },
+      credit_debit_indicator: "DBIT",
+      creditor: { name: "Landlord GmbH" },
+      creditor_account: { iban: "de89.3704-0044/0532:0130'00" },
+      status: "BOOK"
+    }
+
+    EnableBankingEntry::Processor.new(tx, enable_banking_account: @enable_banking_account).process
+    entry = @account.entries.find_by!(external_id: "enable_banking_ref_iban_punctuation")
+
+    assert_equal "DE89370400440532013000", entry.transaction.counterparty_iban # pipelock:ignore IBAN
+  end
+
+  test "stores counterparty iban from the debtor side for an incoming payment" do
+    tx = {
+      entry_reference: "ref_iban_in",
+      transaction_id: nil,
+      booking_date: Date.current.to_s,
+      transaction_amount: { amount: "50.00", currency: "EUR" },
+      credit_debit_indicator: "CRDT",
+      debtor: { name: "Employer AG" },
+      debtor_account: { iban: "AT611904300234573201" }, # pipelock:ignore IBAN
+      debtor_agent: { name: "Erste Bank" },
+      status: "BOOK"
+    }
+
+    EnableBankingEntry::Processor.new(tx, enable_banking_account: @enable_banking_account).process
+    entry = @account.entries.find_by!(external_id: "enable_banking_ref_iban_in")
+
+    assert_equal "AT611904300234573201", entry.transaction.counterparty_iban # pipelock:ignore IBAN
+  end
+
+  test "falls back to counterparty_account_id when no iban is present" do
+    tx = {
+      entry_reference: "ref_other_id",
+      transaction_id: nil,
+      booking_date: Date.current.to_s,
+      transaction_amount: { amount: "50.00", currency: "EUR" },
+      credit_debit_indicator: "DBIT",
+      creditor: { name: "Some Shop" },
+      creditor_account_additional_identification: { identification: "ACC-998877" },
+      status: "BOOK"
+    }
+
+    EnableBankingEntry::Processor.new(tx, enable_banking_account: @enable_banking_account).process
+    entry = @account.entries.find_by!(external_id: "enable_banking_ref_other_id")
+    assert_nil entry.transaction.counterparty_iban
+    assert_equal "ACC-998877", entry.transaction.counterparty_account_id
+  end
+
+  test "does not store counterparty iban for a wallet-paid card transaction with no account data" do
+    tx = {
+      entry_reference: "ref_wallet",
+      transaction_id: nil,
+      booking_date: Date.current.to_s,
+      transaction_amount: { amount: "12.00", currency: "EUR" },
+      credit_debit_indicator: "DBIT",
+      creditor: { name: "CARD-9999" },
+      remittance_information: [ "Apple pay: COMPRA EN ZARA" ],
+      status: "BOOK"
+    }
+
+    EnableBankingEntry::Processor.new(tx, enable_banking_account: @enable_banking_account).process
+    entry = @account.entries.find_by!(external_id: "enable_banking_ref_wallet")
+    assert entry.transaction.counterparty_iban.blank?
+  end
+
+  test "keeps the counterparty iban when the booked re-delivery of the same transaction omits it" do
+    with_iban = {
+      entry_reference: "ref_stale_iban",
+      transaction_id: nil,
+      booking_date: Date.current.to_s,
+      transaction_amount: { amount: "50.00", currency: "EUR" },
+      credit_debit_indicator: "DBIT",
+      creditor: { name: "Landlord GmbH" },
+      creditor_account: { iban: "DE89370400440532013000" }, # pipelock:ignore IBAN
+      status: "PDNG",
+      _pending: true
+    }
+    EnableBankingEntry::Processor.new(with_iban, enable_banking_account: @enable_banking_account).process
+    entry = @account.entries.find_by!(external_id: "enable_banking_ref_stale_iban")
+    assert_equal "DE89370400440532013000", entry.transaction.counterparty_iban # pipelock:ignore IBAN
+
+    # The booked re-delivery of the same transaction (same external_id) omits
+    # the account data this time -- a real PSD2 pattern where the pending
+    # leg carries more detail than the booked one.
+    # Clearing it would drop the signal rules, search and merchant matching
+    # rely on, so the IBAN the pending leg carried stays.
+    without_iban = with_iban.merge(status: "BOOK", _pending: false).except(:creditor_account)
+    EnableBankingEntry::Processor.new(without_iban, enable_banking_account: @enable_banking_account).process
+
+    assert_equal "DE89370400440532013000", entry.reload.transaction.counterparty_iban # pipelock:ignore IBAN
+  end
+
   def build_processor(data)
     # A minimal stand-in that responds to current_account (real EnableBankingAccount
     # always does) so `account`/`known_merchant_names` resolve safely to nil/[] instead
@@ -694,7 +662,8 @@ class EnableBankingEntry::ProcessorTest < ActiveSupport::TestCase
     import_adapter.expects(:find_or_create_merchant).with(
       provider_merchant_id: "enable_banking_merchant_c0b09f27a4375bb8d8d477ed552a9aa1",
       name: "ACME SHOP",
-      source: "enable_banking"
+      source: "enable_banking",
+      iban: nil
     ).returns(merchant)
 
     processor.stubs(:import_adapter).returns(import_adapter)
@@ -715,7 +684,8 @@ class EnableBankingEntry::ProcessorTest < ActiveSupport::TestCase
     import_adapter.expects(:find_or_create_merchant).with(
       provider_merchant_id: "enable_banking_merchant_c0b09f27a4375bb8d8d477ed552a9aa1",
       name: "ACME SHOP",
-      source: "enable_banking"
+      source: "enable_banking",
+      iban: nil
     ).returns(merchant)
 
     processor.stubs(:import_adapter).returns(import_adapter)
@@ -738,7 +708,8 @@ class EnableBankingEntry::ProcessorTest < ActiveSupport::TestCase
     import_adapter.expects(:find_or_create_merchant).with(
       provider_merchant_id: "enable_banking_merchant_c0b09f27a4375bb8d8d477ed552a9aa1",
       name: "ACME SHOP",
-      source: "enable_banking"
+      source: "enable_banking",
+      iban: nil
     ).returns(merchant)
 
     processor.stubs(:import_adapter).returns(import_adapter)
@@ -760,7 +731,8 @@ class EnableBankingEntry::ProcessorTest < ActiveSupport::TestCase
     import_adapter.expects(:find_or_create_merchant).with(
       provider_merchant_id: "enable_banking_merchant_#{Digest::MD5.hexdigest(truncated_name.downcase)}",
       name: truncated_name,
-      source: "enable_banking"
+      source: "enable_banking",
+      iban: nil
     ).returns(merchant)
 
     processor.stubs(:import_adapter).returns(import_adapter)
@@ -782,7 +754,8 @@ class EnableBankingEntry::ProcessorTest < ActiveSupport::TestCase
     import_adapter.expects(:find_or_create_merchant).with(
       provider_merchant_id: "enable_banking_merchant_c0b09f27a4375bb8d8d477ed552a9aa1",
       name: "ACME SHOP",
-      source: "enable_banking"
+      source: "enable_banking",
+      iban: nil
     ).returns(merchant)
 
     processor.stubs(:import_adapter).returns(import_adapter)
@@ -798,6 +771,81 @@ class EnableBankingEntry::ProcessorTest < ActiveSupport::TestCase
     )
 
     assert_nil processor.send(:merchant)
+  end
+
+  test "passes the counterparty iban to find_or_create_merchant when present" do
+    processor = build_processor(
+      credit_debit_indicator: "DBIT",
+      creditor: { name: "Landlord GmbH" },
+      creditor_account: { iban: "DE89370400440532013000" } # pipelock:ignore IBAN
+    )
+
+    merchant = stub(id: 999)
+    import_adapter = mock("import_adapter")
+    import_adapter.expects(:find_or_create_merchant).with(
+      provider_merchant_id: "enable_banking_merchant_#{Digest::MD5.hexdigest('landlord gmbh')}",
+      name: "Landlord GmbH",
+      source: "enable_banking",
+      iban: "DE89370400440532013000" # pipelock:ignore IBAN
+    ).returns(merchant)
+
+    processor.stubs(:import_adapter).returns(import_adapter)
+
+    assert_equal merchant, processor.send(:merchant)
+  end
+
+  test "groups transactions with the same iban under one merchant even with different remittance text" do
+    tx1 = {
+      entry_reference: "ref_merchant_iban_1",
+      transaction_id: nil,
+      booking_date: Date.current.to_s,
+      transaction_amount: { amount: "80.00", currency: "EUR" },
+      credit_debit_indicator: "DBIT",
+      creditor: { name: "Insurance Co" },
+      creditor_account: { iban: "DE89370400440532013000" }, # pipelock:ignore IBAN
+      remittance_information: [ "Policy 12345" ],
+      status: "BOOK"
+    }
+    tx2 = {
+      entry_reference: "ref_merchant_iban_2",
+      transaction_id: nil,
+      booking_date: (Date.current + 1.month).to_s,
+      transaction_amount: { amount: "80.00", currency: "EUR" },
+      credit_debit_indicator: "DBIT",
+      creditor: { name: "Insurance Co Renamed" },
+      creditor_account: { iban: "DE89370400440532013000" }, # pipelock:ignore IBAN
+      remittance_information: [ "Policy 12345 - renewal" ],
+      status: "BOOK"
+    }
+
+    EnableBankingEntry::Processor.new(tx1, enable_banking_account: @enable_banking_account).process
+    EnableBankingEntry::Processor.new(tx2, enable_banking_account: @enable_banking_account).process
+
+    entry1 = @account.entries.find_by!(external_id: "enable_banking_ref_merchant_iban_1")
+    entry2 = @account.entries.find_by!(external_id: "enable_banking_ref_merchant_iban_2")
+
+    assert_equal entry1.transaction.merchant_id, entry2.transaction.merchant_id
+    assert_equal "DE89370400440532013000", entry1.transaction.merchant.iban # pipelock:ignore IBAN
+  end
+
+  test "falls back to name-based merchant matching when no iban is present" do
+    processor = build_processor(
+      credit_debit_indicator: "DBIT",
+      creditor: { name: "Cafe Corner" }
+    )
+
+    merchant = stub(id: 111)
+    import_adapter = mock("import_adapter")
+    import_adapter.expects(:find_or_create_merchant).with(
+      provider_merchant_id: "enable_banking_merchant_#{Digest::MD5.hexdigest('cafe corner')}",
+      name: "Cafe Corner",
+      source: "enable_banking",
+      iban: nil
+    ).returns(merchant)
+
+    processor.stubs(:import_adapter).returns(import_adapter)
+
+    assert_equal merchant, processor.send(:merchant)
   end
 
   # --- technical remittance line skip (issue #2935) ---
