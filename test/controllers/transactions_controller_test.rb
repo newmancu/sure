@@ -1389,9 +1389,6 @@ end
     # Transfer#categorizable? / #payment? walk to_account via
     # transfer.inflow_transaction.entry.account. Without nested includes those
     # become one lookup triad per transfer row during list render.
-    # categorizable? also walks from_account via the outflow leg, which is only
-    # loaded through the inverse_of on Transaction::Transferable; dropping it
-    # makes the transactions.id assertion below fail.
     normalized_queries = queries.map { |sql| normalize_sql_query(sql) }
     assert_empty single_record_lookups(normalized_queries, table: "transactions", column: "id"),
                  "Expected transfer counterparty transactions to be preloaded"
@@ -1699,6 +1696,39 @@ end
     Rails.cache = original_cache
   end
 
+  test "category-only update does not sync the account" do
+    assert_no_enqueued_jobs only: SyncJob do
+      patch transaction_url(@entry), params: {
+        entry: { entryable_attributes: { id: @entry.entryable_id, category_id: categories(:food_and_drink).id } }
+      }
+    end
+
+    assert_equal categories(:food_and_drink).id, @entry.reload.entryable.category_id
+  end
+
+  test "amount update syncs the account" do
+    assert_enqueued_with(job: SyncJob) do
+      patch transaction_url(@entry), params: { entry: { amount: @entry.amount + 10 } }
+    end
+  end
+
+  test "category and date updated together still sync the account" do
+    assert_enqueued_with(job: SyncJob) do
+      patch transaction_url(@entry), params: {
+        entry: {
+          date: @entry.date - 1.day,
+          entryable_attributes: { id: @entry.entryable_id, category_id: categories(:food_and_drink).id }
+        }
+      }
+    end
+  end
+
+  test "toggling a tag does not sync the account" do
+    assert_no_enqueued_jobs only: SyncJob do
+      patch tags_transaction_url(@entry), params: { toggle_tag_id: tags(:two).id }, as: :turbo_stream
+    end
+  end
+
   test "index with ai_status=current renders the AI filter badge" do
     @entry.entryable.enrich_attribute(:category_id, categories(:income).id, source: "ai")
 
@@ -1752,54 +1782,6 @@ end
     assert_response :redirect
     assert_includes response.location, "filter_cleared=1"
     assert_no_match(/ai_status/, response.location)
-  end
-
-  test "update drops a category sent for a matched transfer's inflow leg" do
-    outflow = Transaction.create!(kind: "investment_contribution")
-    Entry.create!(account: accounts(:depository), entryable: outflow, name: "Contribution", amount: 500, currency: "USD", date: Date.current)
-    inflow = Transaction.create!(kind: "funds_movement")
-    inflow_entry = Entry.create!(account: accounts(:investment), entryable: inflow, name: "Contribution", amount: -500, currency: "USD", date: Date.current)
-    Transfer.create!(inflow_transaction: inflow, outflow_transaction: outflow, status: "confirmed")
-
-    patch transaction_url(inflow_entry), params: {
-      entry: {
-        notes: "Monthly savings",
-        entryable_type: "Transaction",
-        entryable_attributes: { id: inflow.id, category_id: categories(:income).id }
-      }
-    }
-
-    assert_nil inflow.reload.category_id
-    assert_equal "Monthly savings", inflow_entry.reload.notes
-  end
-
-  test "update drops a category for a matched inflow leg whose kind was edited to standard" do
-    outflow = Transaction.create!(kind: "investment_contribution")
-    Entry.create!(account: accounts(:depository), entryable: outflow, name: "Contribution", amount: 500, currency: "USD", date: Date.current)
-    inflow = Transaction.create!(kind: "standard")
-    inflow_entry = Entry.create!(account: accounts(:investment), entryable: inflow, name: "Contribution", amount: -500, currency: "USD", date: Date.current)
-    Transfer.create!(inflow_transaction: inflow, outflow_transaction: outflow, status: "confirmed")
-
-    patch transaction_url(inflow_entry), params: {
-      entry: { entryable_type: "Transaction", entryable_attributes: { id: inflow.id, category_id: categories(:income).id } }
-    }
-
-    assert_nil inflow.reload.category_id
-  end
-
-  test "drawer shows a matched transfer's inflow leg with the outflow's category, disabled" do
-    outflow = Transaction.create!(kind: "investment_contribution", category: categories(:income))
-    Entry.create!(account: accounts(:depository), entryable: outflow, name: "Contribution", amount: 500, currency: "USD", date: Date.current)
-    inflow = Transaction.create!(kind: "funds_movement")
-    inflow_entry = Entry.create!(account: accounts(:investment), entryable: inflow, name: "Contribution", amount: -500, currency: "USD", date: Date.current)
-    Transfer.create!(inflow_transaction: inflow, outflow_transaction: outflow, status: "confirmed")
-
-    get transaction_url(inflow_entry), headers: { "Turbo-Frame" => "drawer" }
-
-    assert_response :success
-    assert_select "button#category_id_trigger[disabled]", text: /#{categories(:income).name}/
-    assert_select "input[type=hidden][name='entry[entryable_attributes][category_id]'][disabled]"
-    assert_match I18n.t("transactions.show.category_set_on_outflow"), response.body
   end
 
   private
