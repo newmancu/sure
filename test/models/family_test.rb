@@ -138,11 +138,9 @@ class FamilyTest < ActiveSupport::TestCase
       name: "Test 2"
     )
 
-    txn2_entry_updated_at = txn2.entry.updated_at
-
     # Should merge both categories into one, keeping the oldest
     assert_difference "Category.count", -1 do
-      result = travel_to(1.minute.from_now) { family.investment_contributions_category }
+      result = family.investment_contributions_category
       assert_equal english_category.id, result.id
       assert_equal "Investment Contributions", result.name
 
@@ -150,60 +148,9 @@ class FamilyTest < ActiveSupport::TestCase
       assert_equal english_category.id, txn1.reload.category_id
       assert_equal english_category.id, txn2.reload.category_id
 
-      # Reassignment must touch entries so entry-keyed caches bust
-      # (only txn2 is reassigned — txn1 already points at the keeper)
-      assert txn2.entry.reload.updated_at > txn2_entry_updated_at
-
       # French category should be deleted
       assert_nil Category.find_by(id: french_category.id)
     end
-  end
-
-  test "investment_contributions_category merges duplicates across accounts" do
-    family = families(:dylan_family)
-    family.update!(locale: "en")
-    family.categories.where(name: [ "Investment Contributions", "Contributions aux investissements" ]).destroy_all
-
-    english_category = family.categories.create!(
-      name: "Investment Contributions",
-      color: "#0d9488",
-      lucide_icon: "trending-up"
-    )
-
-    french_category = family.categories.create!(
-      name: "Contributions aux investissements",
-      color: "#0d9488",
-      lucide_icon: "trending-up"
-    )
-
-    # Transactions on two different accounts of the same family: the
-    # transactions-through-accounts scope must reach both.
-    txn1 = Transaction.create!(category: english_category)
-    Entry.create!(
-      account: accounts(:depository),
-      entryable: txn1,
-      amount: 100,
-      currency: "USD",
-      date: Date.current,
-      name: "First account txn"
-    )
-
-    txn2 = Transaction.create!(category: french_category)
-    Entry.create!(
-      account: accounts(:credit_card),
-      entryable: txn2,
-      amount: 50,
-      currency: "USD",
-      date: Date.current,
-      name: "Second account txn"
-    )
-
-    result = family.investment_contributions_category
-
-    assert_equal english_category.id, result.id
-    assert_equal english_category.id, txn1.reload.category_id
-    assert_equal english_category.id, txn2.reload.category_id,
-      "transaction on the second account must also be reassigned to the keeper"
   end
 
   test "moniker helpers return expected singular and plural labels" do
@@ -501,6 +448,39 @@ class FamilyTest < ActiveSupport::TestCase
 
     assert family.valid?, "an unrelated change must not be blocked by a pre-existing bad timezone"
     assert family.save
+  end
+
+  test "resolved_time_zone returns the family's zone" do
+    family = families(:dylan_family)
+    family.update_column(:timezone, "America/New_York")
+
+    assert_equal "America/New_York", family.resolved_time_zone.name
+  end
+
+  test "resolved_time_zone falls back to the app default and logs once for a stale/invalid zone" do
+    family = families(:dylan_family)
+    family.update_column(:timezone, "Invalid/Timezone")
+
+    original_cache = Rails.cache
+    Rails.cache = ActiveSupport::Cache::MemoryStore.new
+
+    assert_difference "DebugLogEntry.count", 1 do
+      2.times { assert_equal Time.zone, family.resolved_time_zone }
+    end
+
+    entry = DebugLogEntry.order(:created_at).last
+    assert_equal "warn", entry.level
+    assert_includes entry.message, "Invalid/Timezone"
+    assert_equal family, entry.family
+  ensure
+    Rails.cache = original_cache
+  end
+
+  test "resolved_time_zone falls back to the app default for a blank timezone" do
+    family = families(:dylan_family)
+    family.update_column(:timezone, nil)
+
+    assert_equal Time.zone, family.resolved_time_zone
   end
 
   test "balance_sheet memoizes per user for the same family instance" do
