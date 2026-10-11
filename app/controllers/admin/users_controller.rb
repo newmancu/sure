@@ -9,7 +9,6 @@ module Admin
       scope = policy_scope(User)
         .left_joins(family: :subscription)
         .includes(:oidc_identities, family: :subscription)
-        .with_attached_profile_image
 
       scope = scope.where(role: params[:role]) if params[:role].present?
       scope = apply_trial_filter(scope) if params[:trial_status].present?
@@ -43,6 +42,10 @@ module Admin
       @families = Family.order(:name, :created_at)
       @unused_families = Family.left_joins(:users).where(users: { id: nil }).order(:name, :created_at)
 
+      @trials_expiring_in_7_days = Subscription
+        .where(status: :trialing)
+        .where(trial_ends_at: Time.current..7.days.from_now)
+        .count
       @sso_identity_blocks = SsoIdentityBlock.order(created_at: :desc)
 
       # Used by the view to hide the "remove" action for the sole remaining
