@@ -1,16 +1,15 @@
 # syntax = docker/dockerfile:1
 
 # Make sure RUBY_VERSION matches the Ruby version in .ruby-version and Gemfile
-ARG RUBY_VERSION=3.4.9
+ARG RUBY_VERSION=3.4.7
 FROM registry.docker.com/library/ruby:$RUBY_VERSION-slim AS base
 
 # Rails app lives here
 WORKDIR /rails
 
 # Install base packages
-# poppler-utils provides pdftoppm, required for the PDF vision processing path
 RUN apt-get update -qq \
-    && apt-get install --no-install-recommends -y curl libvips postgresql-client libyaml-0-2 procps libjemalloc2 poppler-utils \
+    && apt-get install --no-install-recommends -y curl libvips postgresql-client libyaml-0-2 procps \
     && rm -rf /var/lib/apt/lists /var/cache/apt/archives
 
 # Set production environment
@@ -20,7 +19,7 @@ ENV RAILS_ENV="production" \
     BUNDLE_PATH="/usr/local/bundle" \
     BUNDLE_WITHOUT="development" \
     BUILD_COMMIT_SHA=${BUILD_COMMIT_SHA}
-
+    
 # Throw-away build stage to reduce size of final image
 FROM base AS build
 

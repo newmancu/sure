@@ -120,47 +120,6 @@ class Api::V1::ImportsControllerTest < ActionDispatch::IntegrationTest
                  json_response["data"]["stats"]["unassigned_mappings_count"]
   end
 
-  test "should show Sure import verification" do
-    sure_import = @family.imports.create!(type: "SureImport")
-    sure_import.ndjson_file.attach(
-      io: StringIO.new(build_ndjson([
-        { type: "Account", data: {
-          id: "account-1",
-          name: "API Verified Checking",
-          balance: "100.00",
-          currency: "USD",
-          accountable_type: "Depository"
-        } },
-        { type: "Valuation", data: {
-          id: "valuation-1",
-          account_id: "account-1",
-          date: "2024-01-14",
-          amount: "100.00",
-          currency: "USD",
-          kind: "opening_anchor"
-        } }
-      ])),
-      filename: "sure.ndjson",
-      content_type: "application/x-ndjson"
-    )
-    sure_import.sync_ndjson_rows_count!
-    sure_import.publish
-
-    get api_v1_import_url(sure_import), headers: api_headers(@api_key)
-
-    assert_response :success
-    json_response = JSON.parse(response.body)
-    verification = json_response.dig("data", "verification")
-
-    assert_equal 1, verification.dig("expected_record_counts", "accounts")
-    assert_equal 1, verification.dig("expected_record_counts", "valuations")
-    assert_equal "matched", verification.dig("readback", "status")
-    assert_equal 1, verification.dig("readback", "actual_delta_counts", "accounts")
-    assert_equal 1, verification.dig("readback", "actual_delta_counts", "valuations")
-    assert_equal 0, verification.dig("readback", "checked_counts", "balances")
-    assert_empty verification.dig("readback", "mismatches")
-  end
-
   test "should list sanitized import row diagnostics" do
     get rows_api_v1_import_url(@diagnostic_import), headers: api_headers(@read_only_api_key)
 
@@ -305,6 +264,131 @@ class Api::V1::ImportsControllerTest < ActionDispatch::IntegrationTest
     assert_equal 1, import.rows_count
     assert_equal "Test Transaction", import.rows.first.name
     assert_equal "-10.00", import.rows.first.amount # Normalized
+  end
+
+  test "should create category mappings for configured API import without publishing" do
+    category = categories(:food_and_drink)
+    csv_content = "date,amount,name,category\n2024-01-01,-10.00,API Grocery,#{category.name}"
+
+    assert_difference("Import::CategoryMapping.count", 1) do
+      post api_v1_imports_url,
+           params: {
+             raw_file_content: csv_content,
+             date_col_label: "date",
+             amount_col_label: "amount",
+             name_col_label: "name",
+             category_col_label: "category",
+             account_id: @account.id,
+             date_format: "%Y-%m-%d",
+             publish: "false"
+           },
+           headers: api_headers(@api_key)
+    end
+
+    assert_response :created
+
+    import = Import.find(JSON.parse(response.body)["data"]["id"])
+    mapping = import.mappings.categories.find_by!(key: category.name)
+
+    assert_equal "pending", import.status
+    assert_equal category, mapping.mappable
+  end
+
+  test "should apply category mappings when API import is published automatically" do
+    category = categories(:food_and_drink)
+    transaction_name = "API Categorized Grocery #{SecureRandom.hex(4)}"
+    csv_content = "date,amount,name,category\n2024-01-02,-12.34,#{transaction_name},#{category.name}"
+
+    assert_difference("Transaction.count", 1) do
+      perform_enqueued_jobs(only: ImportJob) do
+        post api_v1_imports_url,
+             params: {
+               raw_file_content: csv_content,
+               date_col_label: "date",
+               amount_col_label: "amount",
+               name_col_label: "name",
+               category_col_label: "category",
+               account_id: @account.id,
+               date_format: "%Y-%m-%d",
+               publish: "true"
+             },
+             headers: api_headers(@api_key)
+      end
+    end
+
+    assert_response :created
+
+    import = Import.find(JSON.parse(response.body)["data"]["id"])
+    transaction = import.entries.sole.transaction
+
+    assert_equal "complete", import.status
+    assert_equal category, import.mappings.categories.find_by!(key: category.name).mappable
+    assert_equal category, transaction.category
+  end
+
+  test "should return error response and not auto publish when API import mapping sync fails" do
+    TransactionImport.any_instance.stubs(:sync_mappings).raises(StandardError, "mapping failed")
+    csv_content = "date,amount,name,category\n2024-01-03,-9.99,API Mapping Failure,Food & Drink"
+
+    assert_difference("Import.count", 1) do
+      assert_no_enqueued_jobs only: ImportJob do
+        post api_v1_imports_url,
+             params: {
+               raw_file_content: csv_content,
+               date_col_label: "date",
+               amount_col_label: "amount",
+               name_col_label: "name",
+               category_col_label: "category",
+               account_id: @account.id,
+               date_format: "%Y-%m-%d",
+               publish: "true"
+             },
+             headers: api_headers(@api_key)
+      end
+    end
+
+    assert_response :internal_server_error
+    json_response = JSON.parse(response.body)
+    assert_equal "processing_failed", json_response["error"]
+    assert_equal "Import was uploaded but could not be processed.", json_response["message"]
+
+    import = Import.find(json_response["import_id"])
+
+    assert_equal "failed", import.status
+    assert_equal "mapping failed", import.error
+    assert_equal 1, import.rows_count
+  end
+
+  test "should return error response and not auto publish when API import row generation fails" do
+    TransactionImport.any_instance.stubs(:generate_rows_from_csv).raises(StandardError, "row generation failed")
+    csv_content = "date,amount,name\n2024-01-04,-9.99,API Row Failure"
+
+    assert_difference("Import.count", 1) do
+      assert_no_enqueued_jobs only: ImportJob do
+        post api_v1_imports_url,
+             params: {
+               raw_file_content: csv_content,
+               date_col_label: "date",
+               amount_col_label: "amount",
+               name_col_label: "name",
+               account_id: @account.id,
+               date_format: "%Y-%m-%d",
+               publish: "true"
+             },
+             headers: api_headers(@api_key)
+      end
+    end
+
+    assert_response :internal_server_error
+    json_response = JSON.parse(response.body)
+    assert_equal "processing_failed", json_response["error"]
+    assert_equal "Import was uploaded but could not be processed.", json_response["message"]
+
+    import = Import.find(json_response["import_id"])
+
+    assert_equal "failed", import.status
+    assert_equal "row generation failed", import.error
+    assert_equal 0, import.rows_count
   end
 
   test "should instantiate RuleImport before generating rows" do
@@ -524,16 +608,7 @@ class Api::V1::ImportsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "should preserve Sure import if publish queueing fails" do
-    ndjson_content = {
-      type: "Account",
-      data: {
-        id: "account_1",
-        name: "Checking",
-        balance: "100",
-        currency: "USD",
-        accountable_type: "Depository"
-      }
-    }.to_json
+    ndjson_content = { type: "Account", data: { id: "account_1", name: "Checking" } }.to_json
     ImportJob.stubs(:perform_later).raises(StandardError, "queue offline")
 
     assert_difference("Import.count") do
@@ -555,93 +630,6 @@ class Api::V1::ImportsControllerTest < ActionDispatch::IntegrationTest
     assert import.ndjson_file.attached?
     assert_equal 1, import.rows_count
     assert_equal "pending", import.status
-  end
-
-  test "should preserve Sure import and return preflight errors when auto publish fails preflight" do
-    ndjson_content = [
-      { type: "Transaction", data: {
-        id: "transaction_1",
-        account_id: "missing_account",
-        date: "2024-01-15",
-        amount: "42.50",
-        name: "Orphaned transaction",
-        currency: "USD"
-      } }
-    ].map(&:to_json).join("\n")
-
-    assert_difference("Import.count") do
-      post api_v1_imports_url,
-           params: {
-             type: "SureImport",
-             raw_file_content: ndjson_content,
-             publish: "true"
-           },
-           headers: api_headers(@api_key)
-    end
-
-    assert_response :unprocessable_entity
-    json_response = JSON.parse(response.body)
-    assert_equal "preflight_failed", json_response["error"]
-    assert_includes json_response["errors"].join("\n"), "references missing account_id"
-
-    import = Import.find(json_response["import_id"])
-    assert_equal "failed", import.status
-    assert import.ndjson_file.attached?
-  end
-
-  test "should preserve Sure import and return not publishable when auto publish has no records" do
-    ndjson_content = { type: "Account", data: { id: "account_1", name: "Checking" } }.to_json
-    SureImport.any_instance.stubs(:publish_later).raises(
-      SureImport::NotPublishableError,
-      "raw publishability failure with internal state"
-    )
-
-    assert_difference("Import.count") do
-      post api_v1_imports_url,
-           params: {
-             type: "SureImport",
-             raw_file_content: ndjson_content,
-             publish: "true"
-           },
-           headers: api_headers(@api_key)
-    end
-
-    assert_response :unprocessable_entity
-    json_response = JSON.parse(response.body)
-    assert_equal "not_publishable", json_response["error"]
-    assert_equal "Import was uploaded but has no publishable records.", json_response["message"]
-    assert_not json_response.key?("errors")
-    refute_includes response.body, "raw publishability failure"
-
-    import = Import.find(json_response["import_id"])
-    assert_instance_of SureImport, import
-    assert import.ndjson_file.attached?
-    assert_equal 1, import.rows_count
-    assert_equal "pending", import.status
-  end
-
-  test "should return unsupported Sure record errors during auto publish preflight" do
-    ndjson_content = [
-      { type: "MysteryType", data: { id: "mystery_1" } }
-    ].map(&:to_json).join("\n")
-
-    assert_difference("Import.count") do
-      post api_v1_imports_url,
-           params: {
-             type: "SureImport",
-             raw_file_content: ndjson_content,
-             publish: "true"
-           },
-           headers: api_headers(@api_key)
-    end
-
-    assert_response :unprocessable_entity
-    json_response = JSON.parse(response.body)
-    assert_equal "preflight_failed", json_response["error"]
-    assert_includes json_response["errors"].join("\n"), "unsupported record type MysteryType"
-
-    import = Import.find(json_response["import_id"])
-    assert_equal "failed", import.status
   end
 
   test "should preserve Sure import if auto publish exceeds row count" do
@@ -836,8 +824,8 @@ class Api::V1::ImportsControllerTest < ActionDispatch::IntegrationTest
     assert_equal "invalid_csv", json_response["error"]
   end
 
-  test "should hide preflight exception message in internal server error response" do
-    Import::Preflight.any_instance.stubs(:call).raises(StandardError, "boom with raw internals")
+  test "should include preflight exception message in internal server error response" do
+    Import::Preflight.any_instance.stubs(:call).raises(StandardError, "boom")
 
     post preflight_api_v1_imports_url,
          params: {
@@ -851,8 +839,7 @@ class Api::V1::ImportsControllerTest < ActionDispatch::IntegrationTest
     assert_response :internal_server_error
     json_response = JSON.parse(response.body)
     assert_equal "internal_server_error", json_response["error"]
-    assert_equal "Import preflight could not be completed.", json_response["message"]
-    refute_includes response.body, "boom with raw internals"
+    assert_equal "Error: boom", json_response["message"]
   end
 
   test "should reject unknown preflight import type" do
@@ -913,19 +900,8 @@ class Api::V1::ImportsControllerTest < ActionDispatch::IntegrationTest
 
   test "should preflight Sure import without persisting records" do
     ndjson_content = [
-      { type: "Account", data: {
-        id: "account_1",
-        name: "Checking",
-        balance: "100",
-        currency: "USD",
-        accountable_type: "Depository"
-      } }.to_json,
-      { type: "Transaction", data: {
-        id: "entry_1",
-        account_id: "account_1",
-        date: "2024-01-01",
-        amount: "-5"
-      } }.to_json
+      { type: "Account", data: { id: "account_1", name: "Checking" } }.to_json,
+      { type: "Transaction", data: { id: "entry_1", account_id: "account_1" } }.to_json
     ].join("\n")
 
     assert_no_difference("Import.count") do
@@ -946,56 +922,6 @@ class Api::V1::ImportsControllerTest < ActionDispatch::IntegrationTest
     assert_equal 1, data["stats"]["entity_counts"]["accounts"]
     assert_equal 1, data["stats"]["entity_counts"]["transactions"]
     assert_empty data["errors"]
-  end
-
-  test "should reuse an existing Sure import taxonomy match by name instead of blocking preflight (#3113)" do
-    @family.tags.create!(name: "Reviewed", color: "#12B76A")
-    ndjson_content = [
-      { type: "Tag", data: { id: "tag_1", name: "Reviewed" } }
-    ].map(&:to_json).join("\n")
-
-    assert_no_difference("Import.count") do
-      post preflight_api_v1_imports_url,
-           params: {
-             type: "SureImport",
-             raw_file_content: ndjson_content
-           },
-           headers: api_headers(@api_key)
-    end
-
-    assert_response :success
-    data = JSON.parse(response.body)["data"]
-    assert_equal true, data["valid"]
-    assert_empty data["errors"]
-    assert data["warnings"].any? { |warning| warning.include?("already exists in this family and will be reused") }
-  end
-
-  test "should report invalid Sure import accountable type during preflight" do
-    ndjson_content = [
-      { type: "Account", data: {
-        id: "account_1",
-        name: "Checking",
-        balance: "100",
-        currency: "USD",
-        accountable_type: "Kernel"
-      } }.to_json
-    ].join("\n")
-
-    assert_no_difference("Import.count") do
-      post preflight_api_v1_imports_url,
-           params: {
-             type: "SureImport",
-             raw_file_content: ndjson_content
-           },
-           headers: api_headers(@api_key)
-    end
-
-    assert_response :success
-    data = JSON.parse(response.body)["data"]
-
-    assert_equal false, data["valid"]
-    assert_equal "invalid_accountable_type", data["errors"].first["code"]
-    assert_includes data["errors"].first["message"], "Kernel"
   end
 
   test "should report invalid Sure import NDJSON during preflight" do
@@ -1381,10 +1307,6 @@ class Api::V1::ImportsControllerTest < ActionDispatch::IntegrationTest
   end
 
   private
-
-    def build_ndjson(records)
-      records.map(&:to_json).join("\n")
-    end
 
     def api_headers(api_key)
       { "X-Api-Key" => api_key.plain_key }

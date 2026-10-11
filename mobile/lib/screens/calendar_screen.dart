@@ -6,11 +6,7 @@ import '../models/transaction.dart';
 import '../providers/accounts_provider.dart';
 import '../providers/transactions_provider.dart';
 import '../providers/auth_provider.dart';
-import '../providers/privacy_provider.dart';
 import '../services/log_service.dart';
-import '../utils/amount_parser.dart';
-import '../l10n/app_localizations.dart';
-import '../utils/money_masker.dart';
 
 class CalendarScreen extends StatefulWidget {
   const CalendarScreen({super.key});
@@ -54,8 +50,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
       // Select first account of the selected type
       final filteredAccounts = _getFilteredAccounts(accountsProvider.accounts);
       setState(() {
-        _selectedAccount =
-            filteredAccounts.isNotEmpty ? filteredAccounts.first : null;
+        _selectedAccount = filteredAccounts.isNotEmpty ? filteredAccounts.first : null;
       });
       if (_selectedAccount != null) {
         await _loadTransactionsForAccount();
@@ -91,17 +86,17 @@ class _CalendarScreenState extends State<CalendarScreen> {
       );
 
       final transactions = transactionsProvider.transactions;
-      _log.info(
-        'CalendarScreen',
-        'Loaded ${transactions.length} transactions for selected account',
-      );
+      _log.info('CalendarScreen', 'Loaded ${transactions.length} transactions for account ${_selectedAccount!.name}');
+
+      if (transactions.isNotEmpty) {
+        _log.debug('CalendarScreen', 'Sample transaction - name: ${transactions.first.name}, amount: ${transactions.first.amount}, nature: ${transactions.first.nature}');
+      }
 
       // Store transactions for date filtering
       _transactions = List.from(transactions);
 
       _calculateDailyChanges(transactions);
-      _log.info('CalendarScreen',
-          'Calculated ${_dailyChanges.length} days with changes');
+      _log.info('CalendarScreen', 'Calculated ${_dailyChanges.length} days with changes');
     }
 
     setState(() {
@@ -112,36 +107,50 @@ class _CalendarScreenState extends State<CalendarScreen> {
   void _calculateDailyChanges(List<Transaction> transactions) {
     final changes = <String, double>{};
 
-    _log.debug('CalendarScreen',
-        'Starting to calculate daily changes for ${transactions.length} transactions');
+    _log.debug('CalendarScreen', 'Starting to calculate daily changes for ${transactions.length} transactions');
 
     for (var transaction in transactions) {
       try {
         final date = DateTime.parse(transaction.date);
         final dateKey = DateFormat('yyyy-MM-dd').format(date);
 
-        var amount = AmountParser.parse(transaction.amount).value;
+        // Parse amount with proper sign handling
+        String trimmedAmount = transaction.amount.trim();
+        trimmedAmount = trimmedAmount.replaceAll('\u2212', '-'); // Normalize minus sign
 
-        // For asset accounts, flip the sign to match accounting conventions
-        // For liability accounts, also flip the sign
-        if (_selectedAccount?.isAsset == true ||
-            _selectedAccount?.isLiability == true) {
+        // Detect if the amount has a negative sign
+        bool hasNegativeSign = trimmedAmount.startsWith('-') || trimmedAmount.endsWith('-');
+
+        // Remove all non-numeric characters except decimal point and minus sign
+        String numericString = trimmedAmount.replaceAll(RegExp(r'[^\d.\-]'), '');
+
+        // Parse the numeric value
+        double amount = double.tryParse(numericString.replaceAll('-', '')) ?? 0.0;
+
+        // Apply the sign from the string
+        if (hasNegativeSign) {
           amount = -amount;
         }
 
+        // For asset accounts, flip the sign to match accounting conventions
+        // For liability accounts, also flip the sign
+        if (_selectedAccount?.isAsset == true || _selectedAccount?.isLiability == true) {
+          amount = -amount;
+        }
+
+        _log.debug('CalendarScreen', 'Processing transaction ${transaction.name} - date: $dateKey, raw amount: ${transaction.amount}, parsed: $amount, isAsset: ${_selectedAccount?.isAsset}, isLiability: ${_selectedAccount?.isLiability}');
+
         changes[dateKey] = (changes[dateKey] ?? 0.0) + amount;
+        _log.debug('CalendarScreen', 'Date $dateKey now has total: ${changes[dateKey]}');
       } catch (e) {
-        final sanitizedError = LogService.sanitize(e.toString());
-        final errorSummary = sanitizedError.length > 120
-            ? '${sanitizedError.substring(0, 120)}...'
-            : sanitizedError;
-        _log.error('CalendarScreen',
-            'Failed to process transaction for calendar: $errorSummary');
+        _log.error('CalendarScreen', 'Failed to parse transaction date: ${transaction.date}, error: $e');
       }
     }
 
-    _log.info(
-        'CalendarScreen', 'Final changes map has ${changes.length} entries');
+    _log.info('CalendarScreen', 'Final changes map has ${changes.length} entries');
+    changes.forEach((date, amount) {
+      _log.debug('CalendarScreen', '$date -> $amount');
+    });
 
     setState(() {
       _dailyChanges = changes;
@@ -182,8 +191,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     return _transactions.where((transaction) {
       try {
         final transactionDate = DateTime.parse(transaction.date);
-        final transactionDateKey =
-            DateFormat('yyyy-MM-dd').format(transactionDate);
+        final transactionDateKey = DateFormat('yyyy-MM-dd').format(transactionDate);
         return transactionDateKey == dateKey;
       } catch (e) {
         return false;
@@ -193,17 +201,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
   void _showTransactionsDialog(DateTime date) {
     final transactions = _getTransactionsForDate(date);
-    final formattedDate = DateFormat.yMMMd(
-      Localizations.localeOf(context).toString(),
-    ).format(date);
+    final formattedDate = DateFormat('yyyy-MM-dd').format(date);
     final colorScheme = Theme.of(context).colorScheme;
-    final l = AppLocalizations.of(context);
+
     showDialog(
       context: context,
       builder: (BuildContext context) {
-        // Watch inside the dialog builder so the amounts re-mask if the user
-        // toggles privacy while the dialog is open.
-        final hideAmounts = context.watch<PrivacyProvider>().hidden;
         return AlertDialog(
           title: Text(
             formattedDate,
@@ -216,7 +219,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     child: Padding(
                       padding: const EdgeInsets.all(16.0),
                       child: Text(
-                        l.calendarNoTransactions,
+                        'No transactions on this day',
                         style: TextStyle(
                           color: colorScheme.onSurfaceVariant,
                         ),
@@ -228,14 +231,14 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     itemCount: transactions.length,
                     itemBuilder: (context, index) {
                       final transaction = transactions[index];
-                      return _buildTransactionTile(transaction, hideAmounts);
+                      return _buildTransactionTile(transaction);
                     },
                   ),
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
-              child: Text(l.commonClose),
+              child: const Text('Close'),
             ),
           ],
         );
@@ -243,18 +246,14 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
-  Widget _buildTransactionTile(Transaction transaction, bool hideAmounts) {
+  Widget _buildTransactionTile(Transaction transaction) {
     // Parse amount to determine if positive or negative
-    var isNegative = false;
-    try {
-      isNegative = AmountParser.parse(transaction.amount).value < 0;
-    } on FormatException {
-      // Keep the dialog renderable if the server returns a malformed amount.
-    }
+    String trimmedAmount = transaction.amount.trim();
+    trimmedAmount = trimmedAmount.replaceAll('\u2212', '-');
+    bool isNegative = trimmedAmount.startsWith('-') || trimmedAmount.endsWith('-');
 
     // For asset accounts, flip the sign interpretation
-    if (_selectedAccount?.isAsset == true ||
-        _selectedAccount?.isLiability == true) {
+    if (_selectedAccount?.isAsset == true || _selectedAccount?.isLiability == true) {
       isNegative = !isNegative;
     }
 
@@ -287,10 +286,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
             )
           : null,
       trailing: Text(
-        MoneyMasker.mask(
-          transaction.amount,
-          hidden: hideAmounts,
-        ),
+        transaction.amount,
         style: TextStyle(
           color: amountColor,
           fontWeight: FontWeight.bold,
@@ -314,14 +310,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final l = AppLocalizations.of(context);
     final colorScheme = Theme.of(context).colorScheme;
     final accountsProvider = context.watch<AccountsProvider>();
-    final hideAmounts = context.watch<PrivacyProvider>().hidden;
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(l.calendarTitle),
+        title: const Text('Account Calendar'),
       ),
       body: Column(
         children: [
@@ -341,23 +335,23 @@ class _CalendarScreenState extends State<CalendarScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  l.calendarAccountTypeSection,
+                  'Account Type',
                   style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
                 const SizedBox(height: 8),
                 SegmentedButton<String>(
-                  segments: [
+                  segments: const [
                     ButtonSegment<String>(
                       value: 'asset',
-                      label: Text(l.calendarSegmentAssets),
-                      icon: const Icon(Icons.account_balance_wallet),
+                      label: Text('Assets'),
+                      icon: Icon(Icons.account_balance_wallet),
                     ),
                     ButtonSegment<String>(
                       value: 'liability',
-                      label: Text(l.calendarSegmentLiabilities),
-                      icon: const Icon(Icons.credit_card),
+                      label: Text('Liabilities'),
+                      icon: Icon(Icons.credit_card),
                     ),
                   ],
                   selected: {_accountType},
@@ -365,15 +359,11 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     setState(() {
                       _accountType = newSelection.first;
                       // Switch to first account of new type
-                      final filteredAccounts =
-                          _getFilteredAccounts(accountsProvider.accounts);
-                      _selectedAccount = filteredAccounts.isNotEmpty
-                          ? filteredAccounts.first
-                          : null;
+                      final filteredAccounts = _getFilteredAccounts(accountsProvider.accounts);
+                      _selectedAccount = filteredAccounts.isNotEmpty ? filteredAccounts.first : null;
                       _dailyChanges = {};
                       _transactions = [];
-                      _selectedDate =
-                          null; // Clear selection when changing account type
+                      _selectedDate = null; // Clear selection when changing account type
                     });
                     if (_selectedAccount != null) {
                       _loadTransactionsForAccount();
@@ -399,7 +389,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
             child: DropdownButtonFormField<Account>(
               value: _selectedAccount,
               decoration: InputDecoration(
-                labelText: l.calendarSelectAccount,
+                labelText: 'Select Account',
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(8),
                 ),
@@ -408,8 +398,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   vertical: 12,
                 ),
               ),
-              items: _getFilteredAccounts(accountsProvider.accounts)
-                  .map((account) {
+              items: _getFilteredAccounts(accountsProvider.accounts).map((account) {
                 return DropdownMenuItem(
                   value: account,
                   child: Text('${account.name} (${account.currency})'),
@@ -447,9 +436,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   onPressed: _previousMonth,
                 ),
                 Text(
-                  DateFormat.yMMM(
-                    Localizations.localeOf(context).toString(),
-                  ).format(_currentMonth),
+                  DateFormat('yyyy-MM').format(_currentMonth),
                   style: Theme.of(context).textTheme.titleLarge,
                 ),
                 IconButton(
@@ -476,20 +463,17 @@ class _CalendarScreenState extends State<CalendarScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  l.calendarMonthlyChange,
+                  'Monthly Change',
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
                 Text(
-                  MoneyMasker.mask(
-                    _formatCurrency(_getTotalForMonth()),
-                    hidden: hideAmounts,
-                  ),
+                  _formatCurrency(_getTotalForMonth()),
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        color: _getTotalForMonth() >= 0
-                            ? Colors.green
-                            : Colors.red,
-                        fontWeight: FontWeight.bold,
-                      ),
+                    color: _getTotalForMonth() >= 0
+                        ? Colors.green
+                        : Colors.red,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ],
             ),
@@ -499,31 +483,18 @@ class _CalendarScreenState extends State<CalendarScreen> {
           Expanded(
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator())
-                : _buildCalendar(colorScheme, hideAmounts),
+                : _buildCalendar(colorScheme),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildCalendar(ColorScheme colorScheme, bool hideAmounts) {
-    final firstDayOfMonth =
-        DateTime(_currentMonth.year, _currentMonth.month, 1);
-    final lastDayOfMonth =
-        DateTime(_currentMonth.year, _currentMonth.month + 1, 0);
+  Widget _buildCalendar(ColorScheme colorScheme) {
+    final firstDayOfMonth = DateTime(_currentMonth.year, _currentMonth.month, 1);
+    final lastDayOfMonth = DateTime(_currentMonth.year, _currentMonth.month + 1, 0);
     final daysInMonth = lastDayOfMonth.day;
     final startWeekday = firstDayOfMonth.weekday % 7; // 0 = Sunday
-
-    // Localized narrow weekday labels, Sunday→Saturday to match the
-    // Sunday-anchored grid math above. 2024-01-07 is a Sunday, so indices
-    // 0..6 map Sunday..Saturday.
-    final localeName = Localizations.localeOf(context).toString();
-    final weekdayLabels = List.generate(
-      7,
-      (i) => DateFormat.E(localeName)
-          .format(DateTime(2024, 1, 7 + i))
-          .substring(0, 1),
-    );
 
     return SingleChildScrollView(
       child: Padding(
@@ -534,7 +505,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
             SizedBox(
               height: 40,
               child: Row(
-                children: weekdayLabels.map((day) {
+                children: ['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((day) {
                   return Expanded(
                     child: Center(
                       child: Text(
@@ -551,21 +522,18 @@ class _CalendarScreenState extends State<CalendarScreen> {
             ),
 
             // Calendar grid
-            ...List.generate((daysInMonth + startWeekday + 6) ~/ 7,
-                (weekIndex) {
+            ...List.generate((daysInMonth + startWeekday + 6) ~/ 7, (weekIndex) {
               return SizedBox(
                 height: 70,
                 child: Row(
                   children: List.generate(7, (dayIndex) {
-                    final dayNumber =
-                        weekIndex * 7 + dayIndex - startWeekday + 1;
+                    final dayNumber = weekIndex * 7 + dayIndex - startWeekday + 1;
 
                     if (dayNumber < 1 || dayNumber > daysInMonth) {
                       return const Expanded(child: SizedBox.shrink());
                     }
 
-                    final date = DateTime(
-                        _currentMonth.year, _currentMonth.month, dayNumber);
+                    final date = DateTime(_currentMonth.year, _currentMonth.month, dayNumber);
                     final dateKey = DateFormat('yyyy-MM-dd').format(date);
                     final change = _dailyChanges[dateKey] ?? 0.0;
                     final hasChange = _dailyChanges.containsKey(dateKey);
@@ -577,7 +545,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         change,
                         hasChange,
                         colorScheme,
-                        hideAmounts,
                       ),
                     );
                   }).toList(),
@@ -590,8 +557,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
-  Widget _buildDayCell(DateTime date, int day, double change, bool hasChange,
-      ColorScheme colorScheme, bool hideAmounts) {
+  Widget _buildDayCell(DateTime date, int day, double change, bool hasChange, ColorScheme colorScheme) {
     Color? backgroundColor;
     Color? textColor;
 
@@ -619,9 +585,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
           color: backgroundColor ?? colorScheme.surface,
           borderRadius: BorderRadius.circular(8),
           border: Border.all(
-            color: isSelected
-                ? Theme.of(context).primaryColor
-                : colorScheme.outlineVariant,
+            color: isSelected ? Theme.of(context).primaryColor : colorScheme.outlineVariant,
             width: isSelected ? 3 : 1,
           ),
         ),
@@ -644,10 +608,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   child: FittedBox(
                     fit: BoxFit.scaleDown,
                     child: Text(
-                      MoneyMasker.mask(
-                        _formatAmount(change),
-                        hidden: hideAmounts,
-                      ),
+                      _formatAmount(change),
                       style: TextStyle(
                         fontSize: 10,
                         color: textColor,

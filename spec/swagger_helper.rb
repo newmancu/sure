@@ -4,7 +4,6 @@ require 'rails_helper'
 
 RSpec.configure do |config|
   config.openapi_root = Rails.root.join('docs', 'api').to_s
-  reset_count_keys = Family::FinancialDataReset::STATUS_COUNT_KEYS.map(&:to_s)
 
   config.openapi_specs = {
     'openapi.yaml' => {
@@ -31,25 +30,6 @@ RSpec.configure do |config|
             name: 'X-Api-Key',
             in: :header,
             description: 'API key for authentication. Generate one from your account settings.'
-          },
-          financekitPublisher: {
-            type: :http,
-            scheme: :bearer,
-            bearerFormat: 'opaque publisher credential',
-            description: 'Revocable credential restricted to one FinanceKit publisher upload URL.'
-          },
-          oauth2: {
-            type: :oauth2,
-            flows: {
-              authorizationCode: {
-                authorizationUrl: '/oauth/authorize',
-                tokenUrl: '/oauth/token',
-                scopes: {
-                  read: 'Read access',
-                  read_write: 'Read and write access'
-                }
-              }
-            }
           }
         },
         schemas: {
@@ -135,7 +115,7 @@ RSpec.configure do |config|
               import_id: {
                 type: :string,
                 format: :uuid,
-                description: 'Import ID preserved for retry or inspection after upload succeeds but publish fails'
+                description: 'Import ID preserved for retry or inspection after upload succeeds but preparation or publish fails'
               }
             }
           },
@@ -242,45 +222,6 @@ RSpec.configure do |config|
                 items: { '$ref' => '#/components/schemas/ChatSummary' }
               },
               pagination: { '$ref' => '#/components/schemas/Pagination' }
-            }
-          },
-          Insight: {
-            type: :object,
-            required: %w[id type title body priority status],
-            properties: {
-              id: { type: :string, format: :uuid },
-              type: { type: :string },
-              title: { type: :string },
-              body: { type: :string },
-              priority: { type: :string, enum: %w[high medium low] },
-              status: { type: :string, enum: %w[active read] },
-              generated_at: { type: :string, format: :'date-time', nullable: true }
-            }
-          },
-          InsightCollection: {
-            type: :object,
-            required: %w[insights],
-            properties: {
-              insights: { type: :array, items: { '$ref' => '#/components/schemas/Insight' } }
-            }
-          },
-          PushSubscriptionRegistration: {
-            type: :object, required: %w[token environment platform],
-            properties: {
-              token: { type: :string, maxLength: 2048, pattern: "^(?:[0-9a-fA-F]{2})+$" },
-              environment: { type: :string, enum: %w[sandbox production] },
-              platform: { type: :string, enum: %w[ios] },
-              device_key: { type: :string, pattern: '^[0-9a-f]{64}$', description: 'Optional 256-bit installation secret, unique per server and kept in device secure storage. Required proof to replace another user’s registration for this device. Never returned.' }
-            }
-          },
-          PushSubscription: {
-            type: :object,
-            required: %w[id environment platform last_registered_at],
-            properties: {
-              id: { type: :string, format: :uuid },
-              environment: { type: :string, enum: %w[sandbox production] },
-              platform: { type: :string, enum: %w[ios] },
-              last_registered_at: { type: :string, format: :'date-time' }
             }
           },
           RetryResponse: {
@@ -419,14 +360,13 @@ RSpec.configure do |config|
           },
           BudgetCategorySummary: {
             type: :object,
-            required: %w[id budget_id currency subcategory inherits_parent_budget rollover_enabled category created_at updated_at],
+            required: %w[id budget_id currency subcategory inherits_parent_budget category created_at updated_at],
             properties: {
               id: { type: :string, format: :uuid },
               budget_id: { type: :string, format: :uuid },
               currency: { type: :string },
               subcategory: { type: :boolean },
               inherits_parent_budget: { type: :boolean },
-              rollover_enabled: { type: :boolean },
               budgeted_spending: { type: :string },
               budgeted_spending_cents: { type: :integer },
               display_budgeted_spending: { type: :string },
@@ -448,22 +388,19 @@ RSpec.configure do |config|
           },
           BudgetCategory: {
             type: :object,
-            required: %w[id budget_id currency subcategory inherits_parent_budget rollover_enabled category created_at updated_at],
+            required: %w[id budget_id currency subcategory inherits_parent_budget category created_at updated_at],
             properties: {
               id: { type: :string, format: :uuid },
               budget_id: { type: :string, format: :uuid },
               currency: { type: :string },
               subcategory: { type: :boolean },
               inherits_parent_budget: { type: :boolean },
-              rollover_enabled: { type: :boolean },
               budgeted_spending: { type: :string },
               budgeted_spending_cents: { type: :integer },
               display_budgeted_spending: { type: :string },
               display_budgeted_spending_cents: { type: :integer },
               actual_spending: { type: :string },
               actual_spending_cents: { type: :integer },
-              rolled_over_amount: { type: :string },
-              rolled_over_amount_cents: { type: :integer },
               available_to_spend: { type: :string },
               available_to_spend_cents: { type: :integer },
               category: {
@@ -631,15 +568,6 @@ RSpec.configure do |config|
               type: { type: :string, enum: %w[FamilyMerchant ProviderMerchant] },
               created_at: { type: :string, format: :'date-time' },
               updated_at: { type: :string, format: :'date-time' }
-            }
-          },
-          MerchantImportResult: {
-            type: :object,
-            required: %w[imported skipped merchants],
-            properties: {
-              imported: { type: :integer, description: 'Number of merchants successfully created' },
-              skipped: { type: :integer, description: 'Number of rows skipped (duplicates or invalid)' },
-              merchants: { type: :array, items: { '$ref' => '#/components/schemas/MerchantDetail' } }
             }
           },
           Tag: {
@@ -823,38 +751,10 @@ RSpec.configure do |config|
               expected_day_of_month: { type: :integer, minimum: 1, maximum: 31 },
               last_occurrence_date: { type: :string, format: :date },
               next_expected_date: { type: :string, format: :date },
-              status: { type: :string, enum: %w[suggested active paused inactive ended] },
+              status: { type: :string, enum: %w[active inactive] },
               occurrence_count: { type: :integer, minimum: 0 },
               name: { type: :string, nullable: true },
               manual: { type: :boolean },
-              payment_url: { type: :string, nullable: true, description: 'Link to the biller portal where this bill is paid. Only http and https are accepted; a bare host is stored as https.' },
-              autopay: { type: :boolean, description: 'Whether this bill pays itself automatically.' },
-              notes: { type: :string, nullable: true, description: 'Free-text notes shown alongside the bill.' },
-              bill_type: { type: :string, enum: %w[bill subscription installment income transfer other], description: 'What kind of obligation this is.' },
-              category_id: { type: :string, format: :uuid, nullable: true },
-              anchor_date: { type: :string, format: :date, nullable: true, description: 'Reference occurrence that phases every-N cadences.' },
-              weekend_adjust: { type: :string, enum: %w[none skip before after] },
-              end_mode: { type: :string, enum: %w[never on_date after_count] },
-              end_on: { type: :string, format: :date, nullable: true },
-              end_after_count: { type: :integer, nullable: true },
-              renews_on: { type: :string, format: :date, nullable: true },
-              trial_ends_on: { type: :string, format: :date, nullable: true },
-              cancelled_on: { type: :string, format: :date, nullable: true },
-              recurrence_rules: {
-                type: :array,
-                description: 'Repetition patterns; multiple rows express semimonthly and similar multi-pattern cadences. Empty means legacy monthly on expected_day_of_month.',
-                items: {
-                  type: :object,
-                  properties: {
-                    frequency: { type: :string, enum: %w[weekly monthly yearly] },
-                    interval: { type: :integer },
-                    day_of_month: { type: :integer, nullable: true, description: '-1 means the last day of the month.' },
-                    weekday: { type: :integer, nullable: true },
-                    weekday_ordinal: { type: :integer, nullable: true, description: '-1 means the last such weekday.' },
-                    month_of_year: { type: :integer, nullable: true }
-                  }
-                }
-              },
               expected_amount_min: { type: :string, nullable: true },
               expected_amount_min_cents: { type: :integer, nullable: true, description: 'Minimum expected amount in currency minor units' },
               expected_amount_max: { type: :string, nullable: true },
@@ -890,7 +790,6 @@ RSpec.configure do |config|
               notes: { type: :string, nullable: true },
               external_id: { type: :string, nullable: true },
               source: { type: :string, nullable: true },
-              user_modified: { type: :boolean },
               classification: { type: :string },
               account: { '$ref' => '#/components/schemas/Account' },
               category: { '$ref' => '#/components/schemas/Category', nullable: true },
@@ -950,10 +849,6 @@ RSpec.configure do |config|
               currency: { type: :string },
               transfer_type: { type: :string, enum: %w[transfer liability_payment loan_payment] },
               notes: { type: :string, nullable: true },
-              source_fee_amount: { type: :string, nullable: true, description: 'Fee charged to the source account' },
-              source_fee_currency: { type: :string, nullable: true },
-              destination_fee_amount: { type: :string, nullable: true, description: 'Fee deducted from the destination account' },
-              destination_fee_currency: { type: :string, nullable: true },
               inflow_transaction: { '$ref' => '#/components/schemas/TransferTransactionSide' },
               outflow_transaction: { '$ref' => '#/components/schemas/TransferTransactionSide' },
               created_at: { type: :string, format: :'date-time' },
@@ -1026,27 +921,6 @@ RSpec.configure do |config|
               message: { type: :string }
             }
           },
-          TransactionResponse: {
-            type: :object,
-            required: %w[id date amount currency name entryable_type account],
-            properties: {
-              id: { type: :string, format: :uuid },
-              date: { type: :string, format: :date },
-              amount: { type: :string },
-              currency: { type: :string },
-              name: { type: :string },
-              entryable_type: { type: :string },
-              account: {
-                type: :object,
-                required: %w[id name account_type],
-                properties: {
-                  id: { type: :string, format: :uuid },
-                  name: { type: :string },
-                  account_type: { type: :string, nullable: true }
-                }
-              }
-            }
-          },
           ImportConfiguration: {
             type: :object,
             properties: {
@@ -1071,58 +945,6 @@ RSpec.configure do |config|
               invalid_rows_count: { type: :integer, minimum: 0 },
               mappings_count: { type: :integer, minimum: 0 },
               unassigned_mappings_count: { type: :integer, minimum: 0 }
-            }
-          },
-          ImportVerificationReadback: {
-            type: :object,
-            description: 'SureImport only. Expected NDJSON counts compared to family-scoped database readback after publish.',
-            properties: {
-              status: { type: :string, enum: %w[not_verified matched mismatch failed reverted] },
-              checked_at: { type: :string, format: :'date-time', nullable: true },
-              expected_record_counts: {
-                type: :object,
-                additionalProperties: { type: :integer }
-              },
-              before_counts: {
-                type: :object,
-                additionalProperties: { type: :integer }
-              },
-              after_counts: {
-                type: :object,
-                additionalProperties: { type: :integer }
-              },
-              actual_delta_counts: {
-                type: :object,
-                additionalProperties: { type: :integer }
-              },
-              checked_counts: {
-                type: :object,
-                additionalProperties: { type: :integer }
-              },
-              mismatches: {
-                type: :object,
-                additionalProperties: {
-                  type: :object,
-                  required: %w[expected actual],
-                  properties: {
-                    expected: { type: :integer },
-                    actual: { type: :integer }
-                  }
-                }
-              },
-              error: { type: :string, nullable: true }
-            }
-          },
-          ImportVerification: {
-            type: :object,
-            description: 'SureImport only. Captured at upload and completed after import publish.',
-            required: %w[expected_record_counts readback],
-            properties: {
-              expected_record_counts: {
-                type: :object,
-                additionalProperties: { type: :integer }
-              },
-              readback: { '$ref' => '#/components/schemas/ImportVerificationReadback' }
             }
           },
           ImportPreflightContent: {
@@ -1177,7 +999,7 @@ RSpec.configure do |config|
             type: :object,
             required: %w[type valid content stats errors warnings],
             properties: {
-              type: { type: :string, enum: Import::TYPES },
+              type: { type: :string, enum: %w[TransactionImport TradeImport AccountImport MintImport ActualImport CategoryImport RuleImport SureImport] },
               valid: { type: :boolean },
               content: { '$ref' => '#/components/schemas/ImportPreflightContent' },
               stats: { '$ref' => '#/components/schemas/ImportPreflightStats' },
@@ -1241,7 +1063,7 @@ RSpec.configure do |config|
             required: %w[id type status created_at updated_at status_detail],
             properties: {
               id: { type: :string, format: :uuid },
-              type: { type: :string, enum: Import::TYPES },
+              type: { type: :string, enum: %w[TransactionImport TradeImport AccountImport MintImport ActualImport CategoryImport RuleImport SureImport] },
               status: { type: :string, enum: %w[pending complete importing reverting revert_failed failed] },
               created_at: { type: :string, format: :'date-time' },
               updated_at: { type: :string, format: :'date-time' },
@@ -1256,7 +1078,7 @@ RSpec.configure do |config|
             required: %w[id type status created_at updated_at status_detail configuration stats],
             properties: {
               id: { type: :string, format: :uuid },
-              type: { type: :string, enum: Import::TYPES },
+              type: { type: :string, enum: %w[TransactionImport TradeImport AccountImport MintImport ActualImport CategoryImport RuleImport SureImport] },
               status: { type: :string, enum: %w[pending complete importing reverting revert_failed failed] },
               created_at: { type: :string, format: :'date-time' },
               updated_at: { type: :string, format: :'date-time' },
@@ -1264,8 +1086,7 @@ RSpec.configure do |config|
               error: { type: :string, nullable: true },
               status_detail: { '$ref' => '#/components/schemas/ImportStatusDetail' },
               configuration: { '$ref' => '#/components/schemas/ImportConfiguration' },
-              stats: { '$ref' => '#/components/schemas/ImportStats' },
-              verification: { '$ref' => '#/components/schemas/ImportVerification' }
+              stats: { '$ref' => '#/components/schemas/ImportStats' }
             }
           },
           ImportCollection: {
@@ -1295,68 +1116,6 @@ RSpec.configure do |config|
             required: %w[data],
             properties: {
               data: { '$ref' => '#/components/schemas/ImportDetail' }
-            }
-          },
-          ImportSessionChunk: {
-            type: :object,
-            required: %w[id sequence status rows_count summary created_at updated_at],
-            properties: {
-              id: { type: :string, format: :uuid },
-              sequence: { type: :integer, minimum: 1 },
-              client_chunk_id: { type: :string, nullable: true },
-              status: { type: :string, enum: %w[pending importing complete failed] },
-              rows_count: { type: :integer, minimum: 0 },
-              summary: {
-                type: :object,
-                additionalProperties: {
-                  type: :object,
-                  additionalProperties: { type: :integer }
-                }
-              },
-              error: {
-                type: :object,
-                nullable: true,
-                additionalProperties: true
-              },
-              created_at: { type: :string, format: :'date-time' },
-              updated_at: { type: :string, format: :'date-time' }
-            }
-          },
-          ImportSession: {
-            type: :object,
-            required: %w[id type status chunks_count summary chunks created_at updated_at],
-            properties: {
-              id: { type: :string, format: :uuid },
-              type: { type: :string, enum: %w[SureImport] },
-              status: { type: :string, enum: %w[pending importing complete failed] },
-              client_session_id: { type: :string, nullable: true },
-              expected_chunks: { type: :integer, nullable: true, minimum: 1 },
-              chunks_count: { type: :integer, minimum: 0 },
-              summary: {
-                type: :object,
-                additionalProperties: {
-                  type: :object,
-                  additionalProperties: { type: :integer }
-                }
-              },
-              error: {
-                type: :object,
-                nullable: true,
-                additionalProperties: true
-              },
-              chunks: {
-                type: :array,
-                items: { '$ref' => '#/components/schemas/ImportSessionChunk' }
-              },
-              created_at: { type: :string, format: :'date-time' },
-              updated_at: { type: :string, format: :'date-time' }
-            }
-          },
-          ImportSessionResponse: {
-            type: :object,
-            required: %w[data],
-            properties: {
-              data: { '$ref' => '#/components/schemas/ImportSession' }
             }
           },
           ProviderConnectionInstitution: {
@@ -1748,73 +1507,6 @@ RSpec.configure do |config|
               formatted: { type: :string, description: 'Locale-formatted money string' }
             }
           },
-          FinancialPeriod: {
-            type: :object, required: %w[start_date end_date],
-            properties: { start_date: { type: :string, format: :date }, end_date: { type: :string, format: :date } }
-          },
-          SpendingPoint: {
-            type: :object, required: %w[date amount],
-            properties: { date: { type: :string, format: :date }, amount: { type: :string, description: 'Cumulative decimal amount in family currency' } }
-          },
-          CashFlowSankey: {
-            type: :object, required: %w[basis income spending net_savings nodes links],
-            description: 'Refunds net within each category. Parent direct amounts exclude child totals before partitioning by direction. Graph income/spending may differ from gross monthly totals; net savings agrees. Decimal strings retain FX precision. Empty flow has empty nodes and links.',
-            properties: {
-              basis: { type: :string, enum: %w[net_by_category net_by_account], description: 'net_by_account (group_by=account) replaces the Cash Flow node with one account node per account, each balanced by Surplus or Deficit' },
-              income: { type: :string }, spending: { type: :string }, net_savings: { type: :string },
-              nodes: { type: :array, items: {
-                type: :object, required: %w[id name kind value percentage category_id filter_value color],
-                properties: {
-                  id: { type: :string, description: 'Stable direction-prefixed category identifier or structural identifier' },
-                  name: { type: :string }, kind: { type: :string, enum: %w[income expense cash_flow account surplus deficit] },
-                  value: { type: :string, description: 'Nonnegative decimal in envelope currency' },
-                  percentage: { type: :string, description: 'Percentage of parent, or side total for root categories; structural balancing nodes use central capacity' },
-                  category_id: { type: :string, format: :uuid, nullable: true },
-                  filter_value: { type: :string, nullable: true, description: 'Web transaction category filter; null means no category drill-down' },
-                  color: { type: :string, nullable: true, description: 'User category color; structural colors belong to the client' }
-                }
-              } },
-              links: { type: :array, items: {
-                type: :object, required: %w[source target value percentage],
-                properties: {
-                  source: { type: :integer, minimum: 0, description: 'Zero-based nodes index' },
-                  target: { type: :integer, minimum: 0, description: 'Zero-based nodes index' },
-                  value: { type: :string, description: 'Positive decimal in envelope currency' }, percentage: { type: :string }
-                }
-              } }
-            }
-          },
-          CashFlowGraph: {
-            type: :object, required: %w[as_of time_zone currency period sankey],
-            properties: {
-              as_of: { type: :string, format: :date }, time_zone: { type: :string }, currency: { type: :string },
-              period: { '$ref' => '#/components/schemas/FinancialPeriod' },
-              sankey: { '$ref' => '#/components/schemas/CashFlowSankey' }
-            }
-          },
-          CashFlow: {
-            type: :object,
-            required: %w[month as_of time_zone currency period income spending net_savings savings_rate spending_comparison],
-            properties: {
-              month: { type: :string, format: :date }, as_of: { type: :string, format: :date },
-              time_zone: { type: :string }, currency: { type: :string },
-              period: { '$ref' => '#/components/schemas/FinancialPeriod' },
-              income: { type: :string }, spending: { type: :string }, net_savings: { type: :string },
-              sankey: { '$ref' => '#/components/schemas/CashFlowSankey' },
-              savings_rate: { type: :string, nullable: true, description: 'Percentage points; null when income is nonpositive. May be negative.' },
-              spending_comparison: {
-                type: :object,
-                required: %w[previous_period current_total comparison_total comparison_end_date delta current previous],
-                properties: {
-                  previous_period: { '$ref' => '#/components/schemas/FinancialPeriod' },
-                  current_total: { type: :string }, comparison_total: { type: :string }, delta: { type: :string },
-                  comparison_end_date: { type: :string, format: :date },
-                  current: { type: :array, items: { '$ref' => '#/components/schemas/SpendingPoint' } },
-                  previous: { type: :array, items: { '$ref' => '#/components/schemas/SpendingPoint' } }
-                }
-              }
-            }
-          },
           BalanceSheet: {
             type: :object,
             required: %w[currency net_worth assets liabilities],
@@ -1862,9 +1554,16 @@ RSpec.configure do |config|
               },
               counts: {
                 type: :object,
-                required: reset_count_keys,
-                additionalProperties: { type: :integer, minimum: 0 },
-                properties: reset_count_keys.index_with { { type: :integer, minimum: 0 } }
+                required: %w[accounts categories tags merchants plaid_items imports budgets],
+                properties: {
+                  accounts: { type: :integer, minimum: 0 },
+                  categories: { type: :integer, minimum: 0 },
+                  tags: { type: :integer, minimum: 0 },
+                  merchants: { type: :integer, minimum: 0 },
+                  plaid_items: { type: :integer, minimum: 0 },
+                  imports: { type: :integer, minimum: 0 },
+                  budgets: { type: :integer, minimum: 0 }
+                }
               }
             }
           }
@@ -1872,10 +1571,6 @@ RSpec.configure do |config|
       }
     }
   }
-
-  config.openapi_specs["openapi.yaml"][:components][:schemas].merge!(
-    JSON.parse(Rails.root.join("docs/api/financekit/schemas.json").read)
-  )
 
   config.openapi_format = :yaml
 end

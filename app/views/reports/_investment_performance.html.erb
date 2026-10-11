@@ -3,7 +3,7 @@
 <% if investment_metrics[:has_investments] %>
   <div class="space-y-6">
     <%# Investment Summary Cards %>
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
       <%# Portfolio Value Card %>
       <div class="bg-container-inset rounded-lg p-4">
         <div class="flex items-center gap-2 mb-3">
@@ -25,22 +25,6 @@
           <p class="text-xl font-semibold privacy-sensitive" style="color: <%= investment_metrics[:unrealized_trend].color %>">
             <%= format_money(Money.new(investment_metrics[:unrealized_trend].value, Current.family.currency)) %>
             (<%= investment_metrics[:unrealized_trend].percent_formatted %>)
-          </p>
-        <% else %>
-          <p class="text-xl font-semibold text-secondary"><%= t("reports.investment_performance.no_data") %></p>
-        <% end %>
-      </div>
-
-      <%# Period Return Card %>
-      <div class="bg-container-inset rounded-lg p-4">
-        <div class="flex items-center gap-2 mb-3">
-          <%= icon("bar-chart-2", size: "sm") %>
-          <span class="text-sm text-secondary"><%= t("reports.investment_performance.period_return") %></span>
-        </div>
-        <% if investment_metrics[:period_return_trend] %>
-          <p class="text-xl font-semibold privacy-sensitive" style="color: <%= investment_metrics[:period_return_trend].color %>">
-            <%= format_money(Money.new(investment_metrics[:period_return_trend].value, Current.family.currency)) %>
-            (<%= investment_metrics[:period_return_trend].percent_formatted %>)
           </p>
         <% else %>
           <p class="text-xl font-semibold text-secondary"><%= t("reports.investment_performance.no_data") %></p>
@@ -134,13 +118,9 @@
           <% investment_metrics[:gains_by_tax_treatment].each do |treatment, data| %>
             <div class="bg-container-inset rounded-lg p-4 space-y-3 flex-1 min-w-64">
               <div class="flex items-center justify-between">
-                <%= render DS::Pill.new(
-                  label: t("accounts.tax_treatments.#{treatment}"),
-                  tone: tax_treatment_pill_tone(treatment),
-                  marker: false,
-                  show_dot: false,
-                  title: t("accounts.tax_treatment_descriptions.#{treatment}")
-                ) %>
+                <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium <%= tax_treatment_badge_classes(treatment) %>" title="<%= t("accounts.tax_treatment_descriptions.#{treatment}") %>">
+                  <%= t("accounts.tax_treatments.#{treatment}") %>
+                </span>
                 <span class="text-sm font-semibold text-primary privacy-sensitive">
                   <%= format_money(data[:total_gain]) %>
                 </span>
@@ -164,16 +144,14 @@
                 </p>
               <% end %>
 
-              <%= render DS::Disclosure.new(variant: :inline) do |disclosure| %>
-                <% disclosure.with_summary_content do %>
-                  <span class="flex items-center gap-1 text-xs text-secondary hover:text-primary">
-                    <%= icon "chevron-right", size: "sm", class: "group-open:rotate-90 motion-safe:transition-transform motion-safe:duration-150" %>
-                    <%= t("reports.investment_performance.view_details") %>
-                    (<%= t("reports.investment_performance.holdings_count", count: data[:holdings].count) %>, <%= t("reports.investment_performance.sells_count", count: data[:sell_trades].count) %>)
-                  </span>
-                <% end %>
+              <details class="group">
+                <summary class="cursor-pointer text-xs text-secondary hover:text-primary flex items-center gap-1">
+                  <%= icon "chevron-right", size: "sm", class: "group-open:rotate-90 transition-transform" %>
+                  <%= t("reports.investment_performance.view_details") %>
+                  (<%= t("reports.investment_performance.holdings_count", count: data[:holdings].count) %>, <%= t("reports.investment_performance.sells_count", count: data[:sell_trades].count) %>)
+                </summary>
 
-                <div class="space-y-2 text-xs">
+                <div class="mt-2 space-y-2 text-xs">
                   <% if data[:holdings].any? %>
                     <div class="space-y-1">
                       <p class="text-secondary font-medium"><%= t("reports.investment_performance.holdings") %></p>
@@ -196,12 +174,10 @@
                       <p class="text-secondary font-medium"><%= t("reports.investment_performance.sell_trades") %></p>
                       <% data[:sell_trades].first(5).each do |trade| %>
                         <% gain = trade.realized_gain_loss %>
-                        <%# Converted in the controller, at the trade's own date: gain.value is carried in the currency the position is held in, and labelling it family currency here was reporting a EUR figure as USD. %>
-                        <% amount = data[:realized_gain_by_trade][trade.id] %>
-                        <div class="flex justify-between pl-2" data-testid="realized-gain-line">
+                        <div class="flex justify-between pl-2">
                           <span class="text-primary"><%= trade.security.ticker %></span>
-                          <span class="<%= amount ? "" : "text-secondary" %>" style="<%= amount ? "color: #{gain.color}" : "" %>">
-                            <%= amount ? format_money(amount) : t("reports.investment_performance.no_data") %>
+                          <span class="<%= gain ? "" : "text-secondary" %>" style="<%= gain ? "color: #{gain.color}" : "" %>">
+                            <%= gain ? format_money(Money.new(gain.value, Current.family.currency)) : t("reports.investment_performance.no_data") %>
                           </span>
                         </div>
                       <% end %>
@@ -211,7 +187,7 @@
                     </div>
                   <% end %>
                 </div>
-              <% end %>
+              </details>
             </div>
           <% end %>
         </div>
