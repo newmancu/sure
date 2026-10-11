@@ -1,6 +1,5 @@
 class PwaController < ApplicationController
   skip_authentication
-  skip_forgery_protection
 
   def manifest
     # Force JSON format to avoid MissingTemplate errors when browsers request /manifest

@@ -10,12 +10,12 @@
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
       <%# Budget Donut %>
       <div class="min-h-[300px] bg-container rounded-xl shadow-border-xs p-8">
-        <% if !@budget.initialized? && @source_budget.present? && @editable %>
+        <% if !@budget.initialized? && @source_budget.present? %>
           <%= render "budgets/copy_previous_prompt", budget: @budget, source_budget: @source_budget %>
         <% elsif @budget.initialized? && @budget.available_to_allocate.negative? %>
-          <%= render "budgets/over_allocation_warning", budget: @budget, editable: @editable %>
+          <%= render "budgets/over_allocation_warning", budget: @budget %>
         <% else %>
-          <%= render "budgets/budget_donut", budget: @budget, editable: @editable %>
+          <%= render "budgets/budget_donut", budget: @budget %>
         <% end %>
       </div>
 
@@ -46,15 +46,9 @@
       <% end %>
     </div>
 
-    <%# Goals live behind the preview flag, so a panel that subtracts what they
-        claim — and links to them — must too, or it points at a page the reader
-        cannot reach and explains a subtraction they have no way to inspect. %>
-    <% if preview_features_enabled? %>
-      <%= render "budgets/available_cash", budget: @budget %>
-    <% end %>
-
     <%# Bottom Section: Categories full width %>
-    <% has_over_budget = budget_has_over_budget?(@budget) %>
+    <% categories_state = budget_categories_view_state(@budget) %>
+    <% has_over_budget = categories_state[:over_budget_count].positive? %>
     <%= content_tag :div,
       class: "w-full bg-container rounded-xl shadow-border-xs p-4",
       data: (has_over_budget ? { controller: "budget-filter" } : {}) do %>
@@ -70,12 +64,12 @@
         <% end %>
 
         <div class="<%= has_over_budget ? "shrink-0 flex justify-end whitespace-nowrap" : "ml-auto" %>">
-          <% if @budget.initialized? && @editable %>
+          <% if @budget.initialized? %>
             <%= render DS::Link.new(
               text: t("budgets.show.categories.edit"),
               variant: "secondary",
               icon: "settings-2",
-              href: budget_budget_categories_path(@budget, **budget_owner_query)
+              href: budget_budget_categories_path(@budget)
             ) %>
           <% end %>
         </div>

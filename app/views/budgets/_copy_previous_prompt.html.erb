@@ -11,7 +11,7 @@
   <div class="flex flex-col sm:flex-row items-center gap-2">
     <%= render DS::Button.new(
       text: t("budgets.copy_previous_prompt.copy_button", source_name: source_budget.name),
-      href: copy_previous_budget_path(budget, **budget_owner_query),
+      href: copy_previous_budget_path(budget),
       method: :post,
       icon: "copy"
     ) %>
@@ -20,7 +20,7 @@
       text: t("budgets.copy_previous_prompt.fresh_button"),
       variant: "secondary",
       icon: "plus",
-      href: edit_budget_path(budget, **budget_owner_query)
+      href: edit_budget_path(budget)
     ) %>
   </div>
 </div>

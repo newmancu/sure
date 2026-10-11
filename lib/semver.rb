@@ -19,10 +19,6 @@ class Semver
     @version == other.version
   end
 
-  def prerelease?
-    @version.prerelease?
-  end
-
   def to_s
     @version_string
   end
