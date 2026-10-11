@@ -172,15 +172,11 @@ class AkahuEntry::Processor
       value = data[:date]
       case value
       when String
-        if value.include?("T") || value.include?(":")
-          Time.parse(value).in_time_zone(account&.family&.timezone).to_date
-        else
-          Date.parse(value)
-        end
+        Date.parse(value)
       when Integer, Float
-        Time.at(value).in_time_zone(account&.family&.timezone).to_date
+        Time.at(value).to_date
       when Time, DateTime
-        value.in_time_zone(account&.family&.timezone).to_date
+        value.to_date
       when Date
         value
       else
