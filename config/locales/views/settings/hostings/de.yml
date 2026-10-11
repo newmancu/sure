@@ -47,6 +47,7 @@ de:
           moex_public: MOEX
           tiingo: Tiingo
           tinkoff_invest: T-Invest (T-Bank)
+          mansa: Mansa
         binance_public_hint: kostenlos, ohne API-Key – nur Krypto (BTC, ETH usw.)
         exchange_rate_description: Wähl einen Anbieter, über den Wechselkurse geholt werden.
         exchange_rate_title: Anbieter für Wechselkurse
@@ -60,11 +61,12 @@ de:
         tinkoff_invest_hint: braucht Token mit Lesezugriff – Kurse russischer Aktien, Fonds und Anleihen samt Logos
         twelve_data_hint: braucht API-Key, 800 Credits/Tag
         yahoo_finance_hint: kostenlos, ohne API-Key
+        requires_api_key_mansa: braucht API-Key, kostenlos 100 Abrufe/Tag -- nur NGX (Nigerian Exchange)
       brand_fetch_settings:
         description: Gib die von Brandfetch bereitgestellte Client-ID ein.
         label: Client-ID
         placeholder: Gib hier deine Client-ID ein
-        title: Brandfetch Einstellungen
+        title: Brandfetch-Einstellungen
         high_res_label: Hochauflösende Logos aktivieren
         high_res_description: Wenn aktiviert, werden Logos in 120x120 statt 40x40 abgerufen. Das liefert schärfere Bilder auf hochauflösenden Displays.
         env_configured_message: Deine Brandfetch-Client-ID ist über die Umgebungsvariable BRAND_FETCH_CLIENT_ID eingerichtet.
@@ -104,8 +106,6 @@ de:
         openai_request_timeout_help: 'Standard: 60. Gilt für jede OpenAI-kompatible HTTP-Anfrage, einschließlich automatischer Kategorisierung, Händlererkennung, Chat, PDF-Verarbeitung und Vektorspeicher-Aufrufen. OPENAI_REQUEST_TIMEOUT überschreibt dieses Feld.'
         ai_response_timeout_label: Antwortzeitlimit in Sekunden (optional)
         ai_response_timeout_help: 'Standard: 90. Gilt nur für das Zeitlimit der gesamten Chat-Runde. Setz den Wert daher als Summe an: (1 + ASSISTANT_MAX_TOOL_CALL_ITERATIONS) × Anfragezeitlimit, plus Ausführungszeit der Tools und Wartezeit in der Warteschlange. AI_RESPONSE_TIMEOUT überschreibt dieses Feld.'
-        ai_health_probe_timeout_label: Zeitlimit für Systemstatus-Prüfungen in Sekunden (optional)
-        ai_health_probe_timeout_help: 'Standard: 5. Gilt nur für die KI-Live-Prüfungen unter Einstellungen → Systemstatus, nie für echte KI-Aufrufe. Erhöhe den Wert, wenn die PDF-Prüfungen mit einem Cloud-Modell ein Zeitlimit melden. AI_HEALTH_PROBE_TIMEOUT überschreibt dieses Feld.'
       yahoo_finance_settings:
         title: Yahoo Finance
         description: Yahoo Finance bietet kostenlosen Zugriff auf Aktienkurse, Wechselkurse und Finanzdaten – ganz ohne API-Schlüssel.
@@ -270,3 +270,13 @@ de:
         step_2: Leg einen Token mit reinem Lesezugriff an.
         step_3: Kopier den Token und füg ihn unten ein.
         title: T-Invest (T-Bank)
+      mansa_settings:
+        title: Mansa
+        description: Trag den API-Key der Mansa API ein. Unterstützt die NGX (Nigerian Exchange), die kein anderer Anbieter hier abdeckt. Mansa deckt auch weitere afrikanische Börsen ab, mit dieser Integration ist aber nur die NGX geprüft.
+        env_configured_message: Über die Umgebungsvariable MANSA_API_KEY eingerichtet.
+        label: API-Key
+        placeholder: Mansa-API-Key hier eintragen
+        show_details: (Details anzeigen)
+        step_1_html: Öffne <a href="https://mansaapi.com" target="_blank" rel="noopener noreferrer" class="underline">mansaapi.com</a> und hol dir deinen kostenlosen API-Key – ohne Kreditkarte.
+        step_2: Kopier deinen API-Key und füg ihn unten ein.
+        rate_limit_warning: Der kostenlose Tarif von Mansa ist auf 100 API-Abrufe pro Tag begrenzt und liefert nur aktuelle Kurse – historische Kurse erfordern einen kostenpflichtigen Tarif. Mit dieser Integration ist nur die NGX (Nigerian Exchange) geprüft; weitere afrikanische Börsen, die Mansa abdeckt, werden hier noch nicht unterstützt.

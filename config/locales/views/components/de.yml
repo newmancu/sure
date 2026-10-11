@@ -10,7 +10,7 @@ de:
       unlinked: "Nicht verknüpft: %{count}"
       institutions: "Institute: %{count}"
     transactions:
-      title: Buchungen
+      title: Transaktionen
       seen: "Erfasst: %{count}"
       imported: "Importiert: %{count}"
       updated: "Aktualisiert: %{count}"
@@ -41,27 +41,27 @@ de:
       recently: kürzlich
       errors: "Fehler: %{count}"
       pending_reconciled:
-        one: "%{count} ausstehende Doppelbuchung abgeglichen"
-        other: "%{count} ausstehende Doppelbuchungen abgeglichen"
-      view_reconciled: Abgeglichene Buchungen anzeigen
+        one: "%{count} doppelte ausstehende Transaktion abgeglichen"
+        other: "%{count} doppelte ausstehende Transaktionen abgeglichen"
+      view_reconciled: Abgeglichene Transaktionen anzeigen
       duplicate_suggestions:
         one: "%{count} mögliche Doppelbuchung zur Prüfung"
         other: "%{count} mögliche Doppelbuchungen zur Prüfung"
       view_duplicate_suggestions: Vorgeschlagene Duplikate anzeigen
       stale_pending:
-        one: "%{count} veraltete ausstehende Buchung (von Budgets ausgeschlossen)"
-        other: "%{count} veraltete ausstehende Buchungen (von Budgets ausgeschlossen)"
+        one: "%{count} veraltete ausstehende Transaktion (von Budgets ausgeschlossen)"
+        other: "%{count} veraltete ausstehende Transaktionen (von Budgets ausgeschlossen)"
       view_stale_pending: Betroffene Konten anzeigen
       stale_pending_count:
-        one: "%{count} Buchung"
-        other: "%{count} Buchungen"
+        one: "%{count} Transaktion"
+        other: "%{count} Transaktionen"
       stale_unmatched:
-        one: "%{count} ausstehende Buchung benötigt manuelle Prüfung"
-        other: "%{count} ausstehende Buchungen benötigen manuelle Prüfung"
-      view_stale_unmatched: Zu prüfende Buchungen anzeigen
+        one: "%{count} ausstehende Transaktion benötigt manuelle Prüfung"
+        other: "%{count} ausstehende Transaktionen benötigen manuelle Prüfung"
+      view_stale_unmatched: Zu prüfende Transaktionen anzeigen
       stale_unmatched_count:
-        one: "%{count} Buchung"
-        other: "%{count} Buchungen"
+        one: "%{count} Transaktion"
+        other: "%{count} Transaktionen"
       data_warnings: "Datenwarnungen: %{count}"
       notices: "Hinweise: %{count}"
       view_data_quality: Datenqualitätsdetails anzeigen
@@ -87,7 +87,7 @@ de:
           final_principal: Endgültige Restschuld
           final_value: Endgültiger Wert
           market_changes: Kursveränderungen
-          net_cash_flow: Netto-Zahlungsfluss
+          net_cash_flow: Netto-Cashflow
           net_principal_change: Netto-Veränderung der Restschuld
           net_value_change: Netto-Wertveränderung
           payments: Zahlungen
@@ -126,25 +126,6 @@ de:
           start_principal: Die Restschuld zu Beginn dieses Tages
           start_value: Der Vermögenswert zu Beginn dieses Tages
       chart:
-        loan:
-          actual: "Erfasster Saldo"
-          aria_description: "Kreditsaldo-Diagramm. Erfasster Saldo %{current_balance}. Ursprünglich geplante Tilgung %{scheduled_payoff_date}. Voraussichtliche Tilgung ab dem heutigen Saldo %{projected_payoff_date}."
-          aria_actual_history_starts: "Die erfasste Saldenhistorie beginnt am %{date}."
-          interactive_chart: "interaktives Diagramm"
-          interest_saved: "Eingesparte Zinsen"
-          legend: "Diagrammreihen"
-          months_saved:
-            one: "%{count} Monat früher als geplant"
-            other: "%{count} Monate früher als geplant"
-          no_payoff: "mit der aktuellen Rate nicht erreicht"
-          not_converged: "Mit der aktuellen Rate ist dieser Saldo bis zum ursprünglichen Laufzeitende nicht getilgt; %{balloon} blieben offen."
-          on_schedule: "Im Plan"
-          projected: "Prognose ab heute"
-          projected_payoff: "Voraussichtliche Tilgung"
-          projection_basis: "Vergleicht den heute erfassten Saldo mit dem Saldo laut Tilgungsplan am selben Tag. Eine vor ihrem Fälligkeitstermin gebuchte Zahlung erscheint bis zu diesem Termin als Vorsprung, eine danach gebuchte als Rückstand."
-          scheduled: "Ursprünglicher Tilgungsplan"
-          since_start: "seit Kreditbeginn"
-          today: "Heute"
         no_data_available: Keine Daten vorhanden
         title:
           balance: Saldo
@@ -153,7 +134,6 @@ de:
           estimated_property_value: Geschätzter Immobilienwert
           estimated_vehicle_value: Geschätzter Fahrzeugwert
           holdings_value: Wert der Bestände
-          loan_remaining_balance: Verbleibender Saldo
           remaining_principal_balance: Verbleibende Restschuld
           total_account_value: Gesamtwert des Kontos
           total_gains: Gesamtgewinn

@@ -12,7 +12,7 @@ pl:
       manual: Ręczna
     cleaned_up: 'Wyczyszczone nieaktualne transakcje cykliczne: %{count}'
     cleanup_stale: Wyczyść nieaktualne
-    confirm_delete: Czy na pewno chcesz usunąć tę transakcję cykliczną?
+    confirm_delete: Usunąć %{name} z Twoich rachunków? Twoje transakcje pozostaną bez zmian. To usuwa tylko rachunek i jego harmonogram płatności.
     confirm_delete_income: Usunąć %{name} jako przychód? Twoje transakcje pozostaną
       bez zmian. To usuwa tylko przychód i jego harmonogram.
     confirmed: Rachunek dodany do Twoich transakcji cyklicznych
@@ -21,7 +21,6 @@ pl:
         puste
       already_exists: Ten rachunek już istnieje
       amount_invalid: Wpisz kwotę jako zwykłą liczbę
-      amount_too_precise: Użyj najwyżej 4 miejsc po przecinku
       due_date_required: Wpisz następny termin płatności rachunku
       success: Rachunek dodany
       success_income: Przychód dodany
@@ -64,6 +63,7 @@ pl:
         rachunek, aby przyszłe wystąpienia przestały się pojawiać.
       cancelled_on_label: Anulowano
       category_blank: Brak kategorii
+      category_label: Kategoria
       first_due_on_label: Następny termin
       frequency_day_label: W dniu
       frequency_hint: Jak często ten rachunek jest wymagalny. Dobierz szczegóły dnia
@@ -141,12 +141,12 @@ pl:
       description: Stamtąd zgłaszaj, edytuj, wstrzymuj i płać wszystko. Ta strona
         steruje wykrywaniem.
       title: Twoje rachunki znajdziesz na stronie Rachunki
-    marked_active: Transakcję cykliczną oznaczono jako aktywną
+    marked_active: Wznowiono.
     marked_as_recurring: Transakcja została oznaczona jako cykliczna
-    marked_inactive: Transakcję cykliczną oznaczono jako nieaktywną
+    marked_inactive: Wstrzymano. Nie pojawi się ponownie, dopóki go nie wznowisz.
     new:
       candidate_meta: "%{count}× · ostatnio %{date}"
-      income_title: Nowy przychód
+      income_title: Dodaj przychód
       pick_different: Zacznij od innej transakcji
       search_all_cta: Przeszukaj wszystkie swoje transakcje
       search_all_prompt: Nie widzisz tego, czego szukasz?
@@ -157,12 +157,13 @@ pl:
         możesz wszystko zmienić.
       start_from_income_title: Zacznij od wykrytego cyklicznego wpływu
       start_from_title: Zacznij od wykrytego cyklicznego obciążenia
-      title: Nowy rachunek
+      title: Dodaj rachunek
     pay_action:
       add_link: Dodaj link
       add_link_aria: Dodaj link do płatności dla %{name}
       autopay: Autopłatność
       autopay_aria: "%{name} płatne automatycznie, otwórz portal w nowej karcie"
+      open_site: Otwórz stronę rachunku
       pay: Zapłać
       pay_aria: Zapłać %{name} (otwiera się w nowej karcie)
     pick_entry:
@@ -171,7 +172,7 @@ pl:
       income_title: Znajdź wpływ, od którego zaczniesz
       no_results: Nic nie pasuje do „%{query}”. Spróbuj mniej słów albo wróć i wypełnij
         formularz samodzielnie.
-      search_placeholder: Szukaj po nazwie, notatkach lub sprzedawcy
+      search_placeholder: Szukaj po nazwie, notatkach lub kontrahencie
       showing_recent: Pokazano %{count} najnowszych. Wyszukaj, aby zawęzić.
       title: Znajdź transakcję, od której zaczniesz
     picker_row:
