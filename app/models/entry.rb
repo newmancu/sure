@@ -6,6 +6,10 @@ class Entry < ApplicationRecord
 
   attr_accessor :unsplitting
 
+  # `time` is a naive wall-clock time of day, like `date` - excluded from
+  # Rails' time-zone-aware attribute casting so it stays that way.
+  self.skip_time_zone_conversion_for_attributes = [ :time ]
+
   monetize :amount
 
   belongs_to :account
@@ -33,6 +37,7 @@ class Entry < ApplicationRecord
 
   validate :cannot_unexclude_split_parent
   validate :split_child_date_matches_parent
+  validate :time_format_is_valid
 
   before_destroy :prevent_individual_child_deletion, if: :split_child?
   after_save :track_earliest_saved_date, if: :saved_change_to_date?
@@ -41,22 +46,20 @@ class Entry < ApplicationRecord
     joins(:account).where(accounts: { status: [ "draft", "active" ] })
   }
 
+  # NULLS LAST is explicit in both directions: Postgres defaults to NULLS
+  # FIRST on DESC, which would rank untimed entries before timed ones.
   scope :chronological, -> {
-    order(
-      date: :asc,
-      Arel.sql("CASE WHEN entries.entryable_type = 'Valuation' THEN 1 ELSE 0 END") => :asc,
-      created_at: :asc,
-      id: :asc
-    )
+    order(date: :asc)
+      .order(Arel.sql("entries.time ASC NULLS LAST"))
+      .order(Arel.sql("CASE WHEN entries.entryable_type = 'Valuation' THEN 1 ELSE 0 END") => :asc)
+      .order(created_at: :asc, id: :asc)
   }
 
   scope :reverse_chronological, -> {
-    order(
-      date: :desc,
-      Arel.sql("CASE WHEN entries.entryable_type = 'Valuation' THEN 1 ELSE 0 END") => :desc,
-      created_at: :desc,
-      id: :desc
-    )
+    order(date: :desc)
+      .order(Arel.sql("entries.time DESC NULLS LAST"))
+      .order(Arel.sql("CASE WHEN entries.entryable_type = 'Valuation' THEN 1 ELSE 0 END") => :desc)
+      .order(created_at: :desc, id: :desc)
   }
 
   # Reconciliation scopes - see AddReconciliationToEntries
@@ -67,8 +70,9 @@ class Entry < ApplicationRecord
   # Pending transaction scopes - check Transaction.extra for provider pending flags
   # Works with any provider that stores pending status in extra["provider_name"]["pending"]
   scope :pending, -> {
+    conditions = Transaction::PENDING_PROVIDERS.map { |p| "(transactions.extra -> '#{p}' ->> 'pending')::boolean = true" }
     joins("INNER JOIN transactions ON transactions.id = entries.entryable_id AND entries.entryable_type = 'Transaction'")
-      .where(Transaction.pending_sql)
+      .where(conditions.join(" OR "))
   }
 
   scope :excluding_pending, -> {
@@ -165,7 +169,9 @@ class Entry < ApplicationRecord
   def self.reconcile_pending_duplicates(account: nil, dry_run: false, date_window: 8, amount_tolerance: 0.25)
     stats = { checked: 0, reconciled: 0, details: [] }
 
-    not_pending_sql = Transaction.not_pending_sql
+    not_pending_sql = Transaction::PENDING_PROVIDERS
+      .map { |p| "(transactions.extra -> '#{p}' ->> 'pending')::boolean IS NOT TRUE" }
+      .join(" AND ")
 
     # Get pending entries to check
     scope = Entry.pending.where(excluded: false)
@@ -473,6 +479,7 @@ class Entry < ApplicationRecord
         child_entries.create!(
           account: account,
           date: date,
+          time: time,
           name: split_attrs[:name],
           amount: split_attrs[:amount],
           currency: currency,
@@ -600,6 +607,25 @@ class Entry < ApplicationRecord
       return if date == parent_entry.date
 
       errors.add(:date, "must match the parent transaction date for split children")
+    end
+
+    def time_format_is_valid
+      raw = time_before_type_cast
+      return if raw.nil? || raw == ""
+
+      # Must be minute precision either way - a raw string has to be
+      # HH:MM (Postgres round-trips it as HH:MM:00; Rails' Time cast
+      # otherwise also accepts seconds and UTC offsets), and an
+      # already-cast Time (e.g. copied by split!) still can't carry
+      # seconds/subseconds, or two entries could sort differently on
+      # hidden precision the API never shows.
+      valid = if raw.is_a?(String)
+        raw.match?(/\A([01]\d|2[0-3]):[0-5]\d(:00)?\z/)
+      else
+        time.respond_to?(:utc?) && time.utc? &&
+          time.sec.zero? && time.usec.zero?
+      end
+      errors.add(:time, "is not a valid time") unless valid
     end
 
     def prevent_individual_child_deletion

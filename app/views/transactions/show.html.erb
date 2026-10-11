@@ -63,11 +63,27 @@
                 label: t(".name_label"),
                 disabled: @entry.split_child? || edit_locked,
                 "data-auto-submit-form-target": "auto" %>
-          <%= f.date_field :date,
-                label: t(".date_label"),
-                max: Date.current,
-                disabled: @entry.linked? || split_locked || edit_locked,
-                "data-auto-submit-form-target": "auto" %>
+          <%= render "transactions/date_time_fields",
+            f: f,
+            date_label: t(".date_label"),
+            time_label: t(".time_label"),
+            clear_time_label: t(".clear_time"),
+            date_options: {
+              max: Date.current,
+              disabled: @entry.linked? || split_locked || edit_locked,
+              data: { "auto-submit-form-target": "auto" }
+            },
+            time_options: {
+              disabled: @entry.linked? || edit_locked,
+              data: {
+                "auto-submit-form-target": "auto",
+                autosubmit_trigger_event: "blur",
+                clear_field_target: "input"
+              }
+            },
+            clear_button_options: {
+              disabled: @entry.linked? || edit_locked
+            } %>
           <% unless @entry.transaction.transfer? %>
             <div class="flex items-center gap-2">
               <%= f.select :nature,
@@ -82,8 +98,6 @@
                     disabled: @entry.linked? || split_locked || edit_locked,
                     disable_currency: @entry.linked? || split_locked || edit_locked %>
             </div>
-          <% end %>
-          <% if @entry.transaction.category_editable? %>
             <%= f.fields_for :entryable do |ef| %>
               <%= render DS::CategorySelect.new(
                     form: ef,
@@ -94,21 +108,6 @@
                     blank_label: t(".uncategorized")
                   ) %>
             <% end %>
-          <% elsif @entry.transaction.category_set_on_transfer_outflow? %>
-            <% outflow_category = transfer_outflow_category(@entry.transaction) %>
-            <div class="space-y-1">
-              <div class="opacity-60 cursor-not-allowed">
-                <%= f.fields_for :entryable do |ef| %>
-                  <%= render DS::CategorySelect.new(
-                        form: ef,
-                        categories: [],
-                        selected_category: outflow_category || transfer_category,
-                        disabled: true
-                      ) %>
-                <% end %>
-              </div>
-              <p class="text-xs text-secondary"><%= outflow_category ? t(".category_set_on_outflow") : t(".category_set_on_hidden_outflow") %></p>
-            </div>
           <% end %>
         <% end %>
       </div>

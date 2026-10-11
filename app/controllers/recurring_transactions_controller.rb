@@ -129,8 +129,7 @@ class RecurringTransactionsController < ApplicationController
     @recurring_transaction = Current.family.recurring_transactions.new(
       # Paychecks default to the most common pay cadence; bills to monthly.
       frequency_preset: income ? "biweekly" : "monthly",
-      first_due_on: Date.current,
-      currency: Current.family.currency
+      first_due_on: Date.current
     )
     @recurring_transaction.is_income = income
 
@@ -260,7 +259,6 @@ class RecurringTransactionsController < ApplicationController
     def prefill_recurring_from_entry(entry)
       @recurring_transaction.name = entry.entryable.try(:merchant)&.name.presence || entry.name
       @recurring_transaction.amount = entry.amount.abs
-      @recurring_transaction.currency = entry.currency
       @recurring_transaction.account_id = entry.account_id
       # A negative entry is an inflow: pre-fill as income, not as a bill.
       @recurring_transaction.is_income = true if entry.amount.negative?
@@ -375,7 +373,7 @@ class RecurringTransactionsController < ApplicationController
 
     def new_recurring_transaction_params
       params.require(:recurring_transaction).permit(
-        :name, :amount, :currency, :account_id, :first_due_on, :frequency_preset,
+        :name, :amount, :account_id, :first_due_on, :frequency_preset,
         :frequency_interval, :frequency_interval_unit,
         :payment_url, :autopay, :notes, :is_income
       )
@@ -431,13 +429,8 @@ class RecurringTransactionsController < ApplicationController
 
       if attrs[:amount].present?
         magnitude = attrs[:amount].to_d.abs
-        # Checked on the input: assigning it already rounded to the column.
-        if RecurringTransaction.storable_amount?(magnitude)
-          @recurring_transaction.amount =
-            @recurring_transaction.typed_income? ? -magnitude : magnitude
-        else
-          @recurring_transaction.errors.add(:base, t("recurring_transactions.create.amount_too_precise"))
-        end
+        @recurring_transaction.amount =
+          @recurring_transaction.typed_income? ? -magnitude : magnitude
       end
 
       if attrs.key?(:account_id)
