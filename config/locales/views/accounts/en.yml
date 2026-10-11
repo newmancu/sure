@@ -24,6 +24,35 @@ en:
       default_label: Default
       delete: Delete account
       sharing: Sharing
+    card_twin_cleanups:
+      create:
+        success:
+          one: "1 duplicate removed."
+          other: "%{count} duplicates removed."
+      show:
+        title: "Review duplicate card transactions"
+        empty: "No duplicates found on this account."
+        explanation: "Your bank recorded these card purchases twice, once from your side and once from the shop's. Sure now imports only one copy, so these are leftovers from before. Removing them doesn't change anything your bank sends in future."
+        keeps: "keeps %{name}"
+        selected_count: "%{selected} selected · %{kept} kept"
+        selected_label: "selected"
+        kept_label: "kept"
+        blocker_transfer: "Part of a transfer. Removing this deletes the transfer on both accounts."
+        blocker_attachment:
+          one: "Has 1 attachment. The file is deleted with the row."
+          other: "Has %{count} attachments. The files are deleted with the row."
+        carried_over: "%{fields} move to the row that stays."
+        carried_category: "Category %{name}"
+        carried_tags:
+          one: "1 tag"
+          other: "%{count} tags"
+        carried_notes: "the notes"
+        unticked_explanation:
+          one: "1 row is unticked because removing it would destroy something that can't be moved to the row that stays. Tick it only if you're sure."
+          other: "%{count} rows are unticked because removing them would destroy something that can't be moved to the row that stays. Tick them only if you're sure."
+        cancel: "Cancel"
+        submit: "Remove selected"
+        confirm: "Remove the selected duplicates? This can't be undone."
     chart:
       data_not_available: Data not available for the selected period
     create:
@@ -55,9 +84,6 @@ en:
       enable_category_matcher_hint: When enabled, the provider's suggested category is applied to imported transactions. Disable to leave new transactions uncategorized.
     index:
       accounts: Accounts
-      financekit_accounts:
-        title: Apple Wallet
-        description: Manage Apple Wallet connections and sync in the Sure iOS app.
       cancel_sync: Cancel sync
       manual_accounts:
         other_accounts: Other accounts
@@ -71,8 +97,6 @@ en:
         select: Select
         navigate: Navigate
         close: Close
-        next: Next
-        previous: Previous
       method_selector:
         connected_entry: Link account
         connected_entry_eu: Link EU account
@@ -82,17 +106,19 @@ en:
         title: How would you like to add it?
       title: What would you like to add?
     show:
+      card_twin_notice:
+        one: "1 card purchase was imported twice by your bank and is still duplicated here."
+        other: "%{count} card purchases were imported twice by your bank and are still duplicated here."
+      card_twin_notice_action: "Review duplicates"
       limited_fx_history_warning: "Exchange rate history is only available from %{date} onwards. Transactions before this date use approximate currency conversions — this can happen when the FX provider only offers a limited historical window."
       tabs:
         activity: Activity
         holdings: Holdings
         overview: Overview
-        schedule: Schedule
         statements: Statements
       activity:
         amount: Amount
         balance: Balance
-        category: Category
         confirmed: Confirmed
         date: Date
         entries: entries
@@ -111,7 +137,6 @@ en:
         search_placeholder: Search entries by name
         status: Status
         title: Activity
-        uncategorized_only: Uncategorized only
       chart:
         balance: Balance
         owed: Amount owed
@@ -149,8 +174,6 @@ en:
       new_debt: New debt
       new_account: New account
       new_account_group: "New %{account_group}"
-      expand_all: Expand all
-      collapse_all: Collapse all
     types:
       depository: Cash
       investment: Investment
@@ -193,7 +216,6 @@ en:
       title: Unlink account from provider?
       description_html: "You are about to unlink <strong>%{account_name}</strong> from <strong>%{provider_name}</strong>. This will convert it to a manual account."
       warning_title: What this means
-      warning_wallet_connection: All accounts in this Apple Wallet connection will be unlinked. Their transactions and balances will be preserved. You can reconnect through the Sure iOS app with a new Wallet setup.
       warning_no_sync: The account will no longer sync automatically with your provider
       warning_manual_updates: You will need to add transactions and update balances manually
       warning_transactions_kept: All existing transactions and balances will be preserved

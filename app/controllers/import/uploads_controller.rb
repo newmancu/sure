@@ -72,16 +72,14 @@ class Import::UploadsController < ApplicationController
         render :show, status: :unprocessable_entity and return
       end
 
-      normalized_qif = QifParser.normalize_encoding(csv_str)
-
-      unless import_account_id.present? || QifParser.parse_accounts(normalized_qif).any?
-        flash.now[:alert] = t(".qif_account_required")
+      unless import_account_id.present?
+        flash.now[:alert] = "Please select an account for the QIF import"
         render :show, status: :unprocessable_entity and return
       end
 
       ActiveRecord::Base.transaction do
-        @import.account = accessible_accounts.find(import_account_id) if import_account_id.present?
-        @import.raw_file_str = normalized_qif
+        @import.account = accessible_accounts.find(import_account_id)
+        @import.raw_file_str = QifParser.normalize_encoding(csv_str)
         @import.save!(validate: false)
         @import.generate_rows_from_csv
         @import.sync_mappings
