@@ -215,6 +215,76 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
     assert_select "h3", text: I18n.t("reports.summary.total_income")
     assert_select "h3", text: I18n.t("reports.summary.total_expenses")
     assert_select "h3", text: I18n.t("reports.summary.net_savings")
+    assert_select "h3", text: I18n.t("reports.summary.investment_contributions")
+  end
+
+  test "index shows investment contributions separately from total expenses" do
+    account = accounts(:depository)
+    create_transaction(account: account, amount: 60_000, category: nil, kind: "investment_contribution")
+
+    get reports_path(period_type: :monthly)
+    assert_response :ok
+
+    investment_totals = Current.family.income_statement(user: @user).investment_contribution_totals(period: Period.current_month)
+    expense_totals = Current.family.income_statement(user: @user).expense_totals(period: Period.current_month)
+
+    assert investment_totals.total >= 60_000, "the transfer must be counted as an investment contribution"
+    assert_select ".privacy-sensitive", text: Money.new(investment_totals.total, @family.currency).format
+  end
+
+  test "activity breakdown lists investment contributions separately from Expenses" do
+    # Regression: build_transactions_breakdown used to classify every
+    # transaction by sign alone (amount > 0 => "expense"), so a transfer to
+    # an investment/crypto account showed up inside the "Expenses" table
+    # here even though the summary cards above correctly excluded it.
+    account = accounts(:depository)
+    category = @family.investment_contributions_category
+    create_transaction(account: account, amount: 60_000, category: category, kind: "investment_contribution")
+    create_transaction(account: account, amount: 50, category: categories(:food_and_drink))
+
+    get reports_path(period_type: :monthly)
+    assert_response :ok
+
+    doc = Nokogiri::HTML(@response.body)
+    section_headers = doc.css(".text-large").map(&:text)
+    investment_header = section_headers.find { |t| t.include?(I18n.t("reports.transactions_breakdown.table.investment_contribution")) }
+    expense_header = section_headers.find { |t| t.include?(I18n.t("reports.transactions_breakdown.table.expense")) }
+
+    assert investment_header.present?, "expected an Investment Contributions section"
+    assert_match "$60,000.00", investment_header
+    assert expense_header.present?, "expected an Expenses section"
+    refute_match "60,000", expense_header, "the transfer must not be folded into Expenses"
+    assert_select "a", text: category.name
+  end
+
+  test "print report renders investment contributions separately" do
+    category = @family.investment_contributions_category
+    create_transaction(account: accounts(:depository), amount: 2000, category: category, kind: "investment_contribution")
+
+    get print_reports_path(period_type: :monthly)
+
+    assert_response :ok
+    assert_select "[role=region][aria-label=?]", I18n.t("reports.print.spending.investment_contributions") do
+      assert_select "td", text: category.name
+      assert_select "td", text: "$2,000.00"
+    end
+  end
+
+  test "CSV export lists investment contributions in their own section" do
+    account = accounts(:depository)
+    category = @family.investment_contributions_category
+    create_transaction(account: account, amount: 60_000, category: category, kind: "investment_contribution", date: Date.current)
+
+    get export_transactions_reports_path(format: :csv, period_type: :monthly)
+
+    assert_response :ok
+    assert_match(/INVESTMENT CONTRIBUTIONS/, @response.body)
+    lines = @response.body.split("\n")
+    expenses_index = lines.index { |l| l.start_with?("EXPENSES") }
+    investment_index = lines.index { |l| l.start_with?("INVESTMENT CONTRIBUTIONS") }
+    # The 60,000 contribution must appear under its own section, not folded into EXPENSES.
+    expenses_block = expenses_index ? lines[expenses_index...investment_index].join("\n") : ""
+    assert_no_match(/60,000/, expenses_block)
   end
 
   test "index builds trends data" do
@@ -541,22 +611,15 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
     income_href = transactions_path(q: { categories: [ income_category.name ], start_date: start_date, end_date: end_date })
     uncategorized_href = transactions_path(q: { categories: [ Category.uncategorized.filter_value ], start_date: start_date, end_date: end_date })
 
-    assert_select "tr[data-category='category-#{expense_category.id}'] a[href=?]", expense_href, text: /#{Regexp.escape(expense_category.name)}/
-    assert_select "tr[data-category='category-#{income_category.id}'] a[href=?]", income_href, text: /#{Regexp.escape(income_category.name)}/
-    assert_select "tr[data-category='category-uncategorized'] a[href=?]", uncategorized_href, text: /#{Regexp.escape(Category.uncategorized.name)}/
+    assert_select "tr[data-category='category-#{expense_category.id}'] a[href=?]", expense_href, text: expense_category.name
+    assert_select "tr[data-category='category-#{income_category.id}'] a[href=?]", income_href, text: income_category.name
+    assert_select "tr[data-category='category-uncategorized'] a[href=?]", uncategorized_href, text: Category.uncategorized.name
 
-    # Full-row hit target via a normal flex <a> wrapping icon+name+count —
-    # deliberately not a `position: relative`/`absolute` stretched-link inside
-    # the <table>, which caused a WebKit scrollHeight bug (see #3093).
-    assert_select "tr[data-category='category-#{expense_category.id}'] a.flex.items-center"
-    assert_select "tr[data-category='category-#{expense_category.id}'].relative", 0
-    assert_select "tr[data-category='category-#{expense_category.id}'] a[class*='before:absolute']", 0
-
-    # Amount and percentage cells are each wrapped in their own normal-flow
-    # <a> to the same href, so the full row remains clickable without a
-    # stretched-link overlay spanning the <tr>.
-    assert_select "tr[data-category='category-#{expense_category.id}'] td:nth-child(2) a[href=?]", expense_href
-    assert_select "tr[data-category='category-#{expense_category.id}'] td:nth-child(3) a[href=?]", expense_href
+    # Hit target via stretched ::before, anchored to the category cell's flex
+    # wrapper. Deliberately NOT the <tr>: CSS 2.1 9.3.1 leaves position:relative
+    # undefined on table rows and WebKit does not implement it, so anchoring
+    # there let the overlay escape and swallow every click on the page in Safari.
+    assert_select "tr.group\\/category-row[data-category='category-#{expense_category.id}'] td div.relative a[class*='before:absolute'][class*='before:inset-0']"
   end
 
   test "index uncategorized category link stays on the stable filter value while the displayed text is localized" do
@@ -572,7 +635,7 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
     assert_response :ok
 
     href = transactions_path(q: { categories: [ Category::UNCATEGORIZED_FILTER_VALUE ], start_date: start_date, end_date: end_date })
-    assert_select "tr[data-category='category-uncategorized'] a[href=?]", href, text: /#{Regexp.escape(localized_name)}/
+    assert_select "tr[data-category='category-uncategorized'] a[href=?]", href, text: localized_name
   end
 
   test "index excludes tax-advantaged account transactions from activity breakdown" do
