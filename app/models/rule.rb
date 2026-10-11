@@ -11,9 +11,8 @@ class Rule < ApplicationRecord
 
   before_validation :normalize_name
 
-  validates :resource_type, presence: true, if: -> { resource_type.to_s.valid_encoding? }
-  validates :name, length: { minimum: 1 }, allow_nil: true, if: -> { name.to_s.valid_encoding? }
-  validates_with DatabaseTextValidator, attributes: %i[name resource_type]
+  validates :resource_type, presence: true
+  validates :name, length: { minimum: 1 }, allow_nil: true
   validate :no_nested_compound_conditions
 
   # Every rule must have at least 1 action
@@ -52,6 +51,12 @@ class Rule < ApplicationRecord
   # Whether this rule's conditions currently match the given transaction.
   def matches_transaction?(transaction)
     matching_resources_scope.where(id: transaction.id).exists?
+  end
+
+  # The transactions this rule currently matches, as a relation (e.g. for the
+  # assistant's rule preview, which counts and samples them).
+  def matching_resources
+    matching_resources_scope
   end
 
   # Creates a categorization rule for the Quick Categorize Wizard.
@@ -178,10 +183,6 @@ class Rule < ApplicationRecord
     end
 
     def normalize_name
-      return unless name.is_a?(String)
-      return unless name.valid_encoding?
-      return if name.include?("\0")
-
-      self.name = nil if name.strip.empty?
+      self.name = nil if name.is_a?(String) && name.strip.empty?
     end
 end
