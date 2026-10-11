@@ -18,7 +18,7 @@ class ApiKey < ApplicationRecord
   validates :scopes, presence: true
   validates :source, presence: true, inclusion: { in: SOURCES }
   validate :scopes_not_empty
-  validate :name_unique_among_active_keys, on: :create
+  validate :one_active_key_per_user_per_source, on: :create
 
   # Callbacks
   before_validation :set_display_key
@@ -26,10 +26,6 @@ class ApiKey < ApplicationRecord
 
   # Scopes
   scope :active, -> { where(revoked_at: nil).where("expires_at IS NULL OR expires_at > ?", Time.current) }
-  # SECURITY: excluding the demo monitoring key here is also the revocation guard
-  # in Settings::ApiKeysController#destroy — a demo key id 404s in `set_api_key`
-  # (it is not `.visible`) before it can be revoked. Do NOT broaden this scope to
-  # include monitoring keys without adding another explicit destroy guard.
   scope :visible, -> { where.not(display_key: DEMO_MONITORING_KEY) }
 
   # Class methods
@@ -107,11 +103,10 @@ class ApiKey < ApplicationRecord
       end
     end
 
-    def name_unique_among_active_keys
-      return if name.blank? || user.blank?
-      scope = user.api_keys.active.visible.where(name: name)
-      scope = scope.where.not(id: id) if persisted?
-      errors.add(:name, :taken) if scope.exists?
+    def one_active_key_per_user_per_source
+      if user&.api_keys&.active&.where(source: source)&.where&.not(id: id)&.exists?
+        errors.add(:user, "can only have one active API key per source (#{source})")
+      end
     end
 
     def prevent_demo_monitoring_key_destroy!

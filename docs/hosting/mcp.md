@@ -36,8 +36,7 @@ Set these environment variables:
 | `MCP_API_TOKEN` | Bearer token for authentication | `your-secret-token-here` |
 | `MCP_USER_EMAIL` | Email of the Sure user whose data the assistant can access | `user@example.com` |
 
-Both variables are required for the legacy token flow. OAuth clients using the
-MCP discovery and dynamic registration endpoints do not need these variables.
+Both variables are required for the static-token flow.
 
 ### Generating a secure token
 
@@ -55,7 +54,7 @@ openssl rand -base64 32
 The `MCP_USER_EMAIL` must match an existing Sure user's email address. The AI assistant will have access to all financial data for that user's family.
 
 > [!CAUTION]
-> The AI assistant can call the MCP tools available to the specified user. This includes reading financial data and write-capable tools such as statement import, goal/category/tag changes, transaction updates, and budget updates. Only set this for users you trust with your AI provider.
+> The AI assistant will have **read access to all financial data** for the specified user. Only set this for users you trust with your AI provider.
 
 ## Configuration
 
@@ -99,14 +98,7 @@ POST /mcp
 
 ### Authentication
 
-MCP supports OAuth authorization-code flow for clients such as Claude Code.
-Clients should discover the protected-resource metadata, register dynamically,
-request the advertised `read_write` scope, and send the resulting access token
-as a Bearer token. Dynamically registered clients are assigned this scope so
-their tokens can authenticate to MCP.
-
-For self-hosted deployments or clients without OAuth support, requests may use
-the legacy `MCP_API_TOKEN` as a Bearer token:
+MCP requests authenticate with a bearer token:
 
 ```
 Authorization: Bearer <token>
@@ -129,66 +121,23 @@ Sure implements the following JSON-RPC 2.0 methods:
 
 ### Available Tools
 
-The MCP endpoint exposes the same tool registry used by Sure's built-in assistant. Clients should treat `tools/list` as the source of truth.
+The MCP endpoint exposes the same tool registry used by Sure's builtin assistant. Clients should treat `tools/list` as the source of truth.
 
 At the time of writing, `tools/list` includes:
 
 | Tool | Description |
 |------|-------------|
-| `get_transactions` | Search transactions with filters (exact names or ids), sorting by date or absolute amount, and pagination |
-| `get_recurring_transactions` | Detected and manual recurring transactions (subscriptions, bills, salaries) with expected dates and per-currency totals |
-| `get_accounts` | Accounts with ids and current balances; pass `include_balance_series: true` for a period-bounded history series |
+| `get_transactions` | Retrieve transaction history with filtering |
+| `get_accounts` | Get account information and balances |
 | `get_holdings` | Query investment holdings |
-| `get_balance_sheet` | Net worth, assets and liabilities with a configurable history period and interval |
-| `get_income_statement` | Income and expenses for a period, with optional monthly series, prior-period comparison and account filtering |
-| `get_budget` | Budget summary for a month, with optional prior months |
-| `get_merchants` | Merchants with the ids `update_transaction` accepts and the exact names `get_transactions` filters on |
-| `get_tags` | Tags with pagination |
-| `get_categories` | Categories with hierarchy and pagination |
-| `create_goal` | Create a savings goal linked to depository accounts |
-| `set_opening_balance` | Set a manual account's opening balance and the date it applies from, reporting whether the current balance changes. Supports `dry_run` |
-| `create_tag` / `update_tag` | Manage tags |
-| `create_category` / `update_category` | Manage categories |
-| `update_transaction` | Edit a transaction's metadata (name, notes, category, merchant, tags) |
-| `update_budget` | Update budget allocations for a month |
+| `get_balance_sheet` | Current financial position (assets, liabilities, net worth) |
+| `get_income_statement` | Income and expenses over a period |
+| `get_budget` | Budget status and budget category breakdowns |
 | `import_bank_statement` | Import bank statement data |
-| `search_family_files` | Search documents uploaded through the import flow. Note this is the vector-store document index, not the Statement Vault — statements archived via `upload_account_statement` are not searchable through it |
+| `search_family_files` | Search uploaded documents in the vault |
+| `create_goal` | Create a savings goal linked to depository accounts |
 
-### Preview Tools
-
-These additional tools appear only when the MCP user has opted into preview
-features (Settings → Preferences). Until then they are absent from `tools/list`,
-and calling one by name returns an "Unknown tool" error. The Statement Vault
-tools additionally require the user to be an admin or member, matching the
-permissions enforced in the web UI.
-
-| Tool | Description |
-|------|-------------|
-| `upload_account_statement` | Store a statement document (PDF/CSV/XLSX) in the Statement Vault; deduplicates by SHA-256 |
-| `list_account_statements` | List vault documents with their SHA-256, period, linked account and review status |
-| `get_account_statement` | One statement's details and its reconciliation checks against the ledger — present only once someone has entered the statement's opening/closing balances in the web UI, since nothing extracts them from the document. Does not return the file: stored documents are served only to a signed-in browser session |
-| `get_statement_coverage` | Month-by-month statement coverage for an account: `covered`, `missing`, `mismatched`, `ambiguous`, `duplicate`, `not_expected`, each with a reconciliation status |
-| `record_valuation` | Record an account's value on a date, with a required source citation |
-| `get_valuations` | List recorded valuations newest first, including the citation stored in each entry's notes; the read pair for `record_valuation` |
-| `get_insights` | Read the proactive insights feed (spending anomalies, cash-flow warnings, subscription audits and more) without marking anything read |
-| `get_bills` | List bills, subscriptions and other recurring obligations with each one's current payment state |
-| `get_bill_details` | One bill's full configuration, open occurrences, payment history, price-change history and cost analytics |
-| `get_paycheck_plan` | Income plan sliced into pay periods: what is due before the next payday, what stays reserved for later bills, what is safe to spend |
-| `get_bill_audit` | Deterministic bills review: possible duplicates, price changes, trials about to convert, upcoming renewals, long-overdue bills and undeclared recurring patterns |
-| `create_bill` | Create a bill, subscription, installment plan or income schedule |
-| `update_bill` | Update one bill's configuration; amount changes apply from today forward |
-| `record_bill_payment` | Record a partial payment against a bill's open occurrence, or settle it in full |
-
-Because tool calls never pass through the Bills pages' controllers, the bills
-tools re-check the family's recurring-transactions feature gate (Settings →
-Recurring transactions) and the MCP user's per-account access on every call.
-With the feature disabled they return an error result instead of data, bills
-tied to accounts the user cannot see are never returned, and the write tools
-refuse series on accounts shared with the user read-only.
-
-They exist for agents that maintain a document-backed record of a family's
-wealth over time. See
-[Wealth history with an external agent harness](../llm-guides/wealth-agent-harness.md).
+These are the same tools used by Sure's builtin AI assistant.
 
 ## Example Requests
 
@@ -322,7 +271,6 @@ Pipelock provides:
 - **Prompt injection detection**: Identifies attempts to manipulate the AI
 - **Tool poisoning detection**: Prevents malicious tool call sequences
 - **Policy enforcement**: Block or warn on suspicious patterns
-- **Signed receipts**: Produces verifiable evidence for mediated MCP decisions when the flight recorder is configured with storage and a signing key
 
 See the [Pipelock documentation](pipelock.md) and the example configuration in `compose.example.ai.yml` for setup instructions.
 
@@ -394,19 +342,6 @@ If your Claude Desktop build expects a raw MCP endpoint instead of an OAuth inte
 
 Use either the client's OAuth support or a bearer token, depending on what that build supports.
 
-### Cursor and other native MCP clients
-
-Desktop MCP clients such as Cursor and VS Code authenticate with OAuth Dynamic Client Registration (`POST /register`) and then open a browser for consent. Native clients register a private-use redirect URI rather than an `https://` callback, for example:
-
-- Cursor desktop: `cursor://anysphere.cursor-mcp/oauth/callback`
-- Newer Cursor IDE/CLI builds: `http://localhost:8787/callback`
-- Cursor web: `https://www.cursor.com/agents/mcp/oauth/callback`
-- VS Code extensions: `vscode://...`
-
-Sure accepts those native-app URI schemes, loopback `http://` callbacks, and `https://` callbacks. After you authorize in the browser, the client exchanges the authorization code (PKCE) for a bearer token and calls `/mcp`.
-
-If OAuth is inconvenient (CI, scripts, or a client that cannot complete the browser flow), use the static `MCP_API_TOKEN` bearer token instead.
-
 ### Custom Agents
 
 Any AI agent that supports JSON-RPC 2.0 can connect to the MCP endpoint. The agent should:
@@ -426,13 +361,13 @@ Any AI agent that supports JSON-RPC 2.0 can connect to the MCP endpoint. The age
 
 - The OAuth flow completed successfully and the client is sending the issued bearer token
 - The static token matches `MCP_API_TOKEN`
-- If you are using the static-token flow, `MCP_USER_EMAIL` matches an existing Sure user
+- If you are using the static-token flow, `MCP_USER_EMAIL` matches an active Sure user
 
 ### Static token works, but the user still gets rejected
 
 **Symptom:** Requests return HTTP 401 even though the bearer token matches `MCP_API_TOKEN`
 
-**Fix:** The `MCP_USER_EMAIL` probably does not match an existing user. Check that:
+**Fix:** The `MCP_USER_EMAIL` probably does not match an existing active user. Check that:
 - The email is correct
 - The user exists in the database
 - There are no typos or extra spaces

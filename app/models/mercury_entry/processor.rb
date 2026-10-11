@@ -36,8 +36,7 @@ class MercuryEntry::Processor
         name: name,
         source: "mercury",
         merchant: merchant,
-        notes: notes,
-        extra: extra
+        notes: notes
       )
     rescue ArgumentError => e
       # Re-raise validation errors (missing required fields, invalid data)
@@ -115,17 +114,6 @@ class MercuryEntry::Processor
       end
     end
 
-    def extra
-      meta = { "pending" => pending? }
-      meta["kind"]           = data[:kind] if data[:kind].present?
-      meta["counterparty_id"] = data[:counterpartyId] if data[:counterpartyId].present?
-      { "mercury" => meta }
-    end
-
-    def pending?
-      data[:status] == "pending"
-    end
-
     def amount
       parsed_amount = case data[:amount]
       when String
@@ -158,15 +146,13 @@ class MercuryEntry::Processor
 
       case date_value
       when String
-        if date_value.include?("T") || date_value.include?(":")
-          Time.parse(date_value).in_time_zone(account&.family&.timezone).to_date
-        else
-          Date.parse(date_value)
-        end
+        # Mercury uses ISO 8601 format: "2024-01-15T10:30:00Z"
+        DateTime.parse(date_value).to_date
       when Integer, Float
-        Time.at(date_value).in_time_zone(account&.family&.timezone).to_date
+        # Unix timestamp
+        Time.at(date_value).to_date
       when Time, DateTime
-        date_value.in_time_zone(account&.family&.timezone).to_date
+        date_value.to_date
       when Date
         date_value
       else
