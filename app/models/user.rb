@@ -94,6 +94,39 @@ class User < ApplicationRecord
     User.exists? ? fallback_role : :super_admin
   end
 
+  # Deterministic lookups like `find_by(email:)` and `authenticate_by` miss
+  # rows whose email is still legacy plaintext (stored before encryption was
+  # active and not yet re-encrypted by `bin/rails security:backfill_encryption`):
+  # extend_queries does not cover attributes that also use `normalizes`. The
+  # fallback matches those rows by their literal column value.
+  def self.find_by_email(email)
+    normalized = email.to_s.strip.downcase
+    return nil if normalized.blank?
+
+    find_by(email: normalized) || find_by_legacy_plaintext_email(normalized)
+  end
+
+  # Takes the legacy path only for a plaintext row; every other case goes
+  # through authenticate_by, which stays timing-safe for wrong passwords and
+  # unknown emails.
+  def self.authenticate_by_email(email:, password:)
+    normalized = email.to_s.strip.downcase
+    legacy_user = find_by_legacy_plaintext_email(normalized)
+    return authenticate_by(email: normalized, password: password) unless legacy_user
+
+    legacy_user if legacy_user.authenticate(password)
+  end
+
+  # Legacy rows were always stored normalized (`normalizes :email` predates
+  # encryption), so an exact match uses the unique index. Only well-formed
+  # emails are looked up, so a pasted ciphertext can never match its own row.
+  def self.find_by_legacy_plaintext_email(normalized_email)
+    return nil unless normalized_email.match?(URI::MailTo::EMAIL_REGEXP)
+
+    find_by([ "email = ?", normalized_email ])
+  end
+  private_class_method :find_by_legacy_plaintext_email
+
   class << self
     def human_attribute_name(attribute, options = {})
       locale = options[:locale] || I18n.locale
@@ -651,14 +684,6 @@ class User < ApplicationRecord
   # Per-widget height preset override ("compact" | "auto" | "tall"); nil = use default.
   def dashboard_section_height(section_key)
     preferences&.dig("dashboard_section_layout", section_key, "height")
-  end
-
-  CASHFLOW_SANKEY_GROUPINGS = IncomeStatement::CashFlowGraph::GROUPINGS.keys.freeze
-
-  # Preview cash-flow Sankey: flows by category (default) or through each account.
-  def cashflow_sankey_group_by
-    group_by = preferences&.dig("cashflow_sankey_group_by")
-    CASHFLOW_SANKEY_GROUPINGS.include?(group_by) ? group_by : "category"
   end
 
   # Per-widget column-span override ("single" | "full"); nil = use default.
