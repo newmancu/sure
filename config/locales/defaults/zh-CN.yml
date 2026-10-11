@@ -48,10 +48,7 @@ zh-CN:
     formats:
       default: "%Y-%m-%d"
       long: "%Y年%m月%d日"
-      month_year: "%Y年%m月"
       short: "%m月%d日"
-      short_month_year: "%Y年%m月"
-      short_with_year: '%Y年%m月%d日'
     month_names:
     -
     - 一月
@@ -86,7 +83,7 @@ zh-CN:
         other: 接近%{count}年
       half_a_minute: 半分钟
       less_than_x_minutes:
-        one: 不到 1 分钟
+        one: 不到%{count}分钟
         other: 不到%{count}分钟
       less_than_x_seconds:
         one: 不到%{count}秒

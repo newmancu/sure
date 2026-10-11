@@ -288,9 +288,7 @@ class ActiveStorageAuthorizationTest < ActionDispatch::IntegrationTest
   private
 
     def sign_out(user)
-      # Deleting through the controller de-authenticates mid-loop and later
-      # deletes silently no-op; destroy directly, no order to break.
-      user.sessions.destroy_all
+      user.sessions.each { |session| delete session_path(session) }
     end
 
     def with_protected_record_types(*types)

@@ -12,12 +12,8 @@ import '../widgets/account_detail_header.dart';
 import '../widgets/category_filter.dart';
 import '../widgets/sync_status_badge.dart';
 import '../services/log_service.dart';
-import '../theme/sure_tokens.dart';
-import '../providers/privacy_provider.dart';
 import '../utils/amount_parser.dart';
-import '../utils/money_masker.dart';
 import '../widgets/money_text.dart';
-import '../l10n/app_localizations.dart';
 
 class TransactionsListScreen extends StatefulWidget {
   final Account account;
@@ -119,8 +115,8 @@ class _TransactionsListScreenState extends State<TransactionsListScreen> {
     if (accessToken == null) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(AppLocalizations.of(context).transactionsListAuthFailed),
+          const SnackBar(
+            content: Text('Authentication failed: Please log in again'),
             backgroundColor: Colors.red,
           ),
         );
@@ -155,33 +151,28 @@ class _TransactionsListScreenState extends State<TransactionsListScreen> {
 
   Future<void> _deleteSelectedTransactions() async {
     if (_selectedTransactions.isEmpty) return;
-    final l = AppLocalizations.of(context);
 
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) {
-        final dl = AppLocalizations.of(context);
-        return AlertDialog(
-          title: Text(dl.transactionsListDeleteMultiTitle),
-          content: Text(dl.transactionsListDeleteMultiContent),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: Text(dl.commonCancel),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              style: TextButton.styleFrom(foregroundColor: Colors.red),
-              child: Text(dl.commonDelete),
-            ),
-          ],
-        );
-      },
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Transactions'),
+        content: Text('Are you sure you want to delete ${_selectedTransactions.length} transaction(s)?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
     );
 
     if (confirmed != true || !mounted) return;
 
-    final count = _selectedTransactions.length;
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     final transactionsProvider = Provider.of<TransactionsProvider>(context, listen: false);
 
@@ -196,7 +187,7 @@ class _TransactionsListScreenState extends State<TransactionsListScreen> {
         if (success) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text(l.transactionsListDeletedMulti(count)),
+              content: Text('Deleted ${_selectedTransactions.length} transaction(s)'),
               backgroundColor: Colors.green,
             ),
           );
@@ -206,8 +197,8 @@ class _TransactionsListScreenState extends State<TransactionsListScreen> {
           });
         } else {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(l.transactionsListDeleteFailed),
+            const SnackBar(
+              content: Text('Failed to delete transactions'),
               backgroundColor: Colors.red,
             ),
           );
@@ -217,34 +208,29 @@ class _TransactionsListScreenState extends State<TransactionsListScreen> {
   }
 
   Future<void> _undoTransaction(OfflineTransaction transaction) async {
-    final l = AppLocalizations.of(context);
     final transactionsProvider = Provider.of<TransactionsProvider>(context, listen: false);
     final scaffoldMessenger = ScaffoldMessenger.of(context);
-    final isPending = transaction.syncStatus == SyncStatus.pending;
 
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) {
-        final dl = AppLocalizations.of(context);
-        return AlertDialog(
-          title: Text(dl.transactionsListUndoTitle),
-          content: Text(
-            isPending
-                ? dl.transactionsListUndoRemovePending
-                : dl.transactionsListUndoRestoreConfirm,
+      builder: (context) => AlertDialog(
+        title: const Text('Undo Transaction'),
+        content: Text(
+          transaction.syncStatus == SyncStatus.pending
+              ? 'Remove this pending transaction?'
+              : 'Restore this transaction?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: Text(dl.commonCancel),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: Text(dl.commonUndo),
-            ),
-          ],
-        );
-      },
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Undo'),
+          ),
+        ],
+      ),
     );
 
     if (confirmed != true) return;
@@ -259,10 +245,10 @@ class _TransactionsListScreenState extends State<TransactionsListScreen> {
         SnackBar(
           content: Text(
             success
-                ? (isPending
-                    ? l.transactionsListUndoPendingRemoved
-                    : l.transactionsListUndoRestored)
-                : l.transactionsListUndoFailed,
+                ? (transaction.syncStatus == SyncStatus.pending
+                    ? 'Pending transaction removed'
+                    : 'Transaction restored')
+                : 'Failed to undo transaction',
           ),
           backgroundColor: success ? Colors.green : Colors.red,
         ),
@@ -287,32 +273,28 @@ class _TransactionsListScreenState extends State<TransactionsListScreen> {
     if (transaction.id == null) return false;
 
     // Show confirmation dialog
-    // Capture providers and localizations before async gap
-    final l = AppLocalizations.of(context);
+    // Capture providers before async gap
     final scaffoldMessenger = ScaffoldMessenger.of(context);
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     final transactionsProvider = Provider.of<TransactionsProvider>(context, listen: false);
 
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) {
-        final dl = AppLocalizations.of(context);
-        return AlertDialog(
-          title: Text(dl.transactionsListDeleteTitle),
-          content: Text(dl.transactionsListDeleteSingleContent(transaction.name)),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: Text(dl.commonCancel),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              style: TextButton.styleFrom(foregroundColor: Colors.red),
-              child: Text(dl.commonDelete),
-            ),
-          ],
-        );
-      },
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Transaction'),
+        content: Text('Are you sure you want to delete "${transaction.name}"?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
     );
 
     if (confirmed != true) return false;
@@ -322,8 +304,8 @@ class _TransactionsListScreenState extends State<TransactionsListScreen> {
 
     if (accessToken == null) {
       scaffoldMessenger.showSnackBar(
-        SnackBar(
-          content: Text(l.transactionsListDeleteNoToken),
+        const SnackBar(
+          content: Text('Failed to delete: No access token'),
           backgroundColor: Colors.red,
         ),
       );
@@ -338,11 +320,7 @@ class _TransactionsListScreenState extends State<TransactionsListScreen> {
     if (mounted) {
       scaffoldMessenger.showSnackBar(
         SnackBar(
-          content: Text(
-            success
-                ? l.transactionsListDeletedSuccess
-                : l.transactionsListSingleDeleteFailed,
-          ),
+          content: Text(success ? 'Transaction deleted' : 'Failed to delete transaction'),
           backgroundColor: success ? Colors.green : Colors.red,
         ),
       );
@@ -366,9 +344,7 @@ class _TransactionsListScreenState extends State<TransactionsListScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final l = AppLocalizations.of(context);
     final colorScheme = Theme.of(context).colorScheme;
-    final hideAmounts = context.watch<PrivacyProvider>().hidden;
 
     return Scaffold(
       appBar: AppBar(
@@ -414,7 +390,7 @@ class _TransactionsListScreenState extends State<TransactionsListScreen> {
                           const SizedBox(height: 16),
                           ElevatedButton(
                             onPressed: _loadTransactions,
-                            child: Text(l.transactionsListRetry),
+                            child: const Text('Retry'),
                           ),
                         ],
                       ),
@@ -444,7 +420,7 @@ class _TransactionsListScreenState extends State<TransactionsListScreen> {
                           ),
                           const SizedBox(height: 16),
                           Text(
-                            l.transactionsListNoTransactionsYet,
+                            'No transactions yet',
                             style: TextStyle(
                               fontSize: 16,
                               color: colorScheme.onSurfaceVariant,
@@ -452,7 +428,7 @@ class _TransactionsListScreenState extends State<TransactionsListScreen> {
                           ),
                           const SizedBox(height: 8),
                           Text(
-                            l.transactionsListEmptyAddFirst,
+                            'Tap + to add your first transaction',
                             style: TextStyle(
                               fontSize: 14,
                               color: colorScheme.onSurfaceVariant.withValues(alpha: 0.7),
@@ -501,7 +477,7 @@ class _TransactionsListScreenState extends State<TransactionsListScreen> {
                             height: MediaQuery.of(context).size.height * 0.4,
                             child: Center(
                               child: Text(
-                                l.transactionsListNoCategoryMatch,
+                                'No transactions match this category',
                                 style: TextStyle(color: colorScheme.onSurfaceVariant),
                               ),
                             ),
@@ -588,7 +564,7 @@ class _TransactionsListScreenState extends State<TransactionsListScreen> {
                                         child: Text(
                                           transaction.name,
                                           style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                                fontWeight: SureTokens.weightMedium,
+                                                fontWeight: FontWeight.w600,
                                               ),
                                           overflow: TextOverflow.ellipsis,
                                         ),
@@ -610,7 +586,7 @@ class _TransactionsListScreenState extends State<TransactionsListScreen> {
                                               _getCategoryDisplayName(transaction.categoryId, transaction.categoryName) ?? '',
                                               style: Theme.of(context).textTheme.labelSmall?.copyWith(
                                                     color: colorScheme.onPrimaryContainer,
-                                                    fontWeight: SureTokens.weightMedium,
+                                                    fontWeight: FontWeight.w500,
                                                   ),
                                               overflow: TextOverflow.ellipsis,
                                             ),
@@ -675,7 +651,7 @@ class _TransactionsListScreenState extends State<TransactionsListScreen> {
                                         height: 36,
                                         child: IconButton(
                                           icon: const Icon(Icons.edit),
-                                          tooltip: l.transactionsListEditTooltip,
+                                          tooltip: 'Edit transaction',
                                           visualDensity: VisualDensity.compact,
                                           padding: EdgeInsets.zero,
                                           onPressed: () =>
@@ -684,14 +660,11 @@ class _TransactionsListScreenState extends State<TransactionsListScreen> {
                                       ),
                                     Flexible(
                                       child: MoneyText(
-                                        MoneyMasker.mask(
-                                          '${displayInfo['prefix']}${displayInfo['displayAmount']}',
-                                          hidden: hideAmounts,
-                                        ),
+                                        '${displayInfo['prefix']}${displayInfo['displayAmount']}',
                                         trend: displayInfo['trend'] as MoneyTrend,
                                         overflow: TextOverflow.ellipsis,
                                         style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                                              fontWeight: SureTokens.weightMedium,
+                                              fontWeight: FontWeight.bold,
                                             ),
                                       ),
                                     ),
@@ -716,7 +689,7 @@ class _TransactionsListScreenState extends State<TransactionsListScreen> {
                                         style: TextStyle(
                                           color: Colors.blue,
                                           fontSize: 11,
-                                          fontWeight: SureTokens.weightSemibold,
+                                          fontWeight: FontWeight.w600,
                                         ),
                                       ),
                                     ),

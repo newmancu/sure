@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import '../providers/auth_provider.dart';
-import '../l10n/app_localizations.dart';
 
 class SsoOnboardingScreen extends StatefulWidget {
   const SsoOnboardingScreen({super.key});
@@ -72,7 +71,7 @@ class _SsoOnboardingScreenState extends State<SsoOnboardingScreen> {
                 .cancelSsoOnboarding();
           },
         ),
-        title: Text(AppLocalizations.of(context).ssoOnboardingTitle),
+        title: const Text('Link Your Account'),
       ),
       body: SafeArea(
         child: SingleChildScrollView(
@@ -91,10 +90,8 @@ class _SsoOnboardingScreenState extends State<SsoOnboardingScreen> {
                   const SizedBox(height: 16),
                   Text(
                     authProvider.ssoEmail != null
-                        ? AppLocalizations.of(context)
-                            .ssoOnboardingSignedInAs(authProvider.ssoEmail!)
-                        : AppLocalizations.of(context)
-                            .ssoOnboardingGoogleVerified,
+                        ? 'Signed in as ${authProvider.ssoEmail}'
+                        : 'Google account verified',
                     textAlign: TextAlign.center,
                     style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                           color: colorScheme.onSurfaceVariant,
@@ -143,7 +140,7 @@ class _SsoOnboardingScreenState extends State<SsoOnboardingScreen> {
                         children: [
                           Expanded(
                             child: _TabButton(
-                              label: AppLocalizations.of(context).ssoOnboardingTabLink,
+                              label: 'Link Existing',
                               isSelected: _showLinkForm,
                               onTap: () =>
                                   setState(() => _showLinkForm = true),
@@ -152,8 +149,8 @@ class _SsoOnboardingScreenState extends State<SsoOnboardingScreen> {
                           Expanded(
                             child: _TabButton(
                               label: authProvider.ssoHasPendingInvitation
-                                  ? AppLocalizations.of(context).ssoOnboardingAcceptInvitation
-                                  : AppLocalizations.of(context).ssoOnboardingTabCreate,
+                                  ? 'Accept Invitation'
+                                  : 'Create New',
                               isSelected: !_showLinkForm,
                               onTap: () =>
                                   setState(() => _showLinkForm = false),
@@ -198,8 +195,7 @@ class _SsoOnboardingScreenState extends State<SsoOnboardingScreen> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
-                    AppLocalizations.of(context)
-                        .ssoOnboardingLinkCredentialsNote,
+                    'Enter your existing account credentials to link with Google Sign-In.',
                     style: TextStyle(color: colorScheme.onSurface),
                   ),
                 ),
@@ -212,13 +208,13 @@ class _SsoOnboardingScreenState extends State<SsoOnboardingScreen> {
             keyboardType: TextInputType.emailAddress,
             autocorrect: false,
             textInputAction: TextInputAction.next,
-            decoration: InputDecoration(
-              labelText: AppLocalizations.of(context).loginEmailLabel,
-              prefixIcon: const Icon(Icons.email_outlined),
+            decoration: const InputDecoration(
+              labelText: 'Email',
+              prefixIcon: Icon(Icons.email_outlined),
             ),
             validator: (value) {
-              if (value == null || value.isEmpty) return AppLocalizations.of(context).loginEmailRequired;
-              if (!value.contains('@')) return AppLocalizations.of(context).loginEmailInvalid;
+              if (value == null || value.isEmpty) return 'Please enter your email';
+              if (!value.contains('@')) return 'Please enter a valid email';
               return null;
             },
           ),
@@ -228,7 +224,7 @@ class _SsoOnboardingScreenState extends State<SsoOnboardingScreen> {
             obscureText: _obscurePassword,
             textInputAction: TextInputAction.done,
             decoration: InputDecoration(
-              labelText: AppLocalizations.of(context).loginPasswordLabel,
+              labelText: 'Password',
               prefixIcon: const Icon(Icons.lock_outlined),
               suffixIcon: IconButton(
                 icon: Icon(
@@ -242,7 +238,7 @@ class _SsoOnboardingScreenState extends State<SsoOnboardingScreen> {
               ),
             ),
             validator: (value) {
-              if (value == null || value.isEmpty) return AppLocalizations.of(context).loginPasswordRequired;
+              if (value == null || value.isEmpty) return 'Please enter your password';
               return null;
             },
             onFieldSubmitted: (_) => _handleLinkAccount(),
@@ -256,7 +252,7 @@ class _SsoOnboardingScreenState extends State<SsoOnboardingScreen> {
                     width: 20,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : Text(AppLocalizations.of(context).ssoOnboardingLinkButton),
+                : const Text('Link Account'),
           ),
         ],
       ),
@@ -286,10 +282,8 @@ class _SsoOnboardingScreenState extends State<SsoOnboardingScreen> {
                 Expanded(
                   child: Text(
                     hasPendingInvitation
-                        ? AppLocalizations.of(context)
-                            .ssoOnboardingPendingInvitationNote
-                        : AppLocalizations.of(context)
-                            .ssoOnboardingCreateIdentityNote,
+                        ? 'You have a pending invitation. Accept it to join an existing household.'
+                        : 'Create a new account using your Google identity.',
                     style: TextStyle(color: colorScheme.onSurface),
                   ),
                 ),
@@ -300,12 +294,12 @@ class _SsoOnboardingScreenState extends State<SsoOnboardingScreen> {
           TextFormField(
             controller: _firstNameController,
             textInputAction: TextInputAction.next,
-            decoration: InputDecoration(
-              labelText: AppLocalizations.of(context).ssoOnboardingFirstNameLabel,
-              prefixIcon: const Icon(Icons.person_outlined),
+            decoration: const InputDecoration(
+              labelText: 'First Name',
+              prefixIcon: Icon(Icons.person_outlined),
             ),
             validator: (value) {
-              if (value == null || value.isEmpty) return AppLocalizations.of(context).ssoOnboardingFirstNameRequired;
+              if (value == null || value.isEmpty) return 'Please enter your first name';
               return null;
             },
           ),
@@ -313,12 +307,12 @@ class _SsoOnboardingScreenState extends State<SsoOnboardingScreen> {
           TextFormField(
             controller: _lastNameController,
             textInputAction: TextInputAction.done,
-            decoration: InputDecoration(
-              labelText: AppLocalizations.of(context).ssoOnboardingLastNameLabel,
-              prefixIcon: const Icon(Icons.person_outlined),
+            decoration: const InputDecoration(
+              labelText: 'Last Name',
+              prefixIcon: Icon(Icons.person_outlined),
             ),
             validator: (value) {
-              if (value == null || value.isEmpty) return AppLocalizations.of(context).ssoOnboardingLastNameRequired;
+              if (value == null || value.isEmpty) return 'Please enter your last name';
               return null;
             },
             onFieldSubmitted: (_) => _handleCreateAccount(),
@@ -333,8 +327,8 @@ class _SsoOnboardingScreenState extends State<SsoOnboardingScreen> {
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : Text(hasPendingInvitation
-                        ? AppLocalizations.of(context).ssoOnboardingAcceptInvitation
-                        : AppLocalizations.of(context).ssoOnboardingCreateButton),
+                        ? 'Accept Invitation'
+                        : 'Create Account'),
           ),
         ],
       ),
