@@ -54,6 +54,10 @@ class User < ApplicationRecord
   # SSO JIT users have password_digest = nil and authenticate via OIDC only.
   validates :password, presence: true, on: :create, unless: :skip_password_validation?
   validates :password, length: { minimum: 8 }, allow_nil: true
+  # `validations: false` above also drops Rails' confirmation and current-password
+  # (password_challenge) checks, so restore both here.
+  validates :password, confirmation: true, allow_blank: true
+  validate :password_challenge_matches, unless: -> { password_challenge.nil? }
   normalizes :email, with: ->(email) { email.strip.downcase }
   normalizes :unconfirmed_email, with: ->(email) { email&.strip&.downcase }
   normalizes :locale, with: ->(locale) { locale.presence }
@@ -653,14 +657,6 @@ class User < ApplicationRecord
     preferences&.dig("dashboard_section_layout", section_key, "height")
   end
 
-  CASHFLOW_SANKEY_GROUPINGS = IncomeStatement::CashFlowGraph::GROUPINGS.keys.freeze
-
-  # Preview cash-flow Sankey: flows by category (default) or through each account.
-  def cashflow_sankey_group_by
-    group_by = preferences&.dig("cashflow_sankey_group_by")
-    CASHFLOW_SANKEY_GROUPINGS.include?(group_by) ? group_by : "category"
-  end
-
   # Per-widget column-span override ("single" | "full"); nil = use default.
   def dashboard_section_width(section_key)
     preferences&.dig("dashboard_section_layout", section_key, "col_span")
@@ -793,6 +789,13 @@ class User < ApplicationRecord
 
     def skip_password_validation?
       skip_password_validation == true
+    end
+
+    def password_challenge_matches
+      digest_was = password_digest_was
+      return if digest_was.present? && BCrypt::Password.new(digest_was).is_password?(password_challenge)
+
+      errors.add(:password_challenge)
     end
 
     # The dashboard only sends the order of the widgets it rendered, so put
