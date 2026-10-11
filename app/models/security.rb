@@ -16,6 +16,7 @@ class Security < ApplicationRecord
   }.freeze
 
   KINDS = %w[standard cash].freeze
+  OPTION_TYPES = %w[call put].freeze
 
   # Known securities provider keys — derived from the registry so adding a new
   # provider to Registry#available_providers automatically allows it here.
@@ -88,11 +89,14 @@ class Security < ApplicationRecord
 
   has_many :trades, dependent: :nullify, class_name: "Trade"
   has_many :prices, dependent: :destroy
-  has_many :splits, dependent: :destroy
 
   validates :ticker, presence: true
   validates :ticker, uniqueness: { scope: :exchange_operating_mic, case_sensitive: false }
   validates :kind, inclusion: { in: KINDS }
+  validates :option_type, inclusion: { in: OPTION_TYPES }, allow_nil: true
+  validates :underlying_ticker, :expiration_date, presence: true, if: :option_contract?
+  validates :contract_multiplier, numericality: { only_integer: true, greater_than: 0 }
+  validates :strike_price, numericality: { greater_than: 0 }, if: :option_contract?
   validates :price_provider, inclusion: { in: ->(_) { Security.valid_price_providers } }, allow_nil: true
   validates :asset_class, inclusion: { in: ASSET_CLASSES }, allow_nil: true
   validates :asset_sub_class, inclusion: { in: ASSET_SUB_CLASSES }, allow_nil: true
@@ -124,6 +128,26 @@ class Security < ApplicationRecord
 
   def cash?
     kind == "cash"
+  end
+
+  def option_contract?
+    option_type.present?
+  end
+
+  def option_description
+    return unless option_contract?
+
+    strike = BigDecimal(strike_price.to_s).to_s("F").sub(/\.0+\z/, "").sub(/(\.\d*?)0+\z/, "\\1")
+    "#{underlying_ticker} $#{strike} #{option_type.upcase} · #{expiration_date}"
+  end
+
+  def self.option_ticker(underlying_ticker:, option_type:, strike_price:, expiration_date:, contract_multiplier: 100)
+    root = underlying_ticker.to_s.upcase.strip
+    root = root.ljust(6)[0, 6]
+    right = option_type.to_s == "call" ? "C" : "P"
+    strike = (BigDecimal(strike_price.to_s) * 1000).round.to_i.to_s.rjust(8, "0")
+    ticker = "#{root}#{expiration_date.to_date.strftime('%y%m%d')}#{right}#{strike}"
+    contract_multiplier.to_i == 100 ? ticker : "#{ticker}-M#{contract_multiplier}"
   end
 
   # True when this security represents a crypto asset. Today the only signal
@@ -253,13 +277,6 @@ class Security < ApplicationRecord
     @current_price ||= find_or_fetch_price
     return nil if @current_price.nil?
     Money.new(@current_price.price, @current_price.currency)
-  end
-
-  # How many shares one share held at the close of `from` has become by the
-  # close of `to`: the product of the ratios of splits whose ex-date falls
-  # after `from` and on or before `to`. 1 when there are none.
-  def split_factor_between(from, to)
-    splits.where(ex_date: (from + 1)..to).reduce(Rational(1)) { |factor, split| factor * split.ratio }
   end
 
   def to_combobox_option
