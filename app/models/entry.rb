@@ -37,6 +37,18 @@ class Entry < ApplicationRecord
   before_destroy :prevent_individual_child_deletion, if: :split_child?
   after_save :track_earliest_saved_date, if: :saved_change_to_date?
 
+  # Transactions that came in through a provider sync or a file import and that
+  # `user` has not seen in a transaction list yet. Manually created entries
+  # carry none of the three origin columns and never count as unread. Split
+  # parents are hidden from every list, so they could never be marked read.
+  scope :unread_by, ->(user) {
+    excluding_split_parents
+      .where(entryable_type: "Transaction")
+      .where("entries.external_id IS NOT NULL OR entries.plaid_id IS NOT NULL OR entries.import_id IS NOT NULL")
+      .where("entries.created_at > ?", user.transactions_read_before)
+      .where("NOT EXISTS (SELECT 1 FROM entry_reads WHERE entry_reads.entry_id = entries.id AND entry_reads.user_id = ?)", user.id)
+  }
+
   scope :visible, -> {
     joins(:account).where(accounts: { status: [ "draft", "active" ] })
   }
@@ -67,8 +79,9 @@ class Entry < ApplicationRecord
   # Pending transaction scopes - check Transaction.extra for provider pending flags
   # Works with any provider that stores pending status in extra["provider_name"]["pending"]
   scope :pending, -> {
+    conditions = Transaction::PENDING_PROVIDERS.map { |p| "(transactions.extra -> '#{p}' ->> 'pending')::boolean = true" }
     joins("INNER JOIN transactions ON transactions.id = entries.entryable_id AND entries.entryable_type = 'Transaction'")
-      .where(Transaction.pending_sql)
+      .where(conditions.join(" OR "))
   }
 
   scope :excluding_pending, -> {
@@ -165,7 +178,9 @@ class Entry < ApplicationRecord
   def self.reconcile_pending_duplicates(account: nil, dry_run: false, date_window: 8, amount_tolerance: 0.25)
     stats = { checked: 0, reconciled: 0, details: [] }
 
-    not_pending_sql = Transaction.not_pending_sql
+    not_pending_sql = Transaction::PENDING_PROVIDERS
+      .map { |p| "(transactions.extra -> '#{p}' ->> 'pending')::boolean IS NOT TRUE" }
+      .join(" AND ")
 
     # Get pending entries to check
     scope = Entry.pending.where(excluded: false)
