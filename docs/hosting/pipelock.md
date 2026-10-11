@@ -8,14 +8,15 @@ Pipelock runs as a separate proxy service alongside Sure with two listeners:
 
 | Listener | Port | Direction | What it scans |
 |----------|------|-----------|---------------|
-| Forward proxy | 8888 | Outbound (Sure to LLM) | Destination, SSRF, rate, budget, CONNECT-header DLP, and receipt controls for HTTPS tunnels |
+| Forward proxy | 8888 | Outbound (Sure to LLM) | DLP (secrets in prompts), response injection |
 | MCP reverse proxy | 8889 | Inbound (agent to Sure /mcp) | Prompt injection, tool poisoning, DLP |
 
 ### Forward proxy (outbound)
 
-When `HTTPS_PROXY=http://pipelock:8888` is set, outbound HTTPS requests from clients that honor the variable are routed through Pipelock. The default Sure examples don't configure TLS interception, so Pipelock can control the tunnel destination and connection but can't read encrypted request or response bodies. Body scanning requires TLS interception plus installing Pipelock's CA in the client container.
+When `HTTPS_PROXY=http://pipelock:8888` is set, outbound HTTPS requests from Faraday-based clients (like `ruby-openai`) are routed through Pipelock. It scans request bodies for leaked secrets and response bodies for prompt injection.
 
-Faraday-based OpenAI calls honor the proxy variables. Some provider clients may open direct connections, and Docker Compose doesn't enforce a network route that prevents bypass.
+**Covered:** OpenAI API calls via ruby-openai (uses Faraday).
+**Not covered:** SimpleFIN, Coinbase, Plaid, or anything using Net::HTTP/HTTParty directly. These bypass `HTTPS_PROXY`.
 
 ### MCP reverse proxy (inbound)
 
@@ -55,7 +56,7 @@ The `compose.example.ai.yml` file includes Pipelock. To use it:
    mkdir -p pipelock-evidence pipelock-keys
    # --out must be an absolute path inside the container. The key is written
    # 0600 owned by uid 1000, which is the user the Pipelock proxy runs as.
-   docker run --rm -v "$PWD/pipelock-keys:/keys" ghcr.io/luckypipewrench/pipelock:3.4.0@sha256:2e6caa43967a5ef19cacbce00188d829c1b5de1eb0ad304a51d2085f32c5694c \
+   docker run --rm -v "$PWD/pipelock-keys:/keys" ghcr.io/luckypipewrench/pipelock:2.8.0 \
      signing key generate --purpose receipt-signing --out /keys/flight-recorder-signing.key --id sure-compose
    ```
 
@@ -63,7 +64,7 @@ The `compose.example.ai.yml` file includes Pipelock. To use it:
 
    ```bash
    export PIPELOCK_UID="$(id -u)" PIPELOCK_GID="$(id -g)"
-   docker run --rm --user "$PIPELOCK_UID:$PIPELOCK_GID" -v "$PWD/pipelock-keys:/keys" ghcr.io/luckypipewrench/pipelock:3.4.0@sha256:2e6caa43967a5ef19cacbce00188d829c1b5de1eb0ad304a51d2085f32c5694c \
+   docker run --rm --user "$PIPELOCK_UID:$PIPELOCK_GID" -v "$PWD/pipelock-keys:/keys" ghcr.io/luckypipewrench/pipelock:2.8.0 \
      signing key generate --purpose receipt-signing --out /keys/flight-recorder-signing.key --id sure-compose
    ```
 
@@ -108,13 +109,13 @@ Enable Pipelock in your Helm values:
 pipelock:
   enabled: true
   image:
-    tag: "3.4.0@sha256:2e6caa43967a5ef19cacbce00188d829c1b5de1eb0ad304a51d2085f32c5694c"
+    tag: "2.8.0"
   mode: balanced
 ```
 
 This creates a separate Deployment, Service, and ConfigMap. The chart auto-injects `HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY` into web and worker pods.
 
-Sure pins Pipelock 3.4.0 by tag and multi-architecture image digest. Read the [Pipelock release notes](https://github.com/luckyPipewrench/pipelock/releases/tag/v3.4.0) before overriding that pin.
+Recent Pipelock releases add default-on flight recorder receipts, safe-by-default receipt verification, MCP `defer` authorization, request-policy scoring, request-body prompt-injection blocking, SPIFFE-strict inbound mediation envelopes, scanner attribution on MCP block receipts, trusted domain allowlisting, MCP tool redirect profiles, learn-and-lock behavioural contracts, the wedge-detection health watchdog, `pipelock explain`, `pipelock keys status`, `pipelock support bundle`, verified `pipelock update`, and `pipelock doctor` checks for inert exemptions. See the [Pipelock changelog](https://github.com/luckyPipewrench/pipelock/releases) for details.
 
 ### Signed action receipts
 
@@ -131,7 +132,7 @@ kubectl create secret generic sure-pipelock-receipts \
   --from-file=flight-recorder-signing.key=./flight-recorder-signing.key
 ```
 
-If you don't have the `pipelock` binary installed, generate the key with the pinned image instead: `docker run --rm -v "$PWD:/out" ghcr.io/luckypipewrench/pipelock:3.4.0@sha256:2e6caa43967a5ef19cacbce00188d829c1b5de1eb0ad304a51d2085f32c5694c signing key generate --purpose receipt-signing --out /out/flight-recorder-signing.key --id sure-k8s`.
+If you do not have the `pipelock` binary installed, generate the key with the image instead: `docker run --rm -v "$PWD:/out" ghcr.io/luckypipewrench/pipelock:2.8.0 signing key generate --purpose receipt-signing --out /out/flight-recorder-signing.key --id sure-k8s`.
 
 Example Helm values using an existing PVC named `sure-pipelock-evidence`:
 
@@ -230,10 +231,10 @@ The `pipelock.example.yaml` file (Docker Compose) or ConfigMap (Helm) controls s
 |---------|-----------------|
 | `mode` | `strict` (block threats), `balanced` (warn + block critical), `audit` (log only) |
 | `trusted_domains` | Allow internal services whose public DNS resolves to private IPs |
-| `forward_proxy` | Outbound HTTPS tunnel controls and connection timeouts |
+| `forward_proxy` | Outbound HTTPS scanning (tunnel timeouts, idle timeouts) |
 | `dlp` | Data loss prevention (scan env vars, built-in patterns) |
-| `request_body_scanning` | Scan cleartext HTTP, reverse-proxy, and WebSocket request bodies; HTTPS bodies require TLS interception |
-| `response_scanning` | Scan readable responses for prompt injection; HTTPS tunnel responses require TLS interception |
+| `request_body_scanning` | Scan outbound request bodies for prompt-injection and bodies/sensitive headers for DLP (pipelock 2.5+) |
+| `response_scanning` | Scan LLM responses for prompt injection |
 | `mcp_input_scanning` | Scan inbound MCP requests |
 | `mcp_tool_scanning` | Validate tool calls, detect drift |
 | `mcp_tool_policy` | Pre-execution rules, shell obfuscation, redirect profiles |
@@ -266,10 +267,9 @@ Start with `audit` mode to see what Pipelock detects without blocking anything. 
 
 ## Limitations
 
-- Proxy variables are cooperative. Clients that don't honor them can connect directly unless the deployment enforces egress routing.
-- The default examples don't configure TLS interception, so Pipelock can't scan encrypted HTTPS request or response bodies.
+- Forward proxy only covers Faraday-based HTTP clients. Net::HTTP, HTTParty, and other libraries ignore `HTTPS_PROXY`.
 - Docker Compose has no egress network policies. The `/mcp` endpoint on port 3000 is still reachable directly (auth token required). For enforcement, use Kubernetes NetworkPolicies.
-- Pipelock 3.4 scans reverse-proxy bodies that declare media types, but it doesn't inspect secrets embedded inside a valid image.
+- Pipelock scans text content. Binary payloads (images, file uploads) are passed through by default.
 - Signed receipts prove traffic that traversed Pipelock. They do not prove traffic could not bypass Pipelock; pair them with NetworkPolicies, containment, or firewall rules for non-bypass claims.
 
 ## Troubleshooting
