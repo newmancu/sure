@@ -1,5 +1,4 @@
 class CategoriesController < ApplicationController
-  before_action :require_non_guest!, except: %i[index]
   before_action :set_category, only: %i[edit update destroy]
   before_action :set_categories, only: %i[update edit]
   before_action :set_transaction, only: :create
@@ -139,7 +138,12 @@ class CategoriesController < ApplicationController
 
     def set_transaction
       if params[:transaction_id].present?
-        @transaction = Current.family.transactions.find(params[:transaction_id])
+        # Assigning a category annotates the transaction, so the account must be
+        # one this member may annotate, not merely one in the same family.
+        @transaction = Current.family.transactions
+          .joins(entry: :account)
+          .merge(Account.annotatable_by(Current.user))
+          .find(params[:transaction_id])
       end
     end
 
