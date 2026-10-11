@@ -34,7 +34,7 @@ module EntriesTestHelper
     Entry.create! entry_defaults.merge(entry_attributes)
   end
 
-  def create_trade(security, account:, qty:, date:, price: nil, currency: "USD", fee: 0)
+  def create_trade(security, account:, qty:, date:, price: nil, currency: "USD", exchange_rate: nil)
     trade_price = price || Security::Price.find_by!(security: security, date: date).price
 
     trade = Trade.new \
@@ -42,8 +42,8 @@ module EntriesTestHelper
       security: security,
       price: trade_price,
       currency: currency,
-      fee: fee,
       investment_activity_label: qty > 0 ? "Buy" : "Sell"
+    trade.exchange_rate = exchange_rate if exchange_rate
 
     account.entries.create! \
       name: "Trade",
