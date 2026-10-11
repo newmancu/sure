@@ -44,6 +44,11 @@ class ApplicationHelperTest < ActionView::TestCase
     assert_equal "Test Header Title", content_for(:header_title)
   end
 
+  test "provider sync debug log labels are localized" do
+    assert_equal I18n.t("provider_sync_summary.health.view_debug_log"), provider_sync_debug_log_label
+    assert_equal I18n.t("provider_sync_summary.health.details_in_debug_log"), provider_sync_debug_log_hint
+  end
+
   test "#sidekiq_web_available? returns true when the route is mounted" do
     named_routes = Struct.new(:defined) do
       def route_defined?(name)
@@ -84,16 +89,6 @@ class ApplicationHelperTest < ActionView::TestCase
     @account1 = Account.new(currency: "USD", balance: 1)
     @account2 = Account.new(currency: "USD", balance: 2)
     @account3 = Account.new(currency: "EUR", balance: -7)
-  end
-
-  test "#styled_form_with keeps a field's help_text when the field has no label" do
-    html = styled_form_with(url: "/", scope: :account) do |form|
-      form.text_field :name, label: false, help_text: "Shown to everyone in the family"
-    end
-
-    fragment = Nokogiri::HTML.fragment(html)
-    assert_equal "Shown to everyone in the family", fragment.at("p#account_name_help_text")&.text
-    assert_equal "account_name_help_text", fragment.at("input[name='account[name]']")["aria-describedby"]
   end
 
   test "#totals_by_currency(collection: collection, money_method: money_method)" do
