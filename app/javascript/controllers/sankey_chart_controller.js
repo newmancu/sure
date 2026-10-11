@@ -1,12 +1,7 @@
 import { Controller } from "@hotwired/stimulus";
 import * as d3 from "d3";
 import { sankey } from "d3-sankey";
-import { CHART_TOOLTIP_CLASSES } from "utils/chart_tooltip";
 import { sankeyNodeHasChildren, zoomSankeyData } from "utils/sankey_zoom";
-import {
-  buildCategoryTransactionsUrl,
-  isNavigableCategoryNode,
-} from "utils/transactions_filter_url";
 
 // Connects to data-controller="sankey-chart"
 export default class extends Controller {
@@ -17,8 +12,6 @@ export default class extends Controller {
     nodeWidth: { type: Number, default: 15 },
     nodePadding: { type: Number, default: 20 },
     currencySymbol: { type: String, default: "$" },
-    startDate: String,
-    endDate: String,
   };
 
   // Visual constants
@@ -167,22 +160,6 @@ export default class extends Controller {
     this.zoomRootId = node.id;
     this.#syncZoomControls();
     this.#draw({ animate: true });
-  }
-
-  #navigateToTransactions(d) {
-    if (!isNavigableCategoryNode(d.id)) {
-      // Structural node (Cash Flow / Surplus): keep current zoom behavior.
-      this.#zoomIn(d);
-      return;
-    }
-
-    Turbo.visit(
-      buildCategoryTransactionsUrl({
-        filterValue: d.filter_value,
-        startDate: this.startDateValue,
-        endDate: this.endDateValue,
-      }),
-    );
   }
 
   // Dynamic padding prevents padding from dominating when there are many nodes
@@ -467,16 +444,7 @@ export default class extends Controller {
     linkPaths
       .on("mouseenter", (event, d) => {
         applyHover([d]);
-        // A link is a flow between two named nodes — without the names the
-        // value floats context-free (the old tooltip showed only "$X (Y%)").
-        this.#showTooltip(
-          event,
-          d.value,
-          d.percentage,
-          this.#tooltipContext(
-            `${this.#esc(d.source.name)} → ${this.#esc(d.target.name)}`,
-          ),
-        );
+        this.#showTooltip(event, d.value, d.percentage);
       })
       .on("mousemove", (event) => this.#updateTooltipPosition(event))
       .on("mouseleave", () => {
@@ -497,12 +465,7 @@ export default class extends Controller {
           (l) => l.source === d || l.target === d,
         );
         applyHover(connectedLinks);
-        this.#showTooltip(
-          event,
-          d.value,
-          d.percentage,
-          this.#tooltipContext(this.#esc(d.name)),
-        );
+        this.#showTooltip(event, d.value, d.percentage, d.name);
       })
       .on("mousemove", (event) => this.#updateTooltipPosition(event))
       .on("click", (event, d) => {
@@ -517,7 +480,6 @@ export default class extends Controller {
     nodeGroups
       .selectAll("text")
       .style("cursor", (d) =>
-        isNavigableCategoryNode(d.id) ||
         sankeyNodeHasChildren(this.#visibleData(), d.id)
           ? "pointer"
           : "default",
@@ -527,17 +489,12 @@ export default class extends Controller {
           (l) => l.source === d || l.target === d,
         );
         applyHover(connectedLinks);
-        this.#showTooltip(
-          event,
-          d.value,
-          d.percentage,
-          this.#tooltipContext(this.#esc(d.name)),
-        );
+        this.#showTooltip(event, d.value, d.percentage, d.name);
       })
       .on("mousemove", (event) => this.#updateTooltipPosition(event))
       .on("click", (event, d) => {
         event.stopPropagation();
-        this.#navigateToTransactions(d);
+        this.#zoomIn(d);
       })
       .on("mouseleave", () => {
         resetHover();
@@ -552,39 +509,20 @@ export default class extends Controller {
     this.tooltip = d3
       .select(dialog || document.body)
       .append("div")
-      // Shared visual contract + this chart's positioning class; opacity is
-      // toggled via inline style below.
-      .attr("class", `${CHART_TOOLTIP_CLASSES} top-0`)
+      .attr(
+        "class",
+        "bg-container text-primary text-sm font-sans p-2 border border-secondary rounded-lg pointer-events-none absolute z-50 top-0 privacy-sensitive",
+      )
       .style("opacity", 0)
       .style("pointer-events", "none");
   }
 
-  // Node names are user-named categories; escape anything interpolated into
-  // .html() (the previous code injected them raw).
-  #esc(s) {
-    return String(s).replace(
-      /[&<>"']/g,
-      (c) =>
-        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
-    );
-  }
-
-  // Context line shared by node and link tooltips: the (escaped) name(s) of
-  // what's hovered. No color swatch — the hover highlight on the diagram
-  // itself already says which ribbon the card belongs to.
-  #tooltipContext(label) {
-    // max-w-64 gives truncate a constraint to fire against — an absolute
-    // tooltip otherwise grows to fit and never ellipsizes deep flows.
-    return `<div class="max-w-64 text-xs text-secondary mb-1 truncate">${label}</div>`;
-  }
-
-  #showTooltip(event, value, percentage, contextHtml = null) {
+  #showTooltip(event, value, percentage, title = null) {
     if (!this.tooltip) this.#createTooltip();
 
-    const valueLine = `<span class="font-medium tabular-nums">${this.#formatCurrency(value)}</span> <span class="text-secondary">(${percentage || 0}%)</span>`;
-    const content = contextHtml
-      ? `${contextHtml}<div>${valueLine}</div>`
-      : valueLine;
+    const content = title
+      ? `${title}<br/>${this.#formatCurrency(value)} (${percentage || 0}%)`
+      : `${this.#formatCurrency(value)} (${percentage || 0}%)`;
 
     const isInDialog = !!this.element.closest("dialog");
     const x = isInDialog ? event.clientX : event.pageX;

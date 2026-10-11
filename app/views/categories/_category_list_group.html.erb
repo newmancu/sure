@@ -1,12 +1,4 @@
-<%# locals: (title:, categories:, family: nil, category_groups: nil, category_ids_with_transactions: nil) %>
-<% category_groups ||= Category::Group.for(categories) %>
-<% if category_ids_with_transactions.nil? %>
-  <% category_ids_with_transactions = if categories.any? && family
-    Category.ids_with_transactions(family: family, category_ids: categories.map(&:id))
-  else
-    {}
-  end %>
-<% end %>
+<%# locals: (title:, categories:) %>
 
 <div class="rounded-xl bg-container-inset space-y-1 p-1">
   <div class="flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-secondary uppercase">
@@ -17,20 +9,14 @@
 
   <div class="shadow-border-xs rounded-lg bg-container">
     <div class="overflow-hidden rounded-lg">
-      <% category_groups.each_with_index do |group, idx| %>
-        <%= render "categories/category",
-                   category: group.category,
-                   subcategories: group.subcategories,
-                   has_transactions: category_ids_with_transactions.key?(group.category.id) %>
+      <% Category::Group.for(categories).each_with_index do |group, idx| %>
+        <%= render group.category %>
 
         <% group.subcategories.each do |subcategory| %>
-          <%= render "categories/category",
-                     category: subcategory,
-                     subcategories: [],
-                     has_transactions: category_ids_with_transactions.key?(subcategory.id) %>
+          <%= render subcategory %>
         <% end %>
 
-        <% unless idx == category_groups.count - 1 %>
+        <% unless idx == Category::Group.for(categories).count - 1 %>
           <%= render "shared/ruler" %>
         <% end %>
       <% end %>

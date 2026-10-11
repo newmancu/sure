@@ -1,6 +1,4 @@
 class RecurringTransaction
-  # Bills subsystem: staleness is measured in the series' own cycles, so
-  # quarterly and annual bills survive the gaps between normal occurrences.
   class Cleaner
     attr_reader :family
 
@@ -8,25 +6,28 @@ class RecurringTransaction
       @family = family
     end
 
-    # Mark recurring transactions as inactive if they haven't occurred
-    # recently, where "recently" is measured in the series' own cycles (see
-    # RecurringTransaction#staleness_threshold_date) so quarterly and annual
-    # bills survive the gaps between their perfectly normal occurrences.
+    # Mark recurring transactions as inactive if they haven't occurred recently
+    # Uses 2 months for automatic recurring, 6 months for manual recurring.
     #
-    # Transfer rows (destination_account_id present) are included: as of issue
-    # #1590, `matching_transactions` detects the Transfer pair, so a still-active
-    # transfer keeps surfacing recent matches and stays active, while one whose
-    # pair has genuinely stopped is correctly retired.
+    # Transfer rows (destination_account_id present) are skipped: their
+    # `matching_transactions` helper looks at single-account name/amount
+    # which never matches a Transfer pair, so the Cleaner would
+    # incorrectly mark a still-recurring transfer inactive at the
+    # 6-month threshold. Issue #1590 tracks pair-detection-aware
+    # matching for recurring transfers.
     def cleanup_stale_transactions
       stale_count = 0
 
       family.recurring_transactions
             .active
+            .where(destination_account_id: nil)
             .find_each do |recurring_transaction|
         next unless recurring_transaction.should_be_inactive?
 
+        # Determine threshold based on manual flag
+        threshold = recurring_transaction.manual? ? 6.months.ago.to_date : 2.months.ago.to_date
+
         # Double-check if there are any recent matching transactions
-        threshold = recurring_transaction.staleness_threshold_date
         recent_matches = recurring_transaction.matching_transactions.select { |entry| entry.date >= threshold }
 
         if recent_matches.empty?

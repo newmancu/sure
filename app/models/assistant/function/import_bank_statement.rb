@@ -92,21 +92,19 @@ class Assistant::Function::ImportBankStatement < Assistant::Function
       }
     end
 
-    # Extract transactions from the PDF using the configured LLM provider.
-    # Honors Setting.llm_provider (issue #2113) — Provider::Anthropic implements
-    # extract_bank_statement (PR #1985).
-    provider = Provider::Registry.preferred_llm_provider
+    # Extract transactions from the PDF using provider
+    provider = Provider::Registry.get_provider(:openai)
     unless provider
       return {
         success: false,
         error: "provider_not_configured",
-        message: "AI provider is not configured"
+        message: "OpenAI provider is not configured"
       }
     end
 
     response = provider.extract_bank_statement(
       pdf_content: pdf_import.pdf_file_content,
-      model: model_for(provider),
+      model: openai_model,
       family: family
     )
 
@@ -184,9 +182,7 @@ class Assistant::Function::ImportBankStatement < Assistant::Function
       end
     end
 
-    # Only OpenAI takes the OpenAI model setting; other providers (Anthropic)
-    # resolve their own default when given nil.
-    def model_for(provider)
-      Provider::Openai.effective_model if provider.is_a?(Provider::Openai)
+    def openai_model
+      ENV["OPENAI_MODEL"].presence || Provider::Openai::DEFAULT_MODEL
     end
 end

@@ -1,7 +1,7 @@
 <%= tag.details class: details_classes, open: open, **details_opts do %>
-  <%= tag.summary class: summary_classes, aria: summary_aria_attrs do %>
+  <%= tag.summary class: summary_classes do %>
     <% if summary_content? %>
-      <% if variant.in?(%i[default bare]) %>
+      <% if variant == :default %>
         <%# `:default` summary is already `flex justify-between`, so
             caller-provided sibling divs get distributed directly.
             Wrapping would collapse them into a single flex child and
@@ -17,12 +17,9 @@
         </div>
       <% end %>
     <% else %>
-      <%# The chevrons follow their own <details>, not `group-open:`, which
-          matches any open ancestor group: a disclosure inside an open one
-          would show open while closed. %>
       <div class="flex items-center gap-3">
         <% if align == :left %>
-          <%= helpers.icon "chevron-right", class: "[details[open]>summary_&]:rotate-90 motion-safe:transition-transform motion-safe:duration-150" %>
+          <%= helpers.icon "chevron-right", class: "group-open:rotate-90 motion-safe:transition-transform motion-safe:duration-150" %>
         <% end %>
 
         <%= tag.span class: class_names("font-medium", align == :left ? "text-sm text-primary" : "text-xs uppercase text-secondary") do %>
@@ -31,16 +28,12 @@
       </div>
 
       <% if align == :right %>
-        <%= helpers.icon "chevron-down", class: "[details[open]>summary_&]:rotate-180 motion-safe:transition-transform motion-safe:duration-150" %>
+        <%= helpers.icon "chevron-down", class: "group-open:rotate-180 motion-safe:transition-transform motion-safe:duration-150" %>
       <% end %>
     <% end %>
   <% end %>
 
-  <% if variant == :bare %>
+  <div class="mt-2">
     <%= content %>
-  <% else %>
-    <%= tag.div class: body_class.presence do %>
-      <%= content %>
-    <% end %>
-  <% end %>
+  </div>
 <% end %>

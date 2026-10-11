@@ -164,16 +164,14 @@
                 </p>
               <% end %>
 
-              <%= render DS::Disclosure.new(variant: :inline) do |disclosure| %>
-                <% disclosure.with_summary_content do %>
-                  <span class="flex items-center gap-1 text-xs text-secondary hover:text-primary">
-                    <%= icon "chevron-right", size: "sm", class: "group-open:rotate-90 motion-safe:transition-transform motion-safe:duration-150" %>
-                    <%= t("reports.investment_performance.view_details") %>
-                    (<%= t("reports.investment_performance.holdings_count", count: data[:holdings].count) %>, <%= t("reports.investment_performance.sells_count", count: data[:sell_trades].count) %>)
-                  </span>
-                <% end %>
+              <details class="group">
+                <summary class="cursor-pointer text-xs text-secondary hover:text-primary flex items-center gap-1">
+                  <%= icon "chevron-right", size: "sm", class: "group-open:rotate-90 transition-transform" %>
+                  <%= t("reports.investment_performance.view_details") %>
+                  (<%= t("reports.investment_performance.holdings_count", count: data[:holdings].count) %>, <%= t("reports.investment_performance.sells_count", count: data[:sell_trades].count) %>)
+                </summary>
 
-                <div class="space-y-2 text-xs">
+                <div class="mt-2 space-y-2 text-xs">
                   <% if data[:holdings].any? %>
                     <div class="space-y-1">
                       <p class="text-secondary font-medium"><%= t("reports.investment_performance.holdings") %></p>
@@ -196,12 +194,10 @@
                       <p class="text-secondary font-medium"><%= t("reports.investment_performance.sell_trades") %></p>
                       <% data[:sell_trades].first(5).each do |trade| %>
                         <% gain = trade.realized_gain_loss %>
-                        <%# Converted in the controller, at the trade's own date: gain.value is carried in the currency the position is held in, and labelling it family currency here was reporting a EUR figure as USD. %>
-                        <% amount = data[:realized_gain_by_trade][trade.id] %>
-                        <div class="flex justify-between pl-2" data-testid="realized-gain-line">
+                        <div class="flex justify-between pl-2">
                           <span class="text-primary"><%= trade.security.ticker %></span>
-                          <span class="<%= amount ? "" : "text-secondary" %>" style="<%= amount ? "color: #{gain.color}" : "" %>">
-                            <%= amount ? format_money(amount) : t("reports.investment_performance.no_data") %>
+                          <span class="<%= gain ? "" : "text-secondary" %>" style="<%= gain ? "color: #{gain.color}" : "" %>">
+                            <%= gain ? format_money(Money.new(gain.value, Current.family.currency)) : t("reports.investment_performance.no_data") %>
                           </span>
                         </div>
                       <% end %>
@@ -211,7 +207,7 @@
                     </div>
                   <% end %>
                 </div>
-              <% end %>
+              </details>
             </div>
           <% end %>
         </div>
