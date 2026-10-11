@@ -1,10 +1,6 @@
 class Transfer < ApplicationRecord
-  belongs_to :inflow_transaction, class_name: "Transaction", inverse_of: :transfer_as_inflow
-  belongs_to :outflow_transaction, class_name: "Transaction", inverse_of: :transfer_as_outflow
-
-  has_many :fee_transactions, class_name: "Transaction", dependent: :destroy
-
-  attr_accessor :source_fee_amount, :destination_fee_amount, :tag_ids
+  belongs_to :inflow_transaction, class_name: "Transaction"
+  belongs_to :outflow_transaction, class_name: "Transaction"
 
   enum :status, { pending: "pending", confirmed: "confirmed" }
 
@@ -17,23 +13,13 @@ class Transfer < ApplicationRecord
   validate :transfer_has_same_family
 
   class << self
-    # The outflow leg's kind for a transfer into this account. Transfer::Creator,
-    # Family::DataImporter, auto-matching, rules and manual matches all call
-    # it (the inflow leg is always funds_movement, see kind_for_leg).
-    # from_account: an investment/crypto destination only counts as a
-    # contribution when the source isn't itself an investment/crypto account,
-    # otherwise it's a plain funds movement.
-    def kind_for_account(account, from_account: nil)
+    def kind_for_account(account)
       if account.loan?
         "loan_payment"
       elsif account.credit_card?
         "cc_payment"
       elsif account.investment? || account.crypto?
-        if from_account && (from_account.investment? || from_account.crypto?)
-          "funds_movement"
-        else
-          "investment_contribution"
-        end
+        "investment_contribution"
       elsif account.liability?
         "cc_payment"
       else
@@ -42,32 +28,53 @@ class Transfer < ApplicationRecord
     end
   end
 
-  def has_source_fee?
-    derived_source_fee_amount > 0
+  def reject!
+    Transfer.transaction do
+      RejectedTransfer.find_or_create_by!(inflow_transaction_id: inflow_transaction_id, outflow_transaction_id: outflow_transaction_id)
+      destroy!
+    end
   end
 
-  def has_destination_fee?
-    derived_destination_fee_amount > 0
+  # Once transfer is destroyed, we need to mark the denormalized kind fields on the transactions
+  def destroy!
+    Transfer.transaction do
+      [ inflow_transaction, outflow_transaction ].each do |transaction|
+        next if transaction.nil?
+        next unless Transaction.exists?(transaction.id)
+        begin
+          transaction.update!(kind: "standard")
+        rescue ActiveRecord::RecordNotFound
+        rescue NoMethodError
+          next
+        end
+      end
+      super
+    end
   end
 
-  def has_fees?
-    has_source_fee? || has_destination_fee?
+  def confirm!
+    update!(status: "confirmed")
   end
 
-  def total_fee
-    derived_source_fee_amount + derived_destination_fee_amount
+  def date
+    inflow_transaction.entry.date
   end
 
-  def derived_source_fee_amount
-    fee_transactions.joins(:entry).where(entries: { account_id: from_account.id }).sum("entries.amount")
+  def sync_account_later
+    inflow_transaction&.entry&.sync_account_later
+    outflow_transaction&.entry&.sync_account_later
   end
 
-  def derived_destination_fee_amount
-    fee_transactions.joins(:entry).where(entries: { account_id: to_account.id }).sum("entries.amount")
+  def to_account
+    inflow_transaction&.entry&.account
+  end
+
+  def from_account
+    outflow_transaction&.entry&.account
   end
 
   def amount_abs
-    inflow_transaction&.entry&.amount_money&.abs || Money.new(0, from_account&.currency || "USD")
+    inflow_transaction&.entry&.amount_money&.abs
   end
 
   def name
@@ -101,74 +108,8 @@ class Transfer < ApplicationRecord
     "transfer"
   end
 
-  # The kind a leg carries while this transfer exists: the outflow by the
-  # destination account, the inflow always funds_movement.
-  def kind_for_leg(transaction)
-    return "funds_movement" if transaction.id == inflow_transaction_id
-
-    Transfer.kind_for_account(to_account, from_account: from_account)
-  end
-
-  # Based on the destination account rather than outflow_transaction.kind,
-  # which can be stale on rows a provider sync overwrote before
-  # Account::ProviderImportAdapter derived matched legs from their transfer
-  # (see Transaction#payment?, which has the same to_account-based reasoning).
   def categorizable?
-    return false unless to_account
-
-    !Transaction::UNCATEGORIZED_EXCLUDED_KINDS.include?(Transfer.kind_for_account(to_account, from_account: from_account))
-  end
-
-  def reject!
-    Transfer.transaction do
-      RejectedTransfer.find_or_create_by!(inflow_transaction_id: inflow_transaction_id, outflow_transaction_id: outflow_transaction_id)
-      destroy!
-    end
-  end
-
-  def destroy!
-    Transfer.transaction do
-      [ inflow_transaction, outflow_transaction ].each do |transaction|
-        next if transaction.nil?
-        next unless Transaction.exists?(transaction.id)
-        begin
-          transaction.update!(kind: "standard")
-          # The entry survives this destroy (only the Transfer join row and
-          # fee transactions go away), but its idempotency_key must not: a
-          # later retry of the original create request looks up that key,
-          # finds no Transfer anymore, and would otherwise hit the unique
-          # index on the stale entry and raise instead of creating a new
-          # transfer (see Transfer::Creator#find_existing_transfer).
-          transaction.entry.update!(idempotency_key: nil) if transaction.entry&.idempotency_key.present?
-        rescue ActiveRecord::RecordNotFound
-        rescue NoMethodError
-          next
-        end
-      end
-      super
-    end
-  end
-
-  def confirm!
-    update!(status: "confirmed")
-  end
-
-  def date
-    inflow_transaction&.entry&.date
-  end
-
-  def sync_account_later
-    inflow_transaction&.entry&.sync_account_later
-    outflow_transaction&.entry&.sync_account_later
-    fee_transactions.each { |t| t.entry&.sync_account_later }
-  end
-
-  def to_account
-    inflow_transaction&.entry&.account
-  end
-
-  def from_account
-    outflow_transaction&.entry&.account
+    to_account&.accountable_type == "Loan"
   end
 
   private
@@ -188,13 +129,15 @@ class Transfer < ApplicationRecord
       inflow_entry = inflow_transaction.entry
       outflow_entry = outflow_transaction.entry
 
-      inflow_amount_raw = inflow_entry.amount
-      outflow_amount_raw = outflow_entry.amount
-
-      errors.add(:base, :opposite_amounts) unless inflow_amount_raw.negative? && outflow_amount_raw.positive?
+      inflow_amount = inflow_entry.amount
+      outflow_amount = outflow_entry.amount
 
       if inflow_entry.currency == outflow_entry.currency
-        errors.add(:base, :opposite_amounts) if inflow_amount_raw + outflow_amount_raw != 0
+        # For same currency, amounts must be exactly opposite
+        errors.add(:base, :opposite_amounts) if inflow_amount + outflow_amount != 0
+      else
+        # For different currencies, just check the signs are opposite
+        errors.add(:base, :opposite_amounts) unless inflow_amount.negative? && outflow_amount.positive?
       end
     end
 

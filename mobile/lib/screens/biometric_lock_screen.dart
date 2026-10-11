@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import '../l10n/app_localizations.dart';
 import '../services/biometric_service.dart';
 
 class BiometricLockScreen extends StatefulWidget {
@@ -39,14 +38,13 @@ class _BiometricLockScreenState extends State<BiometricLockScreen> {
       widget.onUnlocked();
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(AppLocalizations.of(context).biometricLockFailedRetry)),
+        const SnackBar(content: Text('Authentication failed. Tap Unlock to try again.')),
       );
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final l = AppLocalizations.of(context);
     final colorScheme = Theme.of(context).colorScheme;
 
     return Scaffold(
@@ -63,21 +61,21 @@ class _BiometricLockScreenState extends State<BiometricLockScreen> {
               ),
               const SizedBox(height: 24),
               Text(
-                l.biometricTitle,
+                'App Locked',
                 style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                       fontWeight: FontWeight.w600,
                     ),
               ),
               const SizedBox(height: 8),
               Text(
-                l.biometricSubtitle,
+                'Authenticate to continue',
                 style: TextStyle(color: colorScheme.onSurfaceVariant),
               ),
               const SizedBox(height: 40),
               FilledButton.icon(
                 onPressed: _isAuthenticating ? null : _authenticate,
                 icon: const Icon(Icons.fingerprint),
-                label: Text(_isAuthenticating ? l.biometricAuthenticating : l.biometricUnlock),
+                label: Text(_isAuthenticating ? 'Authenticating…' : 'Unlock'),
                 style: FilledButton.styleFrom(
                   minimumSize: const Size(200, 50),
                   shape: RoundedRectangleBorder(
@@ -89,7 +87,7 @@ class _BiometricLockScreenState extends State<BiometricLockScreen> {
                 const SizedBox(height: 16),
                 TextButton(
                   onPressed: widget.onLogout,
-                  child: Text(l.biometricLogOut),
+                  child: const Text('Log out'),
                 ),
               ],
             ],
