@@ -9,7 +9,6 @@ nl:
       page_title: Back-upcodes
       title: Bewaar uw back-upcodes
     create:
-      code_already_used: Deze code is al gebruikt. Voer de volgende code uit je authenticatie-app in.
       invalid_code: Ongeldige verificatiecode. Probeer het opnieuw.
     disable:
       success: Twee-factor authenticatie is uitgeschakeld
@@ -31,5 +30,12 @@ nl:
       page_title: Twee-factor authenticatie verifiëren
       title: Twee-factor authenticatie
       verify_button: Verifiëren
+      or: of
+      webauthn_button: Passkey of beveiligingssleutel gebruiken
+      webauthn_unsupported: Deze browser ondersteunt geen passkeys of beveiligingssleutels.
     verify_code:
       invalid_code: Ongeldige authenticatiecode. Probeer het opnieuw.
+    verify_webauthn:
+      invalid_credential: Die passkey of beveiligingssleutel kon niet worden geverifieerd. Probeer het opnieuw.
+    webauthn_options:
+      unavailable: Er zijn geen passkeys of beveiligingssleutels beschikbaar voor dit account.

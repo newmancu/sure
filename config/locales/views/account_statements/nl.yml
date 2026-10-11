@@ -36,7 +36,6 @@ nl:
       files_hint: PDF, CSV of XLSX. Max. %{max_size} MB per bestand.
       files_label: Afschriftbestanden
       inbox_upload: Uploaden
-      period_hint: "Sure leest de periode uit de pdf als die erin staat, of uit een datum in de bestandsnaam (bijv. 2026-04). Je kunt hem ook bij het afschrift instellen."
     index:
       account_label: Account
       confidence: "%{confidence} overeenkomst"
@@ -46,7 +45,7 @@ nl:
       linked_title: Gekoppelde afschriften
       no_suggestion: Geen suggestie
       storage_used: Gebruikte opslag
-      title: Afschriftenkluis
+      title: Afschriften
       unmatched_title: Niet-toegewezen inbox
       upload_description: Upload afschriften naar de inbox of kies een account om ze meteen te koppelen.
       upload_title: Afschriften uploaden

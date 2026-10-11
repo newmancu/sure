@@ -21,6 +21,8 @@ en:
           trial_expiring_soon: "Expiring in 7 days"
           trial_trialing: "On trial"
           submit: "Filter"
+        summary:
+          trials_expiring_7_days: "Trials expiring in next 7 days"
         table:
           user: "User"
           trial_ends_at: "Trial ends"
