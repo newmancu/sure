@@ -4,6 +4,7 @@ class SureImport < Import
 
   DEFAULT_MAX_NDJSON_SIZE_MB = 10
   DEFAULT_MAX_ROW_COUNT = 100_000
+  MAX_NDJSON_SIZE = DEFAULT_MAX_NDJSON_SIZE_MB.megabytes
   IMPORTABLE_NDJSON_TYPES = {
     "Account" => :accounts,
     "Balance" => :balances,
@@ -148,11 +149,7 @@ class SureImport < Import
       update!(summary: result[:summary]) if has_attribute?(:summary)
     end
 
-    record_readback_verification!(
-      before_counts:,
-      reused_counts: reused_counts_from(result[:summary]),
-      created_counts: created_counts_from(result[:summary])
-    )
+    record_readback_verification!(before_counts:)
     result
   rescue => error
     record_failed_readback_verification!(before_counts:, error:)
@@ -183,7 +180,7 @@ class SureImport < Import
 
     import!
 
-    family.sync_later
+    sync_family_after_import
 
     update! status: :complete
   rescue StandardError => error
@@ -274,23 +271,9 @@ class SureImport < Import
       )
     end
 
-    # Category/Tag/Merchant rows matched to an existing family record by name are
-    # "updated", not created, so they add nothing to the readback delta.
-    def reused_counts_from(summary)
-      %w[categories tags merchants].index_with { |key| (summary || {}).dig(key, "updated").to_i }
-    end
-
-    # A ProviderMerchant row with no shared match yet becomes a FamilyMerchant
-    # (see Family::DataImporter#import_provider_merchants), which isn't counted
-    # under the "Merchant" NDJSON line type, so its creation must be added to
-    # the expected merchant delta explicitly.
-    def created_counts_from(summary)
-      { "merchants" => (summary || {}).dig("provider_merchants", "created").to_i }
-    end
-
-    def record_readback_verification!(before_counts:, reused_counts: {}, created_counts: {})
+    def record_readback_verification!(before_counts:)
       update_columns(
-        readback_verification: build_readback_verification(before_counts:, status_for_mismatch: "mismatch", reused_counts:, created_counts:),
+        readback_verification: build_readback_verification(before_counts:, status_for_mismatch: "mismatch"),
         updated_at: Time.current
       )
     end
@@ -309,14 +292,12 @@ class SureImport < Import
       Rails.logger.warn("Failed to record Sure import readback verification for import #{id}: #{verification_error.message}")
     end
 
-    def build_readback_verification(before_counts:, status_for_mismatch:, reused_counts: {}, created_counts: {})
+    def build_readback_verification(before_counts:, status_for_mismatch:)
       after_counts = readback_count_snapshot
       actual_delta_counts = delta_counts(before_counts, after_counts)
       expected_counts = normalized_expected_record_counts
-      expected_creations = expected_counts.merge(created_counts) { |_key, expected, created| expected + created }
-      expected_creations = expected_creations.merge(reused_counts) { |_key, expected, reused| [ expected - reused, 0 ].max }
       checked_counts = (actual_delta_counts.keys | expected_counts.keys).index_with do |key|
-        expected_creations.fetch(key, 0).to_i
+        expected_counts.fetch(key, 0).to_i
       end
       mismatches = checked_counts.each_with_object({}) do |(key, expected_count), result|
         actual_count = actual_delta_counts.fetch(key, 0)
@@ -336,7 +317,6 @@ class SureImport < Import
         "after_counts" => after_counts,
         "actual_delta_counts" => actual_delta_counts,
         "checked_counts" => checked_counts,
-        "reused_record_counts" => reused_counts.select { |_key, count| count.positive? },
         "mismatches" => mismatches
       }
     end

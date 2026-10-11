@@ -20,7 +20,7 @@ test("category nodes are navigable, structural nodes are not", () => {
 
 test("builds a transactions deep link with category and date range", () => {
   const url = buildCategoryTransactionsUrl({
-    filterValue: "Groceries",
+    name: "Groceries",
     startDate: "2026-05-01",
     endDate: "2026-05-31",
   });
@@ -32,25 +32,16 @@ test("builds a transactions deep link with category and date range", () => {
 
 test("encodes category names with special characters", () => {
   const url = buildCategoryTransactionsUrl({
-    filterValue: "Food & Drink",
+    name: "Food & Drink",
     startDate: "2026-05-01",
     endDate: "2026-05-31",
   });
   assert.match(url, /q%5Bcategories%5D%5B%5D=Food\+%26\+Drink/);
 });
 
-test("passes the Uncategorized sentinel through unchanged, not a display name", () => {
-  const url = buildCategoryTransactionsUrl({
-    filterValue: "__uncategorized__",
-    startDate: "2026-05-01",
-    endDate: "2026-05-31",
-  });
-  assert.match(url, /q%5Bcategories%5D%5B%5D=__uncategorized__/);
-});
-
 test("omits date params when dates are blank", () => {
   const url = buildCategoryTransactionsUrl({
-    filterValue: "Groceries",
+    name: "Groceries",
     startDate: "",
     endDate: "",
   });

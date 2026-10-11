@@ -76,6 +76,7 @@ it:
       success: Obiettivo aggiornato.
     destroy:
       success: Obiettivo eliminato.
+      archive_first: Archivia l'obiettivo prima di eliminarlo.
     pause:
       success: Obiettivo messo in pausa.
       invalid_transition: L'obiettivo non può essere messo in pausa dal suo stato attuale.
@@ -102,7 +103,7 @@ it:
       archive: Archivia
       unarchive: Ripristina
       reopen: Riapri obiettivo
-      delete: Elimina
+      delete: Elimina definitivamente
       record_pledge_cta: Registra impegno
       pledge_just_transferred: Registra un trasferimento effettuato
       pledge_just_saved: Registra denaro messo da parte
@@ -170,9 +171,6 @@ it:
       confirm_archive_title: Archiviare questo obiettivo?
       confirm_archive_body: Gli obiettivi archiviati scompaiono dalla lista principale. Puoi ripristinarli in seguito.
       confirm_archive_cta: Archivia
-      confirm_delete_title: "Eliminare questo obiettivo?"
-      confirm_delete_body: "%{name} e la sua cronologia dei versamenti vengono eliminati definitivamente. I conti collegati, i saldi e le transazioni non vengono toccati. Per conservarlo come traccia, archivialo invece."
-      confirm_delete_cta: "Elimina obiettivo"
       paused_banner:
         title: Questo obiettivo è in pausa
         body: Riprendi per continuare a monitorare i tuoi progressi.
@@ -267,7 +265,7 @@ it:
         notes_placeholder: Un promemoria per te in futuro…
         funding_accounts: Conti di finanziamento
         funding_accounts_hint: Il saldo di questo obiettivo è il saldo di questi conti.
-        whole_balance: "Vuoto: tutto il saldo"
+        whole_balance: Saldo intero
         earmark_for: Accantona un importo per %{account}
         earmark_hint: Lascia vuoto un importo per dedicare l'intero saldo di quel conto.
       subtypes:

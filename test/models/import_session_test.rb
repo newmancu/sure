@@ -58,6 +58,27 @@ class ImportSessionTest < ActiveSupport::TestCase
     assert_source_mapping session, "Transaction", "txn-1", transaction
   end
 
+  test "publish auto-matches historical transfers before family sync" do
+    session = @family.import_sessions.create!(expected_chunks: 1)
+    session.attach_chunk!(
+      sequence: 1,
+      client_chunk_id: "history",
+      content: build_ndjson(historical_transfer_records),
+      filename: "history.ndjson",
+      content_type: "application/x-ndjson"
+    )
+
+    assert_difference -> { Transfer.count }, 1 do
+      session.publish
+    end
+
+    checking = @family.accounts.find_by!(name: "Historical Checking")
+    credit_card = @family.accounts.find_by!(name: "Historical Card")
+    outflow = checking.entries.find_by!(name: "Old Transfer").entryable
+    inflow = credit_card.entries.find_by!(name: "Old Transfer").entryable
+    assert Transfer.exists?(outflow_transaction: outflow, inflow_transaction: inflow)
+  end
+
   test "publishing session chunks records readback verification for each chunk" do
     session = @family.import_sessions.create!(expected_chunks: 2)
     session.attach_chunk!(
@@ -725,46 +746,6 @@ class ImportSessionTest < ActiveSupport::TestCase
     assert_includes mapping.errors[:target], "must belong to your family"
   end
 
-  test "clean reconciles committed chunks before failing a stuck session" do
-    session = @family.import_sessions.create!(status: "importing")
-    session.update_columns(updated_at: 7.hours.ago)
-
-    checksum = Digest::SHA256.hexdigest("chunk")
-    committed_chunk = TransactionImport.create!(family: @family, import_session: session, sequence: 1, checksum: checksum, status: "importing")
-    entries(:transaction).update_columns(import_id: committed_chunk.id)
-    rolled_back_chunk = TransactionImport.create!(family: @family, import_session: session, sequence: 2, checksum: checksum, status: "importing")
-
-    ImportSession.clean
-
-    session.reload
-    assert_equal "failed", session.status
-    assert_equal "import_interrupted", session.error_details["code"]
-    # The chunk whose import! committed must be skipped by a re-publish...
-    assert_equal "complete", committed_chunk.reload.status
-    # ...while the one that rolled back stays re-runnable.
-    assert_equal "importing", rolled_back_chunk.reload.status
-  end
-
-  test "clean leaves fresh importing sessions alone" do
-    session = @family.import_sessions.create!(status: "importing")
-
-    ImportSession.clean
-
-    assert_equal "importing", session.reload.status
-  end
-
-  test "clean isolates a session whose update! fails so the sweep does not abort" do
-    session = @family.import_sessions.create!(status: "importing")
-    session.update_columns(updated_at: 7.hours.ago)
-
-    # A validation/DB error on one stuck session must not abort the sweep for
-    # the rest (mirrors Import.clean's per-record rescue).
-    ImportSession.any_instance.stubs(:update!).raises(ActiveRecord::RecordInvalid.new(ImportSession.new))
-
-    assert_nothing_raised { ImportSession.clean }
-    assert_equal "importing", session.reload.status
-  end
-
   private
     def entity_records
       [
@@ -821,6 +802,57 @@ class ImportSessionTest < ActiveSupport::TestCase
             amount: "-12.34",
             currency: "USD",
             name: "Grocery Run"
+          }
+        }
+      ]
+    end
+
+    def historical_transfer_records
+      historical_date = 120.days.ago.to_date.iso8601
+
+      [
+        {
+          type: "Account",
+          data: {
+            id: "historical-checking",
+            name: "Historical Checking",
+            balance: "0.00",
+            currency: "USD",
+            accountable_type: "Depository",
+            accountable: { subtype: "checking" }
+          }
+        },
+        {
+          type: "Account",
+          data: {
+            id: "historical-card",
+            name: "Historical Card",
+            balance: "0.00",
+            currency: "USD",
+            accountable_type: "CreditCard",
+            accountable: { available_credit: "0.00" }
+          }
+        },
+        {
+          type: "Transaction",
+          data: {
+            id: "historical-outflow",
+            account_id: "historical-checking",
+            date: historical_date,
+            amount: "500.00",
+            currency: "USD",
+            name: "Old Transfer"
+          }
+        },
+        {
+          type: "Transaction",
+          data: {
+            id: "historical-inflow",
+            account_id: "historical-card",
+            date: historical_date,
+            amount: "-500.00",
+            currency: "USD",
+            name: "Old Transfer"
           }
         }
       ]
