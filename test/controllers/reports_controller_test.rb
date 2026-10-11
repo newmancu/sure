@@ -73,6 +73,78 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
     assert_no_match(/\$40\.00/, line, "$40.00 is the GBP figure converted at parity")
   end
 
+  # No JPY->USD rate for the day of a disposal in a JPY account. The gain is
+  # ¥100,000 and there is nothing to convert it with: converted at 1 it read
+  # as $100,000.00 (#3640). It is left out of the total, its own line shows no
+  # figure, and the card says a gain is missing.
+  test "a disposal with no rate into family currency is left out and the card says so" do
+    ExchangeRate.stubs(:provider).returns(nil)
+    date = Date.current.beginning_of_month
+    account = @family.accounts.create!(name: "Brokerage JPY", balance: 1_000_000,
+                                       currency: "JPY", accountable: Investment.new)
+    security = Security.create!(ticker: "JPX#{SecureRandom.hex(3)}", name: "Tokyo Listed")
+    ExchangeRate.where(from_currency: "JPY", to_currency: "USD").delete_all
+
+    account.holdings.create!(security: security, date: date, qty: 5, price: 150_000,
+                             amount: BigDecimal(750_000), currency: "JPY", cost_basis: 100_000)
+    create_trade(security, account: account, qty: -2, date: date, price: 150_000, currency: "JPY")
+
+    get reports_path
+    assert_response :ok
+
+    line = css_select("[data-testid='realized-gain-line']").map(&:text)
+                                                           .find { |text| text.include?(security.ticker) }
+
+    assert line, "the disposal must be listed at all, or this proves nothing"
+    assert_no_match(/\$100,000\.00/, line, "$100,000.00 is the yen figure converted at parity")
+    assert_select "[data-testid='unconverted-gains-note']", text: /no exchange rate to USD/
+    assert_no_match(/\$100,000\.00/, response.body, "nor is it in any total")
+  end
+
+  # A sale priced in EUR from a USD position, with no EUR->USD rate on any
+  # date: Trade has no figure for it. The card used to skip it as though it
+  # had no cost basis, so its total was partial without saying so.
+  test "a sale with no rate between its own currencies is counted as left out" do
+    ExchangeRate.stubs(:provider).returns(nil)
+    date = Date.current.beginning_of_month
+    account = @family.accounts.create!(name: "Brokerage USD", balance: 10_000,
+                                       currency: "USD", accountable: Investment.new)
+    security = Security.create!(ticker: "EUX#{SecureRandom.hex(3)}", name: "Euro Listed")
+    ExchangeRate.where(from_currency: "EUR", to_currency: "USD").delete_all
+
+    account.holdings.create!(security: security, date: date, qty: 5, price: 150,
+                             amount: BigDecimal(750), currency: "USD", cost_basis: 100)
+    create_trade(security, account: account, qty: -2, date: date, price: 150, currency: "EUR")
+
+    get reports_path
+    assert_response :ok
+
+    assert_select "[data-testid='unconverted-gains-note']", text: /1 gain is not included/
+  end
+
+  # The same for an open position: a JPY holding showing a ¥250,000 gain with
+  # no JPY->USD rate is not $250,000 of unrealised gain. At parity the gains
+  # card and the Total Return card both read $250,010.00, the yen figure plus
+  # the fixtures' $10, and Portfolio Value read $1,020,000.00.
+  test "a holding with no rate into family currency is left out of unrealised gains" do
+    ExchangeRate.stubs(:provider).returns(nil)
+    account = @family.accounts.create!(name: "Brokerage JPY", balance: 1_000_000,
+                                       currency: "JPY", accountable: Investment.new)
+    security = Security.create!(ticker: "JPX#{SecureRandom.hex(3)}", name: "Tokyo Listed")
+    ExchangeRate.where(from_currency: "JPY", to_currency: "USD").delete_all
+
+    account.holdings.create!(security: security, date: Date.current, qty: 5, price: 150_000,
+                             amount: BigDecimal(750_000), currency: "JPY", cost_basis: 100_000)
+
+    get reports_path
+    assert_response :ok
+
+    assert_no_match(/\$250,0\d\d\.\d\d/, response.body, "the yen gain is in a total, converted at parity")
+    assert_no_match(/\$1,020,000\.00/, response.body, "the yen account is in Portfolio Value, converted at parity")
+    assert_select "[data-testid='unconverted-gains-note']", text: /1 gain is not included/
+    assert_select "[data-testid='missing-exchange-rates']", text: /No exchange rate from JPY to USD is stored yet, so some totals may leave out amounts in JPY/
+  end
+
   # The rates a page of disposals needs come from one query, not one per
   # foreign disposal. The conversion itself is covered in TradeTest, which
   # counts the queries directly; what has to hold HERE is that the card asks
@@ -541,22 +613,15 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
     income_href = transactions_path(q: { categories: [ income_category.name ], start_date: start_date, end_date: end_date })
     uncategorized_href = transactions_path(q: { categories: [ Category.uncategorized.filter_value ], start_date: start_date, end_date: end_date })
 
-    assert_select "tr[data-category='category-#{expense_category.id}'] a[href=?]", expense_href, text: /#{Regexp.escape(expense_category.name)}/
-    assert_select "tr[data-category='category-#{income_category.id}'] a[href=?]", income_href, text: /#{Regexp.escape(income_category.name)}/
-    assert_select "tr[data-category='category-uncategorized'] a[href=?]", uncategorized_href, text: /#{Regexp.escape(Category.uncategorized.name)}/
+    assert_select "tr[data-category='category-#{expense_category.id}'] a[href=?]", expense_href, text: expense_category.name
+    assert_select "tr[data-category='category-#{income_category.id}'] a[href=?]", income_href, text: income_category.name
+    assert_select "tr[data-category='category-uncategorized'] a[href=?]", uncategorized_href, text: Category.uncategorized.name
 
-    # Full-row hit target via a normal flex <a> wrapping icon+name+count —
-    # deliberately not a `position: relative`/`absolute` stretched-link inside
-    # the <table>, which caused a WebKit scrollHeight bug (see #3093).
-    assert_select "tr[data-category='category-#{expense_category.id}'] a.flex.items-center"
-    assert_select "tr[data-category='category-#{expense_category.id}'].relative", 0
-    assert_select "tr[data-category='category-#{expense_category.id}'] a[class*='before:absolute']", 0
-
-    # Amount and percentage cells are each wrapped in their own normal-flow
-    # <a> to the same href, so the full row remains clickable without a
-    # stretched-link overlay spanning the <tr>.
-    assert_select "tr[data-category='category-#{expense_category.id}'] td:nth-child(2) a[href=?]", expense_href
-    assert_select "tr[data-category='category-#{expense_category.id}'] td:nth-child(3) a[href=?]", expense_href
+    # Hit target via stretched ::before, anchored to the category cell's flex
+    # wrapper. Deliberately NOT the <tr>: CSS 2.1 9.3.1 leaves position:relative
+    # undefined on table rows and WebKit does not implement it, so anchoring
+    # there let the overlay escape and swallow every click on the page in Safari.
+    assert_select "tr.group\\/category-row[data-category='category-#{expense_category.id}'] td div.relative a[class*='before:absolute'][class*='before:inset-0']"
   end
 
   test "index uncategorized category link stays on the stable filter value while the displayed text is localized" do
@@ -572,7 +637,7 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
     assert_response :ok
 
     href = transactions_path(q: { categories: [ Category::UNCATEGORIZED_FILTER_VALUE ], start_date: start_date, end_date: end_date })
-    assert_select "tr[data-category='category-uncategorized'] a[href=?]", href, text: /#{Regexp.escape(localized_name)}/
+    assert_select "tr[data-category='category-uncategorized'] a[href=?]", href, text: localized_name
   end
 
   test "index excludes tax-advantaged account transactions from activity breakdown" do
