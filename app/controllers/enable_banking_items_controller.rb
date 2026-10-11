@@ -1,11 +1,8 @@
 class EnableBankingItemsController < ApplicationController
   include EnableBankingItems::MapsHelper
   before_action :set_enable_banking_item, only: [ :update, :destroy, :sync, :select_bank, :authorize, :reauthorize, :setup_accounts, :complete_account_setup, :new_connection ]
-  before_action :require_admin!, only: [ :new, :create, :link_accounts, :select_existing_account, :link_existing_account, :update, :destroy, :sync, :select_bank, :authorize, :callback, :reauthorize, :setup_accounts, :complete_account_setup, :new_connection ]
+  before_action :require_admin!, only: [ :new, :create, :link_accounts, :select_existing_account, :link_existing_account, :update, :destroy, :sync, :select_bank, :authorize, :reauthorize, :setup_accounts, :complete_account_setup, :new_connection ]
   skip_before_action :verify_authenticity_token, only: [ :callback ]
-
-  OAUTH_STATE_SESSION_KEY = :enable_banking_oauth_states
-  MAX_PENDING_OAUTH_STATES = 5
 
   def new
     @enable_banking_item = Current.family.enable_banking_items.build
@@ -16,17 +13,63 @@ class EnableBankingItemsController < ApplicationController
     @enable_banking_item.name ||= "Enable Banking Connection"
 
     if @enable_banking_item.save
-      redirect_to settings_providers_path, notice: t(".success"), status: :see_other
+      if turbo_frame_request?
+        flash.now[:notice] = t(".success", default: "Successfully configured Enable Banking.")
+        @enable_banking_items = Current.family.enable_banking_items.ordered
+        render turbo_stream: [
+          turbo_stream.replace(
+            "enable_banking-providers-panel",
+            partial: "settings/providers/enable_banking_panel",
+            locals: { enable_banking_items: @enable_banking_items }
+          ),
+          *flash_notification_stream_items
+        ]
+      else
+        redirect_to settings_providers_path, notice: t(".success"), status: :see_other
+      end
     else
-      render_provider_panel("enable_banking", alert: @enable_banking_item.errors.full_messages.join(", "))
+      @error_message = @enable_banking_item.errors.full_messages.join(", ")
+
+      if turbo_frame_request?
+        render turbo_stream: turbo_stream.replace(
+          "enable_banking-providers-panel",
+          partial: "settings/providers/enable_banking_panel",
+          locals: { error_message: @error_message }
+        ), status: :unprocessable_entity
+      else
+        redirect_to settings_providers_path, alert: @error_message, status: :unprocessable_entity
+      end
     end
   end
 
   def update
     if @enable_banking_item.update(enable_banking_item_params)
-      render_provider_panel("enable_banking", notice: t(".success"), enable_banking_items: Current.family.enable_banking_items.ordered)
+      if turbo_frame_request?
+        flash.now[:notice] = t(".success", default: "Successfully updated Enable Banking configuration.")
+        @enable_banking_items = Current.family.enable_banking_items.ordered
+        render turbo_stream: [
+          turbo_stream.replace(
+            "enable_banking-providers-panel",
+            partial: "settings/providers/enable_banking_panel",
+            locals: { enable_banking_items: @enable_banking_items }
+          ),
+          *flash_notification_stream_items
+        ]
+      else
+        redirect_to settings_providers_path, notice: t(".success"), status: :see_other
+      end
     else
-      render_provider_panel("enable_banking", alert: @enable_banking_item.errors.full_messages.join(", "))
+      @error_message = @enable_banking_item.errors.full_messages.join(", ")
+
+      if turbo_frame_request?
+        render turbo_stream: turbo_stream.replace(
+          "enable_banking-providers-panel",
+          partial: "settings/providers/enable_banking_panel",
+          locals: { error_message: @error_message }
+        ), status: :unprocessable_entity
+      else
+        redirect_to settings_providers_path, alert: @error_message, status: :unprocessable_entity
+      end
     end
   end
 
@@ -45,10 +88,6 @@ class EnableBankingItemsController < ApplicationController
   def sync
     unless @enable_banking_item.syncing?
       @enable_banking_item.sync_later
-    end
-    if provider_panel_form?
-      return render_provider_panel("enable_banking", notice: t("settings.providers.sync_provider_in_progress"),
-                                   enable_banking_items: Current.family.enable_banking_items.ordered)
     end
 
     respond_to do |format|
@@ -115,7 +154,7 @@ class EnableBankingItemsController < ApplicationController
       redirect_url = target_item.begin_authorization!(
         aspsp_name: aspsp_name,
         redirect_url: enable_banking_callback_url,
-        state: issue_oauth_state_for(target_item),
+        state: target_item.id,
         psu_type: psu_type,
         language: language
       )
@@ -160,10 +199,8 @@ class EnableBankingItemsController < ApplicationController
       return
     end
 
-    # The state must match the one issued to this browser session, so a
-    # callback link crafted by someone else cannot attach their bank
-    # authorization code to this family's connection.
-    enable_banking_item = consume_oauth_state(state)
+    # Find the enable_banking_item by ID from state
+    enable_banking_item = Current.family.enable_banking_items.find_by(id: state)
 
     unless enable_banking_item.present?
       redirect_to settings_providers_path, alert: t(".item_not_found", default: "Connection not found.")
@@ -205,7 +242,7 @@ class EnableBankingItemsController < ApplicationController
       # method (decoupled banks included) instead of falling back to a default.
       redirect_url = @enable_banking_item.begin_authorization!(
         redirect_url: enable_banking_callback_url,
-        state: issue_oauth_state_for(@enable_banking_item),
+        state: @enable_banking_item.id,
         language: language
       )
 
@@ -344,10 +381,10 @@ class EnableBankingItemsController < ApplicationController
     account_types = params[:account_types] || {}
     account_subtypes = params[:account_subtypes] || {}
 
-    # Update sync start date from form if provided
-    if params[:sync_start_date].present?
-      @enable_banking_item.update!(sync_start_date: params[:sync_start_date])
-    end
+    sync_start_date = parsed_sync_start_date(params[:sync_start_date], default: @enable_banking_item.sync_start_date || 3.months.ago.to_date)
+    return render_invalid_setup_date unless sync_start_date
+
+    @enable_banking_item.update!(sync_start_date: sync_start_date)
 
     created_count = 0
     skipped_count = 0
@@ -360,6 +397,7 @@ class EnableBankingItemsController < ApplicationController
       end
 
       enable_banking_account = @enable_banking_item.enable_banking_accounts.find(enable_banking_account_id)
+      enable_banking_account.update!(sync_start_date: sync_start_date)
       selected_subtype = account_subtypes[enable_banking_account_id]
 
       # Default subtype for CreditCard since it only has one option
@@ -385,7 +423,7 @@ class EnableBankingItemsController < ApplicationController
     @enable_banking_item.update!(pending_account_setup: false)
 
     # Trigger a sync to process the imported data if accounts were created
-    @enable_banking_item.sync_later if created_count > 0
+    @enable_banking_item.sync_later(window_start_date: sync_start_date) if created_count > 0
 
     if created_count > 0
       flash[:notice] = t(".success", default: "%{count} account(s) created successfully!", count: created_count)
@@ -400,6 +438,9 @@ class EnableBankingItemsController < ApplicationController
 
   def select_existing_account
     @account = Current.family.accounts.find(params[:account_id])
+    @sync_start_date = 3.months.ago.to_date
+    @sync_start_date_min = EnableBankingItem.minimum_sync_start_date
+    @sync_start_date_max = Date.current
 
     # Filter out Enable Banking accounts that are already linked to any account
     # (either via account_provider or legacy account association)
@@ -416,33 +457,35 @@ class EnableBankingItemsController < ApplicationController
 
   def link_existing_account
     @account = Current.family.accounts.find(params[:account_id])
-    enable_banking_account = EnableBankingAccount.find(params[:enable_banking_account_id])
+    enable_banking_account = EnableBankingAccount
+      .joins(:enable_banking_item)
+      .where(id: params[:enable_banking_account_id], enable_banking_items: { family_id: Current.family.id })
+      .first
+    sync_start_date = parsed_sync_start_date(params[:sync_start_date])
 
-    # Guard: only manual accounts can be linked (no existing provider links or legacy IDs)
-    if @account.account_providers.any? || @account.plaid_account_id.present? || @account.simplefin_account_id.present?
-      flash[:alert] = t("enable_banking_items.link_existing_account.errors.only_manual")
-      if turbo_frame_request?
-        return render turbo_stream: Array(flash_notification_stream_items)
-      else
-        return redirect_to account_path(@account), alert: flash[:alert]
-      end
+    unless enable_banking_account
+      return render_link_existing_error(t("enable_banking_items.link_existing_account.errors.invalid_enable_banking_account"))
     end
 
-    # Verify the Enable Banking account belongs to this family's Enable Banking items
-    unless enable_banking_account.enable_banking_item.present? &&
-           Current.family.enable_banking_items.include?(enable_banking_account.enable_banking_item)
-      flash[:alert] = t("enable_banking_items.link_existing_account.errors.invalid_enable_banking_account")
-      if turbo_frame_request?
-        render turbo_stream: Array(flash_notification_stream_items)
-      else
-        redirect_to account_path(@account), alert: flash[:alert]
-      end
-      return
+    unless sync_start_date
+      return render_link_existing_error(t("enable_banking_items.link_existing_account.errors.invalid_sync_start_date"))
+    end
+
+    # Guard: only manual accounts can be linked (no existing provider links or legacy IDs)
+    other_provider_exists = @account.account_providers.where.not(
+      provider_type: "EnableBankingAccount",
+      provider_id: enable_banking_account.id
+    ).exists?
+    if other_provider_exists || @account.plaid_account_id.present? || @account.simplefin_account_id.present?
+      return render_link_existing_error(t("enable_banking_items.link_existing_account.errors.only_manual"))
     end
 
     # Relink behavior: detach any legacy link and point provider link at the chosen account
     Account.transaction do
       enable_banking_account.lock!
+
+      enable_banking_account.update!(sync_start_date: sync_start_date)
+      enable_banking_account.enable_banking_item.update!(sync_start_date: sync_start_date)
 
       # Upsert the AccountProvider mapping deterministically
       ap = AccountProvider.find_or_initialize_by(provider: enable_banking_account)
@@ -465,6 +508,10 @@ class EnableBankingItemsController < ApplicationController
         end
       end
     end
+
+    # sync_later coalesces concurrent requests and expands an existing sync's
+    # window, making retries safe while still forcing the historical re-fetch.
+    enable_banking_account.enable_banking_item.sync_later(window_start_date: sync_start_date)
 
     if turbo_frame_request?
       # Reload the item to ensure associations are fresh
@@ -511,30 +558,29 @@ class EnableBankingItemsController < ApplicationController
   end
 
   private
-    # Pending states map state => item id, so parallel flows (two tabs) each
-    # keep their own entry. Only the newest few are kept.
-    def issue_oauth_state_for(item)
-      state = SecureRandom.urlsafe_base64(32)
-      pending = pending_oauth_states.merge(state => item.id)
-      session[OAUTH_STATE_SESSION_KEY] = pending.to_a.last(MAX_PENDING_OAUTH_STATES).to_h
-      state
+
+    def parsed_sync_start_date(value, default: nil)
+      date = value.present? ? Date.iso8601(value.to_s) : default
+      return unless date&.between?(EnableBankingItem.minimum_sync_start_date, Date.current)
+
+      date
+    rescue ArgumentError
+      nil
     end
 
-    # An entry is removed only when it matches, so a stray callback with a
-    # made-up state cannot cancel a real flow in progress.
-    def consume_oauth_state(state)
-      pending = pending_oauth_states
-      matched = pending.keys.find { |candidate| ActiveSupport::SecurityUtils.secure_compare(candidate, state.to_s) }
-      return unless matched
-
-      item_id = pending.delete(matched)
-      session[OAUTH_STATE_SESSION_KEY] = pending
-      Current.family.enable_banking_items.find_by(id: item_id)
+    def render_invalid_setup_date
+      redirect_to setup_accounts_enable_banking_item_path(@enable_banking_item),
+        alert: t("enable_banking_items.complete_account_setup.invalid_sync_start_date"),
+        status: :see_other
     end
 
-    def pending_oauth_states
-      pending = session[OAUTH_STATE_SESSION_KEY]
-      pending.is_a?(Hash) ? pending.to_h : {}
+    def render_link_existing_error(message)
+      if turbo_frame_request?
+        flash.now[:alert] = message
+        render turbo_stream: Array(flash_notification_stream_items), status: :unprocessable_entity
+      else
+        redirect_to account_path(@account), alert: message, status: :see_other
+      end
     end
 
     def set_enable_banking_item
@@ -542,21 +588,13 @@ class EnableBankingItemsController < ApplicationController
     end
 
     def enable_banking_item_params
-      permitted = params.require(:enable_banking_item).permit(
+      params.require(:enable_banking_item).permit(
         :name,
         :sync_start_date,
         :country_code,
         :application_id,
         :client_certificate
       )
-      # The panel never pre-fills the stored credentials, so a blank one on
-      # update means "keep the current value".
-      if @enable_banking_item&.persisted?
-        %i[application_id client_certificate].each do |credential|
-          permitted.delete(credential) if permitted[credential].blank?
-        end
-      end
-      permitted
     end
 
     def enable_banking_callback_url

@@ -61,12 +61,8 @@ class Assistant::Function::GetBillAuditTest < ActiveSupport::TestCase
   end
 
   test "undeclared candidates never include accounts the user cannot reach" do
-    # `connected` is owned by the admin and shared with nobody, which is the
-    # only property this test needs. It previously used `investment`, but the
-    # detector now skips Investment/Crypto accounts outright, which made the
-    # positive control fail for a reason unrelated to reachability.
     3.times do |i|
-      accounts(:connected).entries.create!(
+      accounts(:investment).entries.create!(
         date: Date.current - i.months, amount: 25, currency: "USD",
         name: "BROKERAGE FEE", entryable: Transaction.new
       )
@@ -74,7 +70,7 @@ class Assistant::Function::GetBillAuditTest < ActiveSupport::TestCase
 
     admin_names = call_tool[:undeclared_candidates][:items].map { |item| item[:name] }
     assert_includes admin_names, "BROKERAGE FEE",
-      "positive control: the admin can see a pattern on an account they own"
+      "positive control: the admin can see the investment-account pattern"
 
     member_result = Assistant::Function::GetBillAudit.new(users(:family_member)).call
     member_names = member_result[:undeclared_candidates][:items].map { |item| item[:name] }
