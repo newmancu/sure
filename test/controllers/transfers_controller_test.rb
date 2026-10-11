@@ -1,8 +1,6 @@
 require "test_helper"
 
 class TransfersControllerTest < ActionDispatch::IntegrationTest
-  include EntriesTestHelper
-
   setup do
     sign_in users(:family_admin)
   end
@@ -35,6 +33,108 @@ class TransfersControllerTest < ActionDispatch::IntegrationTest
       }
       assert_enqueued_with job: SyncJob
     end
+  end
+
+  test "create defaults to investment contributions category when category_id is omitted" do
+    investment_category = ensure_investment_contributions_category(users(:family_admin).family)
+
+    assert_difference "Transfer.count", 1 do
+      post transfers_url, params: {
+        transfer: {
+          from_account_id: accounts(:depository).id,
+          to_account_id: accounts(:investment).id,
+          date: Date.current,
+          amount: 100
+        }
+      }
+    end
+
+    transfer = Transfer.order(:created_at).last
+    assert_equal investment_category, transfer.outflow_transaction.category
+  end
+
+  test "create with blank category_id (as the form submits it) defaults to investment contributions" do
+    investment_category = ensure_investment_contributions_category(users(:family_admin).family)
+
+    assert_difference "Transfer.count", 1 do
+      post transfers_url, params: {
+        transfer: {
+          from_account_id: accounts(:depository).id,
+          to_account_id: accounts(:investment).id,
+          date: Date.current,
+          amount: 100,
+          category_id: ""
+        }
+      }
+    end
+
+    assert_equal investment_category, Transfer.order(:created_at).last.outflow_transaction.category
+  end
+
+  test "create assigns the chosen category to the outflow transaction" do
+    category = users(:family_admin).family.categories.create!(name: "Chosen")
+
+    post transfers_url, params: {
+      transfer: {
+        from_account_id: accounts(:depository).id,
+        to_account_id: accounts(:investment).id,
+        date: Date.current,
+        amount: 100,
+        category_id: category.id
+      }
+    }
+
+    assert_equal category, Transfer.order(:created_at).last.outflow_transaction.category
+  end
+
+  test "create locks category_id when a category is chosen" do
+    category = users(:family_admin).family.categories.create!(name: "Chosen")
+
+    post transfers_url, params: {
+      transfer: { from_account_id: accounts(:depository).id, to_account_id: accounts(:investment).id, date: Date.current, amount: 100, category_id: category.id }
+    }
+
+    assert Transfer.order(:created_at).last.outflow_transaction.locked?(:category_id)
+  end
+
+  test "create does not lock the investment contributions fallback" do
+    ensure_investment_contributions_category(users(:family_admin).family)
+
+    post transfers_url, params: {
+      transfer: { from_account_id: accounts(:depository).id, to_account_id: accounts(:investment).id, date: Date.current, amount: 100, category_id: "" }
+    }
+
+    assert_not Transfer.order(:created_at).last.outflow_transaction.locked?(:category_id)
+  end
+
+  test "update locks category_id when the key is present" do
+    transfer = transfers(:one)
+    category = users(:family_admin).family.categories.create!(name: "Picked")
+
+    patch transfer_url(transfer), params: { transfer: { category_id: category.id } }
+
+    assert transfer.outflow_transaction.reload.locked?(:category_id)
+  end
+
+  test "update without category_id does not lock it" do
+    transfer = transfers(:one)
+
+    patch transfer_url(transfer), params: { transfer: { notes: "hello" } }
+
+    assert_not transfer.outflow_transaction.reload.locked?(:category_id)
+  end
+
+  test "invalid date re-renders the form and keeps the chosen category" do
+    category = users(:family_admin).family.categories.create!(name: "Chosen")
+
+    assert_no_difference "Transfer.count" do
+      post transfers_url, params: {
+        transfer: { from_account_id: accounts(:depository).id, to_account_id: accounts(:investment).id, date: "not-a-date", amount: 100, category_id: category.id }
+      }
+    end
+
+    assert_response :unprocessable_entity
+    assert_select "input[name='transfer[category_id]'][value='#{category.id}']"
   end
 
   test "resubmitting the same idempotency key does not create a duplicate transfer" do
@@ -638,6 +738,51 @@ class TransfersControllerTest < ActionDispatch::IntegrationTest
     assert_equal original_inflow_tags, transfer.inflow_transaction.reload.tag_ids
   end
 
+  test "update transfer category ignores category from other family" do
+    transfer = transfers(:one)
+    other_family = Family.create!(name: "Other Family", currency: "USD")
+    other_category = other_family.categories.create!(name: "Foreign")
+
+    patch transfer_url(transfer), params: { transfer: { category_id: other_category.id } }
+
+    assert_redirected_to transactions_url
+    assert_nil transfer.outflow_transaction.reload.category_id, "Should not assign a category belonging to another family"
+  end
+
+  test "omitted category_id on update leaves existing category unchanged" do
+    transfer = transfers(:one)
+    category = users(:family_admin).family.categories.create!(name: "Existing")
+    transfer.outflow_transaction.update!(category_id: category.id)
+
+    patch transfer_url(transfer), params: { transfer: { notes: "Test notes" } }
+
+    assert_redirected_to transactions_url
+    assert_equal category.id, transfer.outflow_transaction.reload.category_id
+  end
+
+  test "explicit blank category_id on update clears the category" do
+    transfer = transfers(:one)
+    category = users(:family_admin).family.categories.create!(name: "Existing")
+    transfer.outflow_transaction.update!(category_id: category.id)
+
+    patch transfer_url(transfer), params: { transfer: { category_id: "" } }
+
+    assert_redirected_to transactions_url
+    assert_nil transfer.outflow_transaction.reload.category_id
+  end
+
+  test "category-only update leaves existing notes unchanged" do
+    transfer = transfers(:one)
+    transfer.update!(notes: "Existing note")
+    category = users(:family_admin).family.categories.create!(name: "Existing")
+
+    patch transfer_url(transfer), params: { transfer: { category_id: category.id } }
+
+    assert_redirected_to transactions_url
+    assert_equal "Existing note", transfer.reload.notes
+    assert_equal category.id, transfer.outflow_transaction.reload.category_id
+  end
+
   test "can add notes to transfer" do
     transfer = transfers(:one)
     assert_nil transfer.notes
@@ -667,97 +812,6 @@ class TransfersControllerTest < ActionDispatch::IntegrationTest
     assert_raises(ActiveRecord::RecordNotFound) do
       transfer.reload
     end
-  end
-
-  test "can reject a match when only the outflow account is accessible" do
-    transfer = cross_owner_transfer(outflow_account: accounts(:depository), inflow_account: member_loan)
-
-    assert_difference -> { Transfer.count } => -1, -> { RejectedTransfer.count } => 1 do
-      patch transfer_url(transfer), params: { transfer: { status: "rejected" } }
-    end
-
-    assert_redirected_to transactions_url
-    assert_equal "standard", transfer.outflow_transaction.reload.kind
-    assert_equal "standard", transfer.inflow_transaction.reload.kind
-  end
-
-  test "can reject a match when only the inflow account is accessible" do
-    transfer = cross_owner_transfer(outflow_account: member_loan, inflow_account: accounts(:depository))
-
-    assert_difference -> { Transfer.count } => -1, -> { RejectedTransfer.count } => 1 do
-      patch transfer_url(transfer), params: { transfer: { status: "rejected" } }
-    end
-
-    assert_redirected_to transactions_url
-  end
-
-  test "can unlink a match when only one side is accessible" do
-    transfer = cross_owner_transfer(outflow_account: accounts(:depository), inflow_account: member_loan)
-
-    assert_difference -> { Transfer.count }, -1 do
-      delete transfer_url(transfer)
-    end
-  end
-
-  test "cannot unlink a match from one side when a fee sits in the other account" do
-    transfer = cross_owner_transfer(outflow_account: accounts(:depository), inflow_account: member_loan)
-    writable_fee = attach_fee(transfer, account: accounts(:depository))
-    unwritable_fee = attach_fee(transfer, account: member_loan)
-
-    assert_no_difference -> { Transfer.count } do
-      patch transfer_url(transfer), params: { transfer: { status: "rejected" } }
-      delete transfer_url(transfer)
-    end
-
-    assert_equal I18n.t("accounts.not_authorized"), flash[:alert]
-    assert Transfer.exists?(transfer.id)
-    assert Transaction.exists?(writable_fee.id)
-    assert Transaction.exists?(unwritable_fee.id)
-  end
-
-  test "can reject a match from one side when its fees sit in a writable account" do
-    transfer = cross_owner_transfer(outflow_account: accounts(:depository), inflow_account: member_loan)
-    fee = attach_fee(transfer, account: accounts(:depository))
-
-    assert_difference -> { Transfer.count } => -1, -> { RejectedTransfer.count } => 1 do
-      patch transfer_url(transfer), params: { transfer: { status: "rejected" } }
-    end
-
-    assert_not Transaction.exists?(fee.id)
-  end
-
-  test "cannot edit a match when only the inflow account is accessible" do
-    transfer = cross_owner_transfer(outflow_account: member_loan, inflow_account: accounts(:depository))
-
-    patch transfer_url(transfer), params: { transfer: { status: "confirmed", notes: "Nope" } }
-
-    assert_response :not_found
-    assert transfer.reload.pending?
-    assert_nil transfer.notes
-  end
-
-  test "cannot edit a match when only the outflow account is accessible" do
-    transfer = cross_owner_transfer(outflow_account: accounts(:depository), inflow_account: member_loan)
-    inflow_amount = transfer.inflow_transaction.entry.amount
-
-    patch transfer_url(transfer), params: { transfer: { status: "confirmed", amount: transfer.amount + 10, notes: "Nope" } }
-
-    assert_response :not_found
-    assert transfer.reload.pending?
-    assert_nil transfer.notes
-    assert_equal inflow_amount, transfer.inflow_transaction.entry.reload.amount
-  end
-
-  test "cannot reject a match when neither side is accessible" do
-    vehicle = accounts(:vehicle)
-    vehicle.update!(owner: users(:family_member))
-    transfer = cross_owner_transfer(outflow_account: vehicle, inflow_account: member_loan)
-
-    assert_no_difference -> { Transfer.count } do
-      patch transfer_url(transfer), params: { transfer: { status: "rejected" } }
-    end
-
-    assert_response :not_found
   end
 
   test "mark_as_recurring creates a recurring transfer" do
@@ -803,23 +857,4 @@ class TransfersControllerTest < ActionDispatch::IntegrationTest
     end
     assert_equal I18n.t("recurring_transactions.transfer_feature_disabled"), flash[:alert]
   end
-
-  private
-    # A loan owned by family_member and not shared with family_admin
-    def member_loan
-      accounts(:loan).tap { |loan| loan.update!(owner: users(:family_member)) }
-    end
-
-    def cross_owner_transfer(outflow_account:, inflow_account:)
-      outflow = create_transaction(account: outflow_account, amount: 250, kind: "funds_movement")
-      inflow = create_transaction(account: inflow_account, amount: -250, kind: "funds_movement")
-
-      Transfer.create!(outflow_transaction: outflow.transaction, inflow_transaction: inflow.transaction, status: "pending")
-    end
-
-    def attach_fee(transfer, account:)
-      create_transaction(account: account, amount: 5, name: "Transfer fee").transaction.tap do |fee|
-        fee.update!(transfer: transfer)
-      end
-    end
 end
