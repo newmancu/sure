@@ -20,7 +20,6 @@ de:
       all: Alle Rechnungen
     index:
       title: Rechnungen
-      add_bill: Neue Rechnung
-      add_income: Neues Einkommen
+      add_bill: Rechnung hinzufügen
+      add_income: Einkommen hinzufügen
       review_with_ai: Mit KI prüfen
-      notices_heading: Änderungen

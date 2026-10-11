@@ -98,7 +98,7 @@ class UpAccount::Transactions::Processor
       stale_pending_entries = account.entries
         .joins("INNER JOIN transactions ON transactions.id = entries.entryable_id AND entries.entryable_type = 'Transaction'")
         .where(source: "up")
-        .where(Transaction.pending_sql("transactions", providers: [ "up" ]))
+        .where("(transactions.extra -> 'up' ->> 'pending')::boolean = true")
       stale_pending_entries = stale_pending_entries.where.not(external_id: current_pending_external_ids) if current_pending_external_ids.any?
 
       count = stale_pending_entries.count
