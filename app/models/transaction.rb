@@ -5,6 +5,11 @@ class Transaction < ApplicationRecord
   belongs_to :merchant, optional: true
   belongs_to :transfer, optional: true
 
+  # Set internally by EmiPlan#build!/#foreclose! to allow those two specific,
+  # controlled kind transitions (standard <-> emi_purchase) even while
+  # cannot_change_kind_of_active_emi_entry would otherwise block them.
+  attr_accessor :changing_emi_kind
+
   has_many :taggings, as: :taggable, dependent: :destroy
   has_many :tags, through: :taggings
 
@@ -24,6 +29,7 @@ class Transaction < ApplicationRecord
   ].freeze
 
   validate :validate_attachments, if: -> { attachments.attached? }
+  validate :cannot_change_kind_of_active_emi_entry
 
   accepts_nested_attributes_for :taggings, allow_destroy: true
 
@@ -73,7 +79,10 @@ class Transaction < ApplicationRecord
     cc_payment: "cc_payment", # A CC payment, excluded from budget analytics (CC payments offset the sum of expense transactions)
     loan_payment: "loan_payment", # A payment to a Loan account, treated as an expense in budgets
     one_time: "one_time", # A one-time expense/income, excluded from budget analytics
-    investment_contribution: "investment_contribution" # Transfer to investment/crypto account, treated as an expense in budgets
+    investment_contribution: "investment_contribution", # Transfer to investment/crypto account, treated as an expense in budgets
+    emi_purchase: "emi_purchase", # Original purchase converted to an EMI plan. Excluded — the real spend is counted as each installment lands.
+    emi_installment: "emi_installment", # A single EMI installment (principal + interest share). Included in budgets as a normal expense.
+    emi_fee: "emi_fee" # One-time EMI processing fee. Included in budgets as a normal expense.
   }
 
   # All kinds where money moves between accounts (transfer? returns true).
@@ -83,7 +92,9 @@ class Transaction < ApplicationRecord
   # Kinds excluded from budget/income-statement analytics.
   # loan_payment and investment_contribution are intentionally NOT here —
   # they represent real cash outflow from a budgeting perspective.
-  BUDGET_EXCLUDED_KINDS = %w[funds_movement one_time cc_payment].freeze
+  # emi_installment and emi_fee are intentionally NOT here for the same reason:
+  # they are the real cash outflow that emi_purchase's exclusion defers.
+  BUDGET_EXCLUDED_KINDS = %w[funds_movement one_time cc_payment emi_purchase].freeze
 
   # Kinds that never belong in the "Uncategorized" bucket, whichever surface
   # asks for it (the Transactions category filter, the uncategorized badge
@@ -112,110 +123,33 @@ class Transaction < ApplicationRecord
   INTERNAL_MOVEMENT_LABELS = [ "Transfer", "Sweep In", "Sweep Out", "Exchange" ].freeze
 
   # Providers that support pending transaction flags
-  PENDING_PROVIDERS = %w[simplefin plaid lunchflow enable_banking akahu up monobank mercury redbark financekit].freeze
+  PENDING_PROVIDERS = %w[simplefin plaid lunchflow enable_banking akahu up monobank mercury redbark].freeze
 
-  # Slice size for the entry touch in reassign_category! — bounds the UPDATE
-  # statement size when a merge or category destroy hits many transactions.
-  REASSIGN_TOUCH_BATCH_SIZE = 5_000
-
-  # DataEnrichment sources that represent automatic category assignment
-  AUTO_CATEGORY_SOURCES = %w[ai bayes].freeze
-
-  # Stored flag values that do not mark a transaction pending: the strings
-  # ActiveModel::Type::Boolean casts to false, plus "" (which it casts to nil).
-  # Any other present value is pending, as #pending? decides.
-  PENDING_FLAG_FALSE_VALUES = (ActiveModel::Type::Boolean::FALSE_VALUES.grep(String) + [ "" ]).uniq.freeze
-  PENDING_FLAG_TYPE = ActiveModel::Type::Boolean.new.freeze
-
-  # PENDING_FLAG_FALSE_VALUES as a list of SQL string literals. Built from the
-  # constant alone, so class loading needs no database connection, and shared by
-  # pending_sql and PENDING_CHECK_SQL so the two cannot quote the values
-  # differently.
-  PENDING_FLAG_FALSE_VALUES_SQL = PENDING_FLAG_FALSE_VALUES.map { |value| "'#{value.gsub("'", "''")}'" }.join(", ").freeze
-
-  # Canonical reusable SQL form of the pending? decision. Callers that inspect
-  # only provider namespaces they own can pass that subset in `providers:`.
-  #
-  # Deliberately not `(... ->> 'pending')::boolean`. PostgreSQL raises
-  # PG::InvalidTextRepresentation on a value it cannot parse ("maybe"), which
-  # aborts the whole query rather than one row, and it reads "no", "False" and
-  # "Off" as false where ActiveModel reads them as true. Providers write JSON
-  # booleans, which ->> renders as 'true', 'false' or NULL and both rules
-  # classify alike, so only other values are affected.
-  #
-  # COALESCE maps a missing flag or JSON null to "", a false value, so no
-  # provider's term is ever NULL and NOT (...) is exact.
-  #
-  # A JSON number 0.0 renders as '0.0' and is pending here; #pending? agrees,
-  # because FALSE_VALUES is a Set keyed by eql? and 0.0 is not eql? to 0. The
-  # parity test carries the case.
-  def self.pending_sql(table_alias = "transactions", providers: PENDING_PROVIDERS)
-    quoted_table = connection.quote_table_name(table_alias)
-    selected_providers = Array(providers).map(&:to_s).uniq & PENDING_PROVIDERS
-    return "FALSE" if selected_providers.empty?
-
-    selected_providers
-      .map do |provider|
-        "COALESCE(#{quoted_table}.extra -> #{connection.quote(provider)} ->> #{connection.quote("pending")}, #{connection.quote("")}) NOT IN (#{PENDING_FLAG_FALSE_VALUES_SQL})"
-      end
-      .join(" OR ")
-      .then { |predicate| "(#{predicate})" }
-  end
-
-  # Fixed-alias fragment for correlated SQL. Build from model constants without
-  # borrowing a database connection during class loading.
-  PENDING_CHECK_SQL = begin
-    PENDING_PROVIDERS
-      .map do |provider|
-        "COALESCE(t.extra -> '#{provider}' ->> 'pending', '') NOT IN (#{PENDING_FLAG_FALSE_VALUES_SQL})"
-      end
-      .join(" OR ")
-      .then { |predicate| "(#{predicate})" }
-      .freeze
-  end
-
-  # The negation of pending_sql, for queries that must leave pending rows out.
-  def self.not_pending_sql(table_alias = "transactions", providers: PENDING_PROVIDERS)
-    "NOT (#{pending_sql(table_alias, providers: providers)})"
-  end
-
-  # The Ruby form of the same decision, over a provider metadata hash rather
-  # than a record. #pending? is this method; the import adapter also needs it
-  # before any record exists, for the payload it is about to write.
-  #
-  # Reads keys as strings, so pass string-keyed metadata or a
-  # HashWithIndifferentAccess. A provider key holding anything but an object
-  # says nothing about that provider and is skipped, as pending_sql skips it:
-  # Hash#dig would instead raise on a scalar and take the whole caller with it.
-  def self.pending_extra?(extra)
-    return false unless extra.is_a?(Hash)
-
-    PENDING_PROVIDERS.any? do |provider|
-      provider_data = extra[provider]
-      provider_data.is_a?(Hash) && PENDING_FLAG_TYPE.cast(provider_data["pending"])
-    end
-  rescue StandardError
-    false
-  end
+  # Pre-computed SQL fragment for subqueries that check if a transaction (aliased as "t") is pending.
+  # Stored as a constant so static analysis can verify it contains no user input.
+  PENDING_CHECK_SQL = PENDING_PROVIDERS
+    .map { |p| "(t.extra -> '#{p}' ->> 'pending')::boolean = true" }
+    .join(" OR ")
+    .freeze
 
   # Pending transaction scopes - filter based on provider pending flags in extra JSONB
   # Works with any provider that stores pending status in extra["provider_name"]["pending"]
-  scope :pending, -> { where(Transaction.pending_sql) }
+  scope :pending, -> {
+    conditions = PENDING_PROVIDERS.map { |provider| "(transactions.extra -> '#{provider}' ->> 'pending')::boolean = true" }
+    where(conditions.join(" OR "))
+  }
 
-  scope :excluding_pending, -> { where(Transaction.not_pending_sql) }
+  scope :excluding_pending, -> {
+    conditions = PENDING_PROVIDERS.map { |provider| "(transactions.extra -> '#{provider}' ->> 'pending')::boolean IS DISTINCT FROM true" }
+    where(conditions.join(" AND "))
+  }
 
   # SQL snippet for raw queries that must exclude pending transactions.
   # Use in income statements, balance sheets, and raw analytics.
-  #
-  # Emits a LEADING `AND`, so it appends to a WHERE that already has at least
-  # one condition -- which is how all three callers use it
-  # (IncomeStatement::FamilyStats, ::CategoryStats, ::ScopedTransactionsQuery),
-  # interpolating it after their own `AND` clauses. As the first condition in a
-  # WHERE it produces `WHERE AND NOT (...)`, a syntax error. Use
-  # `not_pending_sql` for that position; this method is only the `AND`-prefixed
-  # form of it.
-  def self.pending_providers_sql(table_alias = "t", providers: PENDING_PROVIDERS)
-    "AND #{not_pending_sql(table_alias, providers: providers)}"
+  def self.pending_providers_sql(table_alias = "t")
+    PENDING_PROVIDERS.map do |provider|
+      "AND (#{table_alias}.extra -> '#{provider}' ->> 'pending')::boolean IS DISTINCT FROM true"
+    end.join("\n")
   end
 
   # Family-scoped query for Enrichable#clear_ai_cache
@@ -223,87 +157,9 @@ class Transaction < ApplicationRecord
     joins(entry: :account).where(accounts: { family_id: family.id })
   end
 
-  # Bulk category reassignment that still busts entry-keyed report caches.
-  # update_all skips callbacks, so the `has_one :entry, touch: true` bump that
-  # every normal save relies on (Family#entries_cache_version) never happens.
-  # Expects a plain relation — `to_sql` on a scope carrying `select` or
-  # `includes` would emit the wrong subquery for the IN clause.
-  def self.reassign_category!(scope, category_id)
-    transaction do
-      # Lock inside the scope so a concurrent category edit is rechecked before
-      # its ID reaches the UPDATE, rather than overwriting the new category.
-      sql = <<~SQL
-        UPDATE #{quoted_table_name}
-        SET category_id = #{connection.quote(category_id)}
-        WHERE id IN (#{scope.reselect(:id).lock("FOR UPDATE OF transactions").to_sql})
-        RETURNING id
-      SQL
-
-      # exec_query is the uncached primitive (QueryCache only wraps select_all)
-      # and isn't in dirties_query_cache's list, so clear the cache explicitly.
-      updated_ids = connection.exec_query(sql, "Transaction Reassign Category").rows.flatten
-      connection.clear_query_cache
-
-      next 0 if updated_ids.empty?
-
-      # Touch exactly the rows the UPDATE reassigned (RETURNING), so a
-      # transaction entering the scope mid-merge can't be updated without its
-      # entry being touched. Locks are taken transactions-first, matching a
-      # normal save; sliced to bound the entries UPDATE on large merges.
-      updated_ids.each_slice(REASSIGN_TOUCH_BATCH_SIZE) do |batch|
-        Entry.where(entryable_type: "Transaction", entryable_id: batch).touch_all
-      end
-
-      updated_ids.size
-    end
-  end
-
   # Overarching grouping method for all transfer-type transactions
   def transfer?
     TRANSFER_KINDS.include?(kind)
-  end
-
-  # Whether the user can assign a category (and merchant/tags) to this
-  # transaction. Regular transactions always qualify. For transfers:
-  #   - No Transfer record yet (e.g. an unmatched provider-imported leg):
-  #     stay editable, same as a regular transaction, since there's no
-  #     counterpart to defer to and no other way for the user to fix a
-  #     provider mislabel.
-  #   - Once matched, the category belongs to the outflow leg, the one
-  #     budgets and reports count. Only that leg is editable, and only when
-  #     Transfer#categorizable?, which is based on the (stable) destination
-  #     account rather than either leg's kind, so it stays correct even if
-  #     an older provider sync left a stale kind on this transaction. The
-  #     inflow leg shows the outflow's category instead (see
-  #     #category_set_on_transfer_outflow?), since a category picked there
-  #     would look saved but never reach a budget.
-  def category_editable?
-    return false if category_set_on_transfer_outflow?
-    return true unless transfer?
-    return true unless transfer
-
-    transfer.categorizable? && transfer.outflow_transaction_id == id
-  end
-
-  # The inflow leg of a categorizable transfer: its category is the
-  # outflow's, shown read-only. Decided by the Transfer record rather than
-  # this leg's kind, so editing the kind (e.g. to standard) cannot bypass
-  # the outflow's ownership.
-  def category_set_on_transfer_outflow?
-    transfer_as_inflow.present? && transfer_as_inflow.categorizable?
-  end
-
-  # Whether this non-editable transfer leg is a liability payment (shown
-  # with the "Payment" badge instead of "Transfer"). Defers to the attached
-  # Transfer when one exists, since a matched transaction's own kind can be
-  # stale (rows a provider sync overwrote before the import adapter derived
-  # matched legs from their Transfer), which would otherwise let a stale
-  # "cc_payment" kind override a transfer that isn't actually a payment.
-  # Only falls back to the transaction's own kind when there's no Transfer
-  # record yet (e.g. a provider-imported cc_payment leg whose counterpart
-  # hasn't been matched), the same pattern category_editable? uses.
-  def payment?
-    transfer ? transfer.payment? : kind == "cc_payment"
   end
 
   def set_category!(category)
@@ -314,17 +170,6 @@ class Transaction < ApplicationRecord
     end
 
     update!(category: category)
-  end
-
-  # Adds or removes one tag while holding the row lock. Assigning tag_ids
-  # replaces the whole set, so two quick toggles computed from the same
-  # snapshot would drop one of them; per-tagging writes under the lock can't.
-  def toggle_tag!(tag)
-    with_lock do
-      existing = taggings.where(tag: tag)
-      existing.exists? ? existing.destroy_all : taggings.create!(tag: tag)
-    end
-    tags.reset
   end
 
   # Marks a category as recently used. Called explicitly from the manual
@@ -338,7 +183,12 @@ class Transaction < ApplicationRecord
   end
 
   def pending?
-    self.class.pending_extra?(extra)
+    extra_data = extra.is_a?(Hash) ? extra : {}
+    PENDING_PROVIDERS.any? do |provider|
+      ActiveModel::Type::Boolean.new.cast(extra_data.dig(provider, "pending"))
+    end
+  rescue StandardError
+    false
   end
 
   def activity_security_id
@@ -539,17 +389,42 @@ class Transaction < ApplicationRecord
     currency = entry.currency
 
     # Find recent posted transactions from the same account
+    conditions = PENDING_PROVIDERS.map { |provider| "(transactions.extra -> '#{provider}' ->> 'pending')::boolean IS NOT TRUE" }
+
     account.entries
       .joins("INNER JOIN transactions ON transactions.id = entries.entryable_id AND entries.entryable_type = 'Transaction'")
       .where.not(id: entry.id)
       .where(currency: currency)
-      .where(Transaction.not_pending_sql)
+      .where(conditions.join(" AND "))
       .order(date: :desc, created_at: :desc)
       .limit(limit)
       .offset(offset)
   end
 
   private
+
+    # Blocks changing kind away from emi_purchase, or into/out of
+    # emi_installment, while the linked EmiPlan is still "live" (active, or
+    # foreclosed with posted history -- same bar as Entry's balance/amount/
+    # date guards, see Entry#excluding_emi_purchases and
+    # #cannot_edit_emi_purchase_amount_or_date). Without this, kind could be
+    # flipped directly, bypassing every other EMI guard entirely, since those
+    # only watch Entry's amount/date -- kind lives here on Transaction.
+    #
+    # changing_emi_kind is the deliberate, narrow bypass used by
+    # EmiPlan#build!/#foreclose! themselves, the only two places that are
+    # allowed to make this specific transition.
+    def cannot_change_kind_of_active_emi_entry
+      return if changing_emi_kind
+      return unless kind_changed?
+      return if entry.nil? # new/unpersisted entry, nothing to protect yet
+
+      plan = entry.originated_emi_plan || EmiPlan.find_by(id: entry.emi_plan_id)
+      return if plan.nil?
+      return unless plan.active? || plan.posted_installments.exists?
+
+      errors.add(:kind, "can't be changed while its EMI plan is active. Foreclose the plan first.")
+    end
 
     def validate_attachments
       # Check attachment count limit

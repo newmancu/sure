@@ -16,7 +16,6 @@ class Goal < ApplicationRecord
   # `completed` belongs here for the same reason `archived` does: completing a
   # goal hands back the earmark, so its links must stop reserving too.
   RELEASED_STATES = %w[archived completed].freeze
-
   validates :icon, inclusion: { in: ICONS, allow_nil: true }
   validates :color, format: { with: /\A#[0-9A-Fa-f]{6}\z/ }, allow_nil: true
 
@@ -746,10 +745,7 @@ class Goal < ApplicationRecord
     end
 
     segments = []
-    # A real colour, not a CSS variable: the ring runs this segment through
-    # d3.color, which cannot parse var(...) and left the ring blank (#4030).
-    # The same fallback as Goals::AvatarComponent, so ring and avatar match.
-    segments << { color: color.presence || Goal::COLORS.first, amount: filled, id: "saved" } if filled.positive?
+    segments << { color: color.presence || "var(--color-blue-500)", amount: filled, id: "saved" } if filled.positive?
     segments << { color: "var(--budget-unused-fill)", amount: rem, id: "unused" } if rem.positive?
     segments
   end
@@ -932,7 +928,12 @@ class Goal < ApplicationRecord
       destructive: true,
       high_severity: true,
       title: I18n.t("goals.show.confirm_delete_title"),
-      body: I18n.t("goals.show.confirm_delete_body", name: name),
+      # Escaped: the dialog assigns `body` to innerHTML (so bodies like the
+      # accounts' confirm_body_html can carry <p>), so a goal named
+      # "<img src=x onerror=…>" would otherwise run when a family member opens
+      # the confirmation. Only `body` needs this — the dialog sets its title and
+      # button label with textContent.
+      body: I18n.t("goals.show.confirm_delete_body", name: ERB::Util.html_escape(name)),
       btn_text: I18n.t("goals.show.confirm_delete_cta")
     )
   end
