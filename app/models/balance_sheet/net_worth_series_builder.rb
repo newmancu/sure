@@ -7,8 +7,7 @@ class BalanceSheet::NetWorthSeriesBuilder
   def net_worth_series(period: Period.last_30_days)
     Rails.cache.fetch(cache_key(period)) do
       builder = Balance::ChartSeriesBuilder.new(
-        account_ids: historical_account_ids,
-        account_active_until_dates: disabled_account_active_until_dates,
+        account_ids: visible_account_ids,
         currency: family.currency,
         period: period,
         favorable_direction: "up"
@@ -21,31 +20,18 @@ class BalanceSheet::NetWorthSeriesBuilder
   private
     attr_reader :family, :user
 
-    def historical_accounts
-      @historical_accounts ||= historical_account_scope.relation.to_a
-    end
-
-    def historical_account_ids
-      @historical_account_ids ||= historical_accounts.map(&:id)
-    end
-
-    def disabled_account_active_until_dates
-      @disabled_account_active_until_dates ||= historical_accounts.each_with_object({}) do |account, dates|
-        next unless account.disabled?
-
-        disabled_on = (account.disabled_at || account.updated_at).to_date
-        dates[account.id] = disabled_on - 1.day
+    def visible_account_ids
+      @visible_account_ids ||= begin
+        scope = family.accounts.visible
+        scope = scope.included_in_finances_for(user) if user
+        scope.pluck(:id)
       end
-    end
-
-    def historical_account_scope
-      @historical_account_scope ||= BalanceSheet::HistoricalAccountScope.new(family, user: user)
     end
 
     def cache_key(period)
       shares_version = user ? AccountShare.where(user: user).maximum(:updated_at)&.to_i : nil
       key = [
-        "balance_sheet_net_worth_series_historical",
+        "balance_sheet_net_worth_series",
         user&.id,
         shares_version,
         period.start_date,

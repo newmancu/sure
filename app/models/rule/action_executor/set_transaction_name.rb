@@ -24,8 +24,7 @@ class Rule::ActionExecutor::SetTransactionName < Rule::ActionExecutor
       txn.entry.enrich_attribute(
         :name,
         value,
-        source: "rule",
-        ignore_locks: ignore_attribute_locks
+        source: "rule"
       )
     end
   end

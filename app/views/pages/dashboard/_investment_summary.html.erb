@@ -44,7 +44,7 @@
                 <td class="p-4">
                   <div class="flex items-center gap-3">
                     <% if holding.security.logo_url.present? %>
-                      <img src="<%= holding.security.logo_url %>" alt="<%= holding.ticker %>" class="w-8 h-8 rounded-full border border-secondary">
+                      <img src="<%= holding.security.logo_url %>" alt="<%= holding.ticker %>" class="w-8 h-8 rounded-full">
                     <% else %>
                       <div class="w-8 h-8 rounded-full bg-container-inset flex items-center justify-center text-xs font-medium text-secondary">
                         <%= holding.ticker.to_s.first(2).presence || "—" %>
@@ -97,7 +97,7 @@
               </div>
               <div>
                 <p class="text-xs text-secondary"><%= t(".contributions") %></p>
-                <p class="font-medium text-primary privacy-sensitive"><%= format_money(totals.contributions) %></p>
+                <p class="font-medium text-green-600 privacy-sensitive"><%= format_money(totals.contributions) %></p>
               </div>
             </div>
             <div class="flex items-center gap-2">
@@ -106,7 +106,7 @@
               </div>
               <div>
                 <p class="text-xs text-secondary"><%= t(".withdrawals") %></p>
-                <p class="font-medium text-primary privacy-sensitive"><%= format_money(totals.withdrawals) %></p>
+                <p class="font-medium text-orange-600 privacy-sensitive"><%= format_money(totals.withdrawals) %></p>
               </div>
             </div>
             <div class="flex items-center gap-2">

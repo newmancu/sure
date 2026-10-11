@@ -14,9 +14,11 @@ class InvestmentStatement
 
   # Get totals for a specific period
   def totals(period: Period.current_month)
-    account_ids = investment_account_ids
+    trades_in_period = family.trades
+      .joins(:entry)
+      .where(entries: { date: period.date_range, account_id: investment_account_ids })
 
-    result = totals_query(account_ids: account_ids, date_range: period.date_range)
+    result = totals_query(trades_scope: trades_in_period)
 
     PeriodTotals.new(
       contributions: Money.new(result[:contributions], family.currency),
@@ -64,63 +66,50 @@ class InvestmentStatement
   # All current holdings across investment accounts. Holdings are returned in
   # their native currency; callers that aggregate across accounts must convert
   # to family currency via convert_to_family_currency.
-  #
-  # Memoized: top_holdings, allocation, unrealized_gains, unrealized_gains_trend,
-  # and day_change each call this, so an unmemoized version ran the same
-  # DISTINCT ON query up to 5x per dashboard/report request.
   def current_holdings
-    @current_holdings ||= Holding::CurrentForInvestmentAccounts
-      .new(investment_account_ids)
-      .relation
+    return Holding.none unless investment_accounts.any?
+
+    # Get the latest holding for each security per account
+    Holding
+      .where(account_id: investment_account_ids)
+      .where.not(qty: 0)
+      .where(
+        id: Holding
+          .where(account_id: investment_account_ids)
+          .select("DISTINCT ON (holdings.account_id, holdings.security_id) holdings.id")
+          .order(Arel.sql("holdings.account_id, holdings.security_id, holdings.date DESC"))
+      )
       .includes(:security, :account)
   end
 
-  # Top investments rolled up by security across accounts, ranked by
-  # family-currency value. Weight is % of total portfolio (including cash).
-  # Presence is gated on holdings totals — not Account#balance — so a stale
-  # zero portfolio_value still surfaces real positions.
+  # Top holdings by family-currency value
   def top_holdings(limit: 5)
-    rolled_up = holdings_rolled_up_by_security
-    return [] if rolled_up.empty?
-
-    holdings_total = rolled_up.sum { |_, value, _| value }
-    return [] if holdings_total.zero?
-
-    total = weight_denominator(holdings_total)
-
-    # Rank/limit on value first; only then compute cost-basis trends for the
-    # rows that will be rendered (avoids avg_cost/trade lookups for the rest).
-    rolled_up
+    current_holdings
+      .to_a
+      .sort_by { |h| -convert_to_family_currency(h.amount, h.currency) }
       .first(limit)
-      .map do |security, value, holdings|
-        HoldingAllocation.new(
-          security: security,
-          amount: Money.new(value, family.currency),
-          weight: (value / total * 100).round(2),
-          trend: combined_holding_trend(holdings)
-        )
-      end
   end
 
-  # Portfolio allocation by security (rolled up across accounts). Shares the
-  # weight denominator with top_holdings so the same security never reports two
-  # different percentages. Weights therefore sum to the invested share of the
-  # portfolio, not to 100 — cash is the residual.
+  # Portfolio allocation by security. Weights and amounts are computed in the
+  # family's currency so cross-currency holdings compare correctly.
   def allocation
-    rolled_up = holdings_rolled_up_by_security
-    holdings_total = rolled_up.sum { |_, value, _| value }
-    return [] if holdings_total.zero?
-
-    total = weight_denominator(holdings_total)
-
-    rolled_up.map do |security, value, holdings|
-      HoldingAllocation.new(
-        security: security,
-        amount: Money.new(value, family.currency),
-        weight: (value / total * 100).round(2),
-        trend: combined_holding_trend(holdings)
-      )
+    converted = current_holdings.to_a.map do |holding|
+      [ holding, convert_to_family_currency(holding.amount, holding.currency) ]
     end
+
+    total = converted.sum { |_, value| value }
+    return [] if total.zero?
+
+    converted
+      .sort_by { |_, value| -value }
+      .map do |holding, value|
+        HoldingAllocation.new(
+          security: holding.security,
+          amount: Money.new(value, family.currency),
+          weight: (value / total * 100).round(2),
+          trend: holding.trend
+        )
+      end
   end
 
   # Unrealized gains across all holdings, summed in family currency
@@ -167,77 +156,6 @@ class InvestmentStatement
     )
   end
 
-  def period_return_trend(period: Period.current_month)
-    currency = family.currency
-    account_ids = investment_account_ids
-    return nil if account_ids.empty?
-
-    absolute_return = ActiveRecord::Base.connection.select_value(
-      ActiveRecord::Base.sanitize_sql_array([
-        <<~SQL.squish,
-          SELECT COALESCE(SUM(b.net_market_flows * COALESCE(er.rate, 1)), 0)
-          FROM balances b
-          JOIN accounts a ON a.id = b.account_id
-          LEFT JOIN exchange_rates er ON (
-            er.date = b.date
-            AND er.from_currency = b.currency
-            AND er.to_currency = :currency
-          )
-          WHERE a.id IN (:account_ids)
-            AND a.family_id = :family_id
-            AND a.status IN ('draft', 'active')
-            AND b.date BETWEEN :start_date AND :end_date
-        SQL
-        {
-          currency: currency,
-          account_ids: account_ids,
-          family_id: family.id,
-          start_date: period.date_range.begin,
-          end_date: period.date_range.end
-        }
-      ])
-    ).to_d
-
-    period_start = period.date_range.begin
-
-    # Single query for all accounts' most recent pre-period balance (strict < to avoid
-    # double-counting the first day's net_market_flows in both the denominator and absolute_return).
-    # FX conversion is done in SQL (matching absolute_return) so balance rows whose currency
-    # differs from the account's current currency (e.g. after a currency change) are still picked up.
-    start_value = ActiveRecord::Base.connection.select_value(
-      ActiveRecord::Base.sanitize_sql_array([
-        <<~SQL.squish,
-          SELECT COALESCE(SUM(b.end_balance * COALESCE(er.rate, 1)), 0)
-          FROM accounts a
-          INNER JOIN balances b ON b.account_id = a.id
-          LEFT JOIN exchange_rates er ON (
-            er.date = :period_start
-            AND er.from_currency = b.currency
-            AND er.to_currency = :currency
-          )
-          INNER JOIN (
-            SELECT b2.account_id, MAX(b2.date) AS max_date
-            FROM balances b2
-            WHERE b2.account_id IN (:account_ids)
-              AND b2.date < :period_start
-            GROUP BY b2.account_id
-          ) latest ON latest.account_id = b.account_id AND b.date = latest.max_date
-          WHERE a.id IN (:account_ids)
-            AND a.family_id = :family_id
-            AND a.status IN ('draft', 'active')
-        SQL
-        { account_ids: account_ids, period_start: period_start, family_id: family.id, currency: currency }
-      ])
-    ).to_d
-
-    return nil if start_value.zero?
-
-    Trend.new(
-      current: Money.new(start_value + absolute_return, currency),
-      previous: Money.new(start_value, currency)
-    )
-  end
-
   # Day change across portfolio, summed in family currency
   def day_change
     changes = current_holdings.to_a.filter_map do |h|
@@ -262,7 +180,7 @@ class InvestmentStatement
   # Investment accounts
   def investment_accounts
     @investment_accounts ||= begin
-      scope = family.accounts.visible.included_in_reports.where(accountable_type: %w[Investment Crypto])
+      scope = family.accounts.visible.where(accountable_type: %w[Investment Crypto])
       scope = scope.included_in_finances_for(user) if user
       scope
     end
@@ -310,86 +228,18 @@ class InvestmentStatement
       end
     end
 
-    HoldingAllocation = Data.define(:security, :amount, :weight, :trend) do
-      def ticker = security.ticker
-      def name = security.name.presence || ticker
-      def amount_money = amount
-    end
-
-    # Groups current holdings by security and sums family-currency value.
-    # Returns [[security, value, holdings], ...] sorted by value descending.
-    # Callers that need return trends should call combined_holding_trend only
-    # for rows they will render (e.g. after top_holdings applies its limit).
-    # Shared by top_holdings and allocation so one security cannot report two
-    # different percentages.
-    #
-    # max(portfolio_value, holdings_total) rather than portfolio_value alone:
-    # portfolio_value includes cash, which goes negative on margin or an
-    # unsettled buy and would push a weight past 100%. The holdings total acts
-    # as a floor. It also covers a stale-zero portfolio_value, where the cached
-    # Account#balance lags behind the Holding rows.
-    def weight_denominator(holdings_total)
-      [ portfolio_value, holdings_total ].max
-    end
-
-    def holdings_rolled_up_by_security
-      current_holdings
-        .to_a
-        .group_by(&:security_id)
-        .filter_map do |_security_id, holdings|
-          # Filter row by row rather than on the netted total. current_holdings
-          # is DISTINCT ON (account_id, security_id), so one security held in two
-          # accounts yields two rows; a negative row in one would otherwise net
-          # against the good row in the other and understate the position.
-          positive_holdings = holdings.select do |holding|
-            convert_to_family_currency(holding.amount, holding.currency).positive?
-          end
-          next if positive_holdings.empty?
-
-          security = positive_holdings.first.security
-          value = positive_holdings.sum { |h| convert_to_family_currency(h.amount, h.currency) }
-
-          # positive_holdings, not holdings, so the trend excludes the bad row too.
-          [ security, value, positive_holdings ]
-        end
-        .sort_by { |_, value, _| -value }
-    end
-
-    def combined_holding_trend(holdings)
-      currents = []
-      previouses = []
-
-      holdings.each do |holding|
-        trend = holding.trend
-        next unless trend
-
-        currents << convert_to_family_currency(trend.current, holding.currency)
-        previouses << convert_to_family_currency(trend.previous, holding.currency)
-      end
-
-      return nil if currents.empty?
-
-      Trend.new(
-        current: Money.new(currents.sum, family.currency),
-        previous: Money.new(previouses.sum, family.currency)
-      )
-    end
+    HoldingAllocation = Data.define(:security, :amount, :weight, :trend)
 
     def investment_account_ids
       @investment_account_ids ||= investment_accounts.pluck(:id)
     end
 
-    def totals_query(account_ids:, date_range:)
-      if account_ids.empty?
-        return Totals.new(family, account_ids: account_ids, date_range: date_range).call
-      end
-
-      account_ids_hash = Digest::MD5.hexdigest(account_ids.sort.join(","))
+    def totals_query(trades_scope:)
+      sql_hash = Digest::MD5.hexdigest(trades_scope.to_sql)
 
       Rails.cache.fetch([
-        "investment_statement", "totals_query", family.id, user&.id,
-        account_ids_hash, date_range.begin, date_range.end, family.entries_cache_version
-      ]) { Totals.new(family, account_ids: account_ids, date_range: date_range).call }
+        "investment_statement", "totals_query", family.id, user&.id, sql_hash, family.entries_cache_version
+      ]) { Totals.new(family, trades_scope: trades_scope).call }
     end
 
     def monetizable_currency
