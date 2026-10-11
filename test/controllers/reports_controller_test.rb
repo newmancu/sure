@@ -54,9 +54,7 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
                                        currency: "USD", accountable: Investment.new)
     security = Security.create!(ticker: "EUX#{SecureRandom.hex(3)}", name: "Euro Listed")
 
-    # The fixtures already hold EUR->GBP for today and yesterday, so on the 1st
-    # and 2nd of a month a fresh row for its first day breaks uniqueness.
-    ExchangeRate.find_or_initialize_by(from_currency: "EUR", to_currency: "GBP", date: date).update!(rate: 0.8)
+    ExchangeRate.create!(from_currency: "EUR", to_currency: "GBP", date: date, rate: 0.8)
     ExchangeRate.create!(from_currency: "GBP", to_currency: "USD", date: date, rate: 1.25)
     account.holdings.create!(security: security, date: date, qty: 5, price: 150,
                              amount: BigDecimal(750), currency: "GBP", cost_basis: 100)
@@ -541,22 +539,15 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
     income_href = transactions_path(q: { categories: [ income_category.name ], start_date: start_date, end_date: end_date })
     uncategorized_href = transactions_path(q: { categories: [ Category.uncategorized.filter_value ], start_date: start_date, end_date: end_date })
 
-    assert_select "tr[data-category='category-#{expense_category.id}'] a[href=?]", expense_href, text: /#{Regexp.escape(expense_category.name)}/
-    assert_select "tr[data-category='category-#{income_category.id}'] a[href=?]", income_href, text: /#{Regexp.escape(income_category.name)}/
-    assert_select "tr[data-category='category-uncategorized'] a[href=?]", uncategorized_href, text: /#{Regexp.escape(Category.uncategorized.name)}/
+    assert_select "tr[data-category='category-#{expense_category.id}'] a[href=?]", expense_href, text: expense_category.name
+    assert_select "tr[data-category='category-#{income_category.id}'] a[href=?]", income_href, text: income_category.name
+    assert_select "tr[data-category='category-uncategorized'] a[href=?]", uncategorized_href, text: Category.uncategorized.name
 
-    # Full-row hit target via a normal flex <a> wrapping icon+name+count —
-    # deliberately not a `position: relative`/`absolute` stretched-link inside
-    # the <table>, which caused a WebKit scrollHeight bug (see #3093).
-    assert_select "tr[data-category='category-#{expense_category.id}'] a.flex.items-center"
-    assert_select "tr[data-category='category-#{expense_category.id}'].relative", 0
-    assert_select "tr[data-category='category-#{expense_category.id}'] a[class*='before:absolute']", 0
-
-    # Amount and percentage cells are each wrapped in their own normal-flow
-    # <a> to the same href, so the full row remains clickable without a
-    # stretched-link overlay spanning the <tr>.
-    assert_select "tr[data-category='category-#{expense_category.id}'] td:nth-child(2) a[href=?]", expense_href
-    assert_select "tr[data-category='category-#{expense_category.id}'] td:nth-child(3) a[href=?]", expense_href
+    # Hit target via stretched ::before, anchored to the category cell's flex
+    # wrapper. Deliberately NOT the <tr>: CSS 2.1 9.3.1 leaves position:relative
+    # undefined on table rows and WebKit does not implement it, so anchoring
+    # there let the overlay escape and swallow every click on the page in Safari.
+    assert_select "tr.group\\/category-row[data-category='category-#{expense_category.id}'] td div.relative a[class*='before:absolute'][class*='before:inset-0']"
   end
 
   test "index uncategorized category link stays on the stable filter value while the displayed text is localized" do
@@ -572,7 +563,7 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
     assert_response :ok
 
     href = transactions_path(q: { categories: [ Category::UNCATEGORIZED_FILTER_VALUE ], start_date: start_date, end_date: end_date })
-    assert_select "tr[data-category='category-uncategorized'] a[href=?]", href, text: /#{Regexp.escape(localized_name)}/
+    assert_select "tr[data-category='category-uncategorized'] a[href=?]", href, text: localized_name
   end
 
   test "index excludes tax-advantaged account transactions from activity breakdown" do
@@ -747,6 +738,64 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
     # as one both inflates the number of sales and books a gain nobody made.
     assert_match I18n.t("reports.investment_performance.sells_count", count: 1), response.body
     assert_no_match(/#{Regexp.escape(I18n.t("reports.investment_performance.sells_count", count: 2))}/, response.body)
+  end
+
+  # A member sees realized gains only from accounts shared with them. The
+  # owner's private brokerage must not leak its disposals into the member's card.
+  test "realized gains list only the viewer's accessible disposals" do
+    date = Date.current.beginning_of_month
+    member = users(:family_member)
+
+    mine = @family.accounts.create!(name: "Member Brokerage", owner: member, balance: 1_000,
+                                    currency: "USD", accountable: Investment.new)
+    theirs = @family.accounts.create!(name: "Admin Private Brokerage", owner: users(:family_admin), balance: 1_000,
+                                      currency: "USD", accountable: Investment.new)
+
+    own_security = Security.create!(ticker: "OWN#{SecureRandom.hex(3)}", name: "Member Holding")
+    private_security = Security.create!(ticker: "PRV#{SecureRandom.hex(3)}", name: "Admin Holding")
+
+    mine.holdings.create!(security: own_security, date: date, qty: 5, price: 150,
+                          amount: BigDecimal(750), currency: "USD", cost_basis: 100)
+    theirs.holdings.create!(security: private_security, date: date, qty: 5, price: 150,
+                            amount: BigDecimal(750), currency: "USD", cost_basis: 100)
+    create_trade(own_security, account: mine, qty: -2, date: date, price: 150)
+    create_trade(private_security, account: theirs, qty: -2, date: date, price: 150)
+
+    sign_in member
+    get reports_path
+    assert_response :ok
+
+    lines = css_select("[data-testid='realized-gain-line']").map(&:text)
+    assert lines.any? { |text| text.include?(own_security.ticker) }, "the member's own disposal must be listed, or this proves nothing"
+    assert lines.none? { |text| text.include?(private_security.ticker) }, "a disposal on an unshared account leaked into the member's report"
+  end
+
+
+  test "realized gains skip shared accounts the member keeps out of their finances" do
+    date = Date.current.beginning_of_month
+    member = users(:family_member)
+
+    mine = @family.accounts.create!(name: "Member Brokerage", owner: member, balance: 1_000,
+                                    currency: "USD", accountable: Investment.new)
+    shared = @family.accounts.create!(name: "Shared Brokerage", owner: users(:family_admin), balance: 1_000,
+                                      currency: "USD", accountable: Investment.new)
+    shared.account_shares.create!(user: member, permission: "read_only", include_in_finances: false)
+
+    own_security = Security.create!(ticker: "OWN#{SecureRandom.hex(3)}", name: "Member Holding")
+    shared_security = Security.create!(ticker: "SHR#{SecureRandom.hex(3)}", name: "Shared Holding")
+    mine.holdings.create!(security: own_security, date: date, qty: 5, price: 150,
+                          amount: BigDecimal(750), currency: "USD", cost_basis: 100)
+    shared.holdings.create!(security: shared_security, date: date, qty: 5, price: 150,
+                            amount: BigDecimal(750), currency: "USD", cost_basis: 100)
+    create_trade(own_security, account: mine, qty: -2, date: date, price: 150)
+    create_trade(shared_security, account: shared, qty: -2, date: date, price: 150)
+
+    sign_in member
+    get reports_path
+
+    lines = css_select("[data-testid='realized-gain-line']").map(&:text)
+    assert lines.any? { |text| text.include?(own_security.ticker) }, "the member's own disposal must be listed, or this proves nothing"
+    assert lines.none? { |text| text.include?(shared_security.ticker) }, "an account excluded from the member's finances contributed a disposal"
   end
 
   private

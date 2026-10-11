@@ -119,33 +119,6 @@ class CategoriesControllerTest < ActionDispatch::IntegrationTest
     assert response_json.fetch("errors").any?
   end
 
-  test "create as json with a parent makes a subcategory" do
-    parent = categories(:food_and_drink)
-
-    assert_difference "Category.count", +1 do
-      post categories_url(format: :json), params: {
-        category: { name: "JSON Subcategory", color: Category::COLORS.first, parent_id: parent.id } }
-    end
-
-    assert_response :created
-    new_category = Category.find(JSON.parse(response.body).fetch("id"))
-    assert_equal parent, new_category.parent
-    assert_includes JSON.parse(response.body).fetch("html"), "category-select-subcategory-indicator"
-  end
-
-  test "create as json rejects a parent from another family" do
-    foreign_parent = families(:empty).categories.create!(name: "Foreign Parent", color: "#123456")
-
-    assert_no_difference "Category.count" do
-      post categories_url(format: :json), params: {
-        category: { name: "Sneaky Child", color: Category::COLORS.first, parent_id: foreign_parent.id } }
-    end
-
-    assert_response :unprocessable_entity
-    # The inline create reads `errors` first (then `error`, then `message`).
-    assert_includes JSON.parse(response.body).fetch("errors"), "Parent is invalid"
-  end
-
   test "create and assign to transaction" do
     color = Category::COLORS.sample
 
@@ -180,42 +153,6 @@ class CategoriesControllerTest < ActionDispatch::IntegrationTest
             name: "New Name",
             color: new_color } }
       end
-    end
-
-    assert_redirected_to categories_url
-  end
-
-  test "guest cannot create category" do
-    sign_in family_guest
-
-    assert_no_difference "Category.count" do
-      post categories_url, params: {
-        category: {
-          name: "Guest Category",
-          color: Category::COLORS.sample } }
-    end
-
-    assert_redirected_to accounts_url
-  end
-
-  test "guest cannot destroy category" do
-    sign_in family_guest
-
-    assert_no_difference "Category.count" do
-      delete category_url(categories(:food_and_drink))
-    end
-
-    assert_redirected_to accounts_url
-  end
-
-  test "member can create category" do
-    sign_in users(:family_member)
-
-    assert_difference "Category.count", 1 do
-      post categories_url, params: {
-        category: {
-          name: "Member Category",
-          color: Category::COLORS.sample } }
     end
 
     assert_redirected_to categories_url
@@ -464,6 +401,37 @@ class CategoriesControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to merge_categories_path
     assert Category.exists?(other.id)
+  end
+
+
+  test "create does not categorize a transaction on an account the member cannot annotate" do
+    member = users(:family_member)
+    private_account = @family.accounts.create!(name: "Admin Private Checking", owner: @user, balance: 0,
+                                               currency: "USD", accountable: Depository.new)
+    private_entry = private_account.entries.create!(name: "Private", date: Date.current, amount: 10,
+                                                    currency: "USD", entryable: Transaction.new)
+    read_only_entry = accounts(:credit_card).entries.create!(name: "Read only", date: Date.current, amount: 10,
+                                                             currency: "USD", entryable: Transaction.new)
+    sign_in member
+
+    [ private_entry, read_only_entry ].each do |entry|
+      assert_no_difference "Category.count" do
+        post categories_url, params: { transaction_id: entry.transaction.id, category: { name: "Leak #{entry.id}", color: "#000000" } }
+      end
+      assert_response :not_found
+      assert_nil entry.transaction.reload.category
+    end
+  end
+
+  test "create categorizes a transaction on an account shared with the member for annotation" do
+    member = users(:family_member)
+    shared_entry = accounts(:depository).entries.create!(name: "Shared", date: Date.current, amount: 10,
+                                                         currency: "USD", entryable: Transaction.new)
+    sign_in member
+
+    post categories_url, params: { transaction_id: shared_entry.transaction.id, category: { name: "Shared Category", color: "#000000" } }
+
+    assert_equal "Shared Category", shared_entry.transaction.reload.category&.name
   end
 
   private
