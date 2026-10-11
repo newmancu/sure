@@ -5,83 +5,61 @@ class Provider::Openai < Provider
   Error = Class.new(Provider::Error)
 
   DEFAULT_MODEL = "gpt-4.1".freeze
-  DEFAULT_REQUEST_TIMEOUT = 60
-  MIN_REQUEST_TIMEOUT = 1
-  SUPPORTED_MODELS = %w[gpt-4 gpt-5 gpt-6 o1 o3].freeze
-  VISION_CAPABLE_MODEL_PREFIXES = %w[gpt-4o gpt-4-turbo gpt-4.1 gpt-5 gpt-6 o1 o3].freeze
-  PDF_COMPLETION_LIMIT_MODEL_PREFIXES = %w[gpt-6 o1 o3].freeze
-
-  # Keep the provider's response budget and the PDF request parameter in sync.
-  # @return [Boolean] whether native PDF vision uses max_completion_tokens
-  def self.native_pdf_completion_limit?(model:, custom_provider:)
-    !custom_provider && PDF_COMPLETION_LIMIT_MODEL_PREFIXES.any? { |prefix| model.to_s.start_with?(prefix) }
-  end
+  SUPPORTED_MODELS = %w[gpt-4 gpt-5 o1 o3].freeze
+  VISION_CAPABLE_MODEL_PREFIXES = %w[gpt-4o gpt-4-turbo gpt-4.1 gpt-5 o1 o3].freeze
 
   # Returns the effective model that would be used by the provider.
-  # Priority: explicit ENV > Setting > DEFAULT_MODEL. A blank ENV value is
-  # treated as unset and falls through to the Setting.
+  # Priority: explicit ENV > Setting > DEFAULT_MODEL.
   def self.effective_model
-    configured_model = ENV["OPENAI_MODEL"].presence || Setting.openai_model
-    configured_model.presence || DEFAULT_MODEL
+    ENV["OPENAI_MODEL"].presence || Setting.openai_model.presence || DEFAULT_MODEL
+  end
+
+  def self.effective_json_mode
+    env_mode = ENV["LLM_JSON_MODE"]
+    return env_mode if valid_json_mode?(env_mode)
+
+    setting_mode = Setting.openai_json_mode
+    return setting_mode if valid_json_mode?(setting_mode)
+
+    AutoCategorizer::JSON_MODE_AUTO
+  end
+
+  def self.effective_context_window
+    positive_budget(ENV["LLM_CONTEXT_WINDOW"], Setting.llm_context_window, 2048)
+  end
+
+  def self.effective_max_response_tokens
+    positive_budget(ENV["LLM_MAX_RESPONSE_TOKENS"], Setting.llm_max_response_tokens, 512)
+  end
+
+  def self.effective_max_items_per_call
+    positive_budget(ENV["LLM_MAX_ITEMS_PER_CALL"], Setting.llm_max_items_per_call, 25)
+  end
+
+  def self.valid_json_mode?(mode)
+    mode.present? && AutoCategorizer::VALID_JSON_MODES.include?(mode)
+  end
+
+  # Returns the first positive integer among env, setting, default. Treats
+  # zero or negative values as "unset" and falls through — a 0-token budget
+  # is never what the user meant.
+  def self.positive_budget(env_value, setting_value, default)
+    from_env = env_value.to_s.strip.to_i
+    return from_env if from_env.positive?
+    return setting_value.to_i if setting_value.to_i.positive?
+    default
   end
 
   def self.configured?
     ENV["OPENAI_ACCESS_TOKEN"].present? || Setting.openai_access_token.present?
   end
 
-  # Effective per-request HTTP timeout for OpenAI-compatible calls.
-  # Precedence matches other self-hosting settings: ENV > Setting > default.
-  #
-  # @return [Integer] timeout in seconds, at least MIN_REQUEST_TIMEOUT
-  def self.request_timeout
-    configured = ENV["OPENAI_REQUEST_TIMEOUT"].to_s.strip.to_i
-    configured = Setting.openai_request_timeout.to_i unless configured.positive?
-    return DEFAULT_REQUEST_TIMEOUT unless configured.positive?
-
-    [ configured, MIN_REQUEST_TIMEOUT ].max
-  end
-
-  # Extra HTTP headers for OpenAI-compatible requests, parsed from the
-  # OPENAI_EXTRA_HEADERS env var (a JSON object). ENV-only: no Setting
-  # fallback. Keys and values are stringified for Faraday; blank values are
-  # dropped. Nested JSON values are Ruby-inspect-stringified, not
-  # JSON-serialized. Fail-closed: any parse problem yields {} plus an error
-  # log (raw value never logged) so chat never breaks from bad config.
-  #
-  # @return [Hash<String, String>] parsed headers, {} when unset or invalid
-  def self.extra_headers
-    raw = ENV["OPENAI_EXTRA_HEADERS"].presence
-    return {} unless raw
-
-    parsed = JSON.parse(raw)
-    unless parsed.is_a?(Hash)
-      Rails.logger.error("OPENAI_EXTRA_HEADERS must be a JSON object; ignoring")
-      return {}
-    end
-    parsed.transform_keys(&:to_s).transform_values(&:to_s).compact_blank
-  rescue JSON::ParserError, TypeError
-    Rails.logger.error("OPENAI_EXTRA_HEADERS is not valid JSON; ignoring")
-    {}
-  end
-
-  # Builds a client that uses the effective request timeout for every OpenAI call.
-  # Static extra headers from OPENAI_EXTRA_HEADERS are attached at construction;
-  # session-valued headers are withheld for per-request resolution.
-  #
-  # @param access_token [String] API token for the OpenAI-compatible endpoint
-  # @param uri_base [String, nil] custom endpoint base URL (OpenAI when nil)
-  # @param model [String, nil] default model; required when uri_base is set
-  # @return [void]
   def initialize(access_token, uri_base: nil, model: nil)
     client_options = { access_token: access_token }
     llm_uri_base = uri_base.presence
     llm_model = model.presence
     client_options[:uri_base] = llm_uri_base if llm_uri_base.present?
-    client_options[:request_timeout] = self.class.request_timeout
-    parsed_headers = self.class.extra_headers
-    @session_extra_headers = parsed_headers.select { |_, value| value.include?("{session_id}") }
-    static_headers = parsed_headers.except(*@session_extra_headers.keys)
-    client_options[:extra_headers] = static_headers if static_headers.present?
+    client_options[:request_timeout] = ENV.fetch("OPENAI_REQUEST_TIMEOUT", 60).to_i
 
     @client = ::OpenAI::Client.new(**client_options)
     @uri_base = llm_uri_base
@@ -137,7 +115,7 @@ class Provider::Openai < Provider
   end
 
   def max_response_tokens
-    positive_budget(ENV["LLM_MAX_RESPONSE_TOKENS"], Setting.llm_max_response_tokens, 512)
+    self.class.effective_max_response_tokens
   end
 
   # The response cap is only sent to the provider when someone explicitly
@@ -154,7 +132,7 @@ class Provider::Openai < Provider
   end
 
   def system_prompt_reserve
-    positive_budget(ENV["LLM_SYSTEM_PROMPT_RESERVE"], nil, 256)
+    self.class.positive_budget(ENV["LLM_SYSTEM_PROMPT_RESERVE"], nil, 256)
   end
 
   def max_history_tokens(instructions: nil)
@@ -184,7 +162,7 @@ class Provider::Openai < Provider
   end
 
   def max_items_per_call
-    positive_budget(ENV["LLM_MAX_ITEMS_PER_CALL"], Setting.llm_max_items_per_call, 25)
+    self.class.effective_max_items_per_call
   end
 
   def auto_categorize(transactions: [], user_categories: [], model: "", family: nil, json_mode: nil)
@@ -218,31 +196,6 @@ class Provider::Openai < Provider
       end
 
       upsert_langfuse_trace(trace: trace, output: result.map(&:to_h))
-
-      result
-    end
-  end
-
-  def suggest_bill_setup(charges: [], categories: [], current_config: nil, model: "", family: nil)
-    with_provider_response do
-      effective_model = model.presence || @default_model
-
-      trace = create_langfuse_trace(
-        name: "openai.suggest_bill_setup",
-        input: { charges: charges, configure_mode: current_config.present? }
-      )
-
-      result = BillSetupSuggester.new(
-        client,
-        model: effective_model,
-        charges: charges,
-        categories: categories,
-        current_config: current_config,
-        langfuse_trace: trace,
-        family: family
-      ).suggest
-
-      upsert_langfuse_trace(trace: trace, output: result.to_h)
 
       result
     end
@@ -319,11 +272,6 @@ class Provider::Openai < Provider
     VISION_CAPABLE_MODEL_PREFIXES.any? { |prefix| model.start_with?(prefix) }
   end
 
-  # Analyze PDF bytes with the selected model and attribute usage to the family.
-  # @param pdf_content [String] PDF bytes
-  # @param model [String] optional override of the configured model
-  # @param family [Family, nil] usage attribution
-  # @return [Provider::Response] structured result or provider failure
   def process_pdf(pdf_content:, model: "", family: nil)
     with_provider_response do
       effective_model = model.presence || @default_model
@@ -334,14 +282,6 @@ class Provider::Openai < Provider
         input: { pdf_size: pdf_content&.bytesize }
       )
 
-      # Reasoning-model completion limits include reasoning; the fallback is a budget reserve.
-      response_limit =
-        if self.class.native_pdf_completion_limit?(model: effective_model, custom_provider: custom_provider?)
-          explicit_max_response_tokens
-        else
-          max_response_tokens
-        end
-
       result = PdfProcessor.new(
         client,
         model: effective_model,
@@ -349,7 +289,7 @@ class Provider::Openai < Provider
         custom_provider: custom_provider?,
         langfuse_trace: trace,
         family: family,
-        max_response_tokens: response_limit
+        max_response_tokens: max_response_tokens
       ).process
 
       upsert_langfuse_trace(trace: trace, output: result.to_h)
@@ -431,36 +371,6 @@ class Provider::Openai < Provider
   private
     attr_reader :client
 
-    # Substitutes {session_id} into session-valued extra headers for this chat
-    # request. Static headers were already set at construction; a session
-    # header without a session_id is simply never applied. Returns a
-    # request-scoped client copy carrying the resolved headers — session
-    # headers must not persist on the shared client, so later batch requests
-    # (which reuse this provider instance's client) never see them.
-    #
-    # @param session_id [String, nil] chat session UUID to substitute
-    # @return [OpenAI::Client] scoped copy when session headers apply, otherwise
-    #   the shared client
-    def with_session_headers(session_id:)
-      return client if @session_extra_headers.blank? || session_id.blank?
-
-      session_client = client.dup
-      session_client.add_headers(
-        @session_extra_headers.transform_values { |value| value.gsub("{session_id}") { session_id } }
-      )
-      session_client
-    end
-
-    # Returns the first positive integer among env, setting, default. Treats
-    # zero or negative values as "unset" and falls through — a 0-token budget
-    # is never what the user meant.
-    def positive_budget(env_value, setting_value, default)
-      from_env = env_value.to_s.strip.to_i
-      return from_env if from_env.positive?
-      return setting_value.to_i if setting_value.to_i.positive?
-      default
-    end
-
     # Routes one-shot (non-chat) inputs through the BatchSlicer so large
     # caller batches are split to fit the model's context window. `fixed` is
     # the portion of the prompt that stays constant across every sub-batch
@@ -488,8 +398,6 @@ class Provider::Openai < Provider
       family: nil
     )
       with_provider_response do
-        session_client = with_session_headers(session_id: session_id)
-
         chat_config = ChatConfig.new(
           functions: functions,
           function_results: function_results
@@ -525,7 +433,7 @@ class Provider::Openai < Provider
           request_params[:tool_choice] = "none" if tool_choice == :none && chat_config.tools.present?
           request_params[:max_output_tokens] = explicit_max_response_tokens if explicit_max_response_tokens
 
-          raw_response = session_client.responses.create(parameters: request_params)
+          raw_response = client.responses.create(parameters: request_params)
 
           # If streaming, Ruby OpenAI does not return anything, so to normalize this method's API, we search
           # for the "response chunk" in the stream and return it (it is already parsed)
@@ -598,8 +506,6 @@ class Provider::Openai < Provider
       family: nil
     )
       with_provider_response do
-        session_client = with_session_headers(session_id: session_id)
-
         messages = build_generic_messages(
           prompt: prompt,
           instructions: instructions,
@@ -619,7 +525,7 @@ class Provider::Openai < Provider
         params[:max_tokens] = explicit_max_response_tokens if explicit_max_response_tokens
 
         begin
-          raw_response = session_client.chat(parameters: params)
+          raw_response = client.chat(parameters: params)
 
           parsed = GenericChatParser.new(raw_response).parsed
 
@@ -689,11 +595,11 @@ class Provider::Openai < Provider
       if function_results.any?
         # Build assistant message with tool_calls
         tool_calls = function_results.map do |fn_result|
-          # Shared with ToolCall::Function.serialize_arguments so history and
-          # follow-up payloads stay in sync for strict OpenAI-compatible endpoints.
-          arguments_str = ToolCall::Function.serialize_arguments(fn_result[:arguments])
+          # Convert arguments to JSON string if it's not already a string
+          arguments = fn_result[:arguments]
+          arguments_str = arguments.is_a?(String) ? arguments : arguments.to_json
 
-          call = {
+          {
             id: fn_result[:call_id],
             type: "function",
             function: {
@@ -701,8 +607,6 @@ class Provider::Openai < Provider
               arguments: arguments_str
             }
           }
-          call[:extra_content] = fn_result[:extra_content] if fn_result[:extra_content].present?
-          call
         end
 
         payload << {
@@ -728,6 +632,7 @@ class Provider::Openai < Provider
           payload << {
             role: "tool",
             tool_call_id: fn_result[:call_id],
+            name: fn_result[:name],
             content: content
           }
         end
