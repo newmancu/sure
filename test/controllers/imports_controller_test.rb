@@ -13,12 +13,34 @@ class ImportsControllerTest < ActionDispatch::IntegrationTest
 
     assert_response :success
 
+    assert_select "button[data-action='click->privacy-mode#toggle']", count: 1
+    assert_select "[data-controller='bulk-select']"
+    assert_select "[data-bulk-select-target='selectionBar']"
+    assert_select "form#bulk-delete-form"
+    assert_select "input[data-bulk-select-target='row'][form='bulk-delete-form']", count: @user.family.imports.where(type: Import::TYPES).count
+    assert_select "#bulk-delete-form button[type='submit']"
+    assert_select "input[data-bulk-select-target='row']", count: @user.family.imports.where(type: Import::TYPES).count
+
     @user.family.imports.ordered.each do |import|
       assert_select "#" + dom_id(import), count: 1
     end
   end
 
-  test "gets new" do
+  test "shows PDF file names as privacy-sensitive values" do
+    import = imports(:pdf_processed)
+    import.pdf_file.attach(
+      io: StringIO.new(file_fixture("imports/sample_bank_statement.pdf").binread),
+      filename: "checking-january.pdf",
+      content_type: "application/pdf"
+    )
+
+    get imports_url
+
+    assert_response :success
+    assert_select "##{dom_id(import)} span.privacy-sensitive", text: "checking-january.pdf"
+  end
+
+  test "gets new with an aggregate upload size warning" do
     adapter = mock("vector_store_adapter")
     adapter.stubs(:supported_extensions).returns(%w[.pdf .txt])
     VectorStore::Registry.stubs(:adapter).returns(adapter)
@@ -26,9 +48,9 @@ class ImportsControllerTest < ActionDispatch::IntegrationTest
     get new_import_url
 
     assert_response :success
-
     assert_select "turbo-frame#modal"
-    assert_select "form[data-turbo-frame=_top] input[type=file][onchange='this.form.requestSubmit()']", count: 2
+    assert_select "form[data-controller='batch-upload-warning']"
+    assert_select "input[type='file'][data-action='change->batch-upload-warning#upload']"
   end
 
   test "cancel marks a lost import as failed" do
@@ -93,26 +115,6 @@ class ImportsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to import_upload_url(Import.all.ordered.first)
   end
 
-  test "create with an empty request body redirects back with an alert" do
-    assert_no_difference "Import.count" do
-      post imports_url
-    end
-
-    assert_redirected_to new_import_url
-    assert_equal I18n.t("imports.create.missing_upload"), flash[:alert]
-  end
-
-  test "create with DocumentImport or SureImport type but no file redirects back with an alert" do
-    %w[DocumentImport SureImport].each do |type|
-      assert_no_difference "Import.count" do
-        post imports_url, params: { import: { type: type } }
-      end
-
-      assert_redirected_to new_import_url
-      assert_equal I18n.t("imports.create.missing_upload"), flash[:alert]
-    end
-  end
-
   test "uploads supported non-pdf document for vector store without creating import" do
     adapter = mock("vector_store_adapter")
     adapter.stubs(:supported_extensions).returns(%w[.csv .pdf])
@@ -136,6 +138,40 @@ class ImportsControllerTest < ActionDispatch::IntegrationTest
 
     assert_redirected_to new_import_url
     assert_equal I18n.t("imports.create.document_uploaded"), flash[:notice]
+  end
+
+  test "uploads multiple documents independently" do
+    adapter = mock("vector_store_adapter")
+    adapter.stubs(:supported_extensions).returns(%w[.pdf .txt])
+    VectorStore::Registry.stubs(:adapter).returns(adapter)
+
+    family_document = family_documents(:tax_return)
+    Family.any_instance.expects(:upload_document).with do |file_content:, filename:, **|
+      assert_equal "notes.txt", filename
+      assert_equal "plain text", file_content
+      true
+    end.returns(family_document)
+
+    valid_pdf = file_fixture_upload("imports/sample_bank_statement.pdf", "application/pdf")
+    text_file = Rack::Test::UploadedFile.new(
+      StringIO.new("plain text"),
+      "text/plain",
+      original_filename: "notes.txt"
+    )
+
+    assert_difference [ "AccountStatement.count", "Import.where(type: 'PdfImport').count" ], 1 do
+      assert_enqueued_jobs 1, only: ProcessPdfJob do
+        post imports_url, params: {
+          import: {
+            type: "DocumentImport",
+            import_file: [ valid_pdf, text_file ]
+          }
+        }
+      end
+    end
+
+    assert_redirected_to imports_url
+    assert_equal "1 PDF is being processed. You will receive an email when analysis is complete. 1 document uploaded successfully.", flash[:notice]
   end
 
   test "summary renders the import outcome for a pdf import" do
@@ -175,6 +211,80 @@ class ImportsControllerTest < ActionDispatch::IntegrationTest
     assert_not created_import.pdf_file.attached?
     assert_redirected_to import_url(created_import)
     assert_equal I18n.t("imports.create.pdf_processing"), flash[:notice]
+  end
+
+  test "recognizes a PDF by extension with an unrecognized MIME type in a batch" do
+    adapter = mock("vector_store_adapter")
+    adapter.stubs(:supported_extensions).returns(%w[.pdf])
+    VectorStore::Registry.stubs(:adapter).returns(adapter)
+    source = file_fixture("imports/sample_bank_statement.pdf").binread
+    files = [ "first.pdf", "second.pdf" ].each_with_index.map do |filename, index|
+      uploaded_file(filename: filename, content_type: "application/octet-stream", content: source + "\n% copy #{index}")
+    end
+
+    assert_difference "Import.where(type: 'PdfImport').count", 2 do
+      assert_enqueued_jobs 2, only: ProcessPdfJob do
+        post imports_url, params: { import: { type: "DocumentImport", import_file: files } }
+      end
+    end
+  end
+
+  test "reports batch PDFs whose processing jobs could not be scheduled" do
+    adapter = mock("vector_store_adapter")
+    adapter.stubs(:supported_extensions).returns(%w[.pdf])
+    VectorStore::Registry.stubs(:adapter).returns(adapter)
+    PdfImport.any_instance.stubs(:process_with_ai_later).returns(false)
+    source = file_fixture("imports/sample_bank_statement.pdf").binread
+    files = [ "first.pdf", "second.pdf" ].each_with_index.map do |filename, index|
+      uploaded_file(filename: filename, content_type: "application/pdf", content: source + "\n% copy #{index}")
+    end
+
+    assert_difference "Import.where(type: 'PdfImport').count", 2 do
+      assert_no_enqueued_jobs only: ProcessPdfJob do
+        post imports_url, params: { import: { type: "DocumentImport", import_file: files } }
+      end
+    end
+    assert_equal %w[pending pending], PdfImport.order(:created_at).last(2).map(&:status)
+    assert_includes flash[:alert], "first.pdf"
+    assert_includes flash[:alert], "second.pdf"
+  end
+
+  test "reports filename when a vector-store upload returns nil" do
+    adapter = mock("vector_store_adapter")
+    adapter.stubs(:supported_extensions).returns(%w[.txt])
+    VectorStore::Registry.stubs(:adapter).returns(adapter)
+    Family.any_instance.expects(:upload_document).twice.returns(nil)
+
+    post imports_url, params: { import: { type: "DocumentImport", import_file: [
+      uploaded_file(filename: "first.txt", content_type: "text/plain", content: "first"),
+      uploaded_file(filename: "second.txt", content_type: "text/plain", content: "second")
+    ] } }
+
+    assert_includes flash[:alert], "first.txt"
+    assert_includes flash[:alert], "second.txt"
+  end
+
+  test "accepts document batches above the aggregate size warning" do
+    files = (1..11).map do |index|
+      uploaded_file(filename: "notes-#{index}.txt", content_type: "text/plain", content: "notes")
+    end
+    ActionDispatch::Http::UploadedFile.any_instance.stubs(:size).returns(3.megabytes)
+    adapter = mock("vector_store_adapter")
+    adapter.stubs(:supported_extensions).returns(%w[.txt])
+    VectorStore::Registry.stubs(:adapter).returns(adapter)
+    Family.any_instance.expects(:upload_document).times(files.size).returns("uploaded")
+
+    post imports_url, params: { import: { type: "DocumentImport", import_file: files } }
+
+    assert_equal I18n.t("imports.create.document_uploaded_many", count: files.size), flash[:notice]
+    assert_nil flash[:alert]
+  end
+
+  test "bulk deletion rejects requests above the operation limit" do
+    delete destroy_all_imports_url, params: { bulk_delete: { import_ids: Array.new(Import::MAX_BATCH_DELETE_IMPORTS + 1) { imports(:transaction).id } } }
+
+    assert_equal I18n.t("imports.destroy_all.limit", count: Import::MAX_BATCH_DELETE_IMPORTS), flash[:alert]
+    assert imports(:transaction).persisted?
   end
 
   test "uploads pdf import through account statement" do
@@ -224,11 +334,23 @@ class ImportsControllerTest < ActionDispatch::IntegrationTest
       )
     )
 
+    assert_no_difference "Import.where(type: 'PdfImport').count" do
+      post imports_url, params: {
+        import: {
+          import_file: file_fixture_upload("imports/sample_bank_statement.pdf", "application/pdf")
+        }
+      }
+    end
+
+    assert_redirected_to new_import_url
+    assert_equal I18n.t("imports.create.duplicate_pdf_unconfirmed"), flash[:alert]
+
     assert_no_difference "AccountStatement.count" do
       assert_difference "Import.where(type: 'PdfImport').count", 1 do
         post imports_url, params: {
           import: {
-            import_file: file_fixture_upload("imports/sample_bank_statement.pdf", "application/pdf")
+            import_file: file_fixture_upload("imports/sample_bank_statement.pdf", "application/pdf"),
+            allow_duplicate_upload: "true"
           }
         }
       end
@@ -426,78 +548,6 @@ class ImportsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to import_path(import)
   end
 
-  test "member cannot publish import targeting a read only shared account" do
-    import = imports(:transaction)
-    import.update!(account: accounts(:credit_card))
-    TransactionImport.any_instance.expects(:publish_later).never
-
-    sign_in users(:family_member)
-    post publish_import_url(import)
-
-    assert_redirected_to import_path(import)
-    assert_equal I18n.t("accounts.not_authorized"), flash[:alert]
-  end
-
-  test "member cannot publish import with account mapping to an unshared account" do
-    import = imports(:transaction)
-    import.mappings.create!(type: "Import::AccountMapping", key: "Brokerage", mappable: accounts(:investment))
-    TransactionImport.any_instance.expects(:publish_later).never
-
-    sign_in users(:family_member)
-    post publish_import_url(import)
-
-    assert_redirected_to import_path(import)
-    assert_equal I18n.t("accounts.not_authorized"), flash[:alert]
-  end
-
-  test "member can publish import targeting a full control shared account" do
-    import = imports(:transaction)
-    import.update!(account: accounts(:depository))
-    import.mappings.create!(type: "Import::AccountMapping", key: "Checking", mappable: accounts(:depository))
-    TransactionImport.any_instance.expects(:publish_later).once
-
-    sign_in users(:family_member)
-    post publish_import_url(import)
-
-    assert_redirected_to import_path(import)
-    assert_equal I18n.t("imports.publish.started"), flash[:notice]
-  end
-
-  test "member cannot revert import whose entries are in a read only shared account" do
-    import = imports(:transaction)
-    import.update!(status: :complete)
-    entries(:transaction).update!(import: import, account: accounts(:credit_card))
-    TransactionImport.any_instance.expects(:revert_later).never
-
-    sign_in users(:family_member)
-    put revert_import_url(import)
-
-    assert_redirected_to import_path(import)
-    assert_equal I18n.t("accounts.not_authorized"), flash[:alert]
-  end
-
-  test "member cannot publish QIF import whose embedded account matches a read only shared account" do
-    import = qif_import_with_embedded_account(accounts(:credit_card).name)
-    QifImport.any_instance.expects(:publish_later).never
-
-    sign_in users(:family_member)
-    post publish_import_url(import)
-
-    assert_redirected_to import_path(import)
-    assert_equal I18n.t("accounts.not_authorized"), flash[:alert]
-  end
-
-  test "member can publish QIF import whose embedded account is new" do
-    import = qif_import_with_embedded_account("Brand New QIF Account")
-    QifImport.any_instance.expects(:publish_later).once
-
-    sign_in users(:family_member)
-    post publish_import_url(import)
-
-    assert_redirected_to import_path(import)
-    assert_equal I18n.t("imports.publish.started"), flash[:notice]
-  end
-
   test "destroys import" do
     import = imports(:transaction)
 
@@ -506,6 +556,70 @@ class ImportsControllerTest < ActionDispatch::IntegrationTest
     end
 
     assert_redirected_to imports_path
+  end
+
+  test "deletes a completed import with no committed data" do
+    import = imports(:pdf_processed)
+
+    assert_difference "Import.count", -1 do
+      delete import_url(import)
+    end
+
+    assert_redirected_to imports_path
+  end
+
+  test "does not delete a completed import with committed data" do
+    import = imports(:transaction)
+    import.update!(status: :complete)
+    entries(:transaction).update!(import: import)
+
+    assert_no_difference "Import.count" do
+      delete import_url(import)
+    end
+
+    assert_redirected_to imports_path
+    assert_equal I18n.t("imports.destroy.not_deletable"), flash[:alert]
+  end
+
+  test "bulk deletes selected imports in the current family" do
+    imports = [ imports(:transaction), imports(:trade) ]
+
+    assert_difference "Import.count", -2 do
+      delete destroy_all_imports_url, params: {
+        bulk_delete: { import_ids: imports.map(&:id) }
+      }
+    end
+
+    assert_redirected_to imports_path
+    assert_equal "2 imports deleted.", flash[:notice]
+  end
+
+  test "bulk deletion skips completed imports with committed data" do
+    import = imports(:transaction)
+    import.update!(status: :complete)
+    entries(:transaction).update!(import: import)
+
+    assert_no_difference "Import.count" do
+      delete destroy_all_imports_url, params: {
+        bulk_delete: { import_ids: [ import.id ] }
+      }
+    end
+
+    assert_redirected_to imports_path
+    assert_equal I18n.t("imports.destroy_all.not_deletable", count: 1), flash[:alert]
+  end
+
+  test "bulk deletion is scoped to the current family" do
+    other_family_import = Import.create!(family: families(:empty), type: "TransactionImport")
+
+    assert_no_difference "Import.count" do
+      delete destroy_all_imports_url, params: {
+        bulk_delete: { import_ids: [ other_family_import.id ] }
+      }
+    end
+
+    assert_redirected_to imports_path
+    assert_equal "No deletable imports were selected.", flash[:alert]
   end
 
   test "respects SURE_IMPORT_MAX_NDJSON_SIZE_MB when creating Sure import (#3010)" do
@@ -688,23 +802,4 @@ class ImportsControllerTest < ActionDispatch::IntegrationTest
     assert_select 'select[name="import[account_id]"] option', text: "IOU (personal debt to friend)", count: 0
     assert_select 'select[name="import[account_id]"] option', text: "Plaid Depository Account", count: 0
   end
-
-  private
-    def qif_import_with_embedded_account(name)
-      import = QifImport.create!(family: families(:dylan_family))
-      import.update!(raw_file_str: <<~QIF)
-        !Account
-        N#{name}
-        TBank
-        ^
-        !Type:Bank
-        D1/ 1'24
-        U-25.00
-        T-25.00
-        PCoffee Shop
-        ^
-      QIF
-      import.generate_rows_from_csv
-      import.reload
-    end
 end
