@@ -88,11 +88,7 @@ class Assistant::Function::GetBudget < Assistant::Function
         Budget.find_or_bootstrap(family, start_date: start_date, user: user)
       else
         budget_start, budget_end = Budget.period_for(start_date, family: family)
-        family.budgets.find_by(
-          start_date: budget_start,
-          end_date: budget_end,
-          user: family.personal_budgets? ? user : nil
-        )
+        family.budgets.find_by(start_date: budget_start, end_date: budget_end)
       end
       return nil unless budget
 
