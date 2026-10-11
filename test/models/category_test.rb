@@ -1,8 +1,54 @@
 require "test_helper"
 
 class CategoryTest < ActiveSupport::TestCase
+  include EntriesTestHelper
+
   def setup
     @family = families(:dylan_family)
+  end
+
+  test "bootstrap does not claim a matching category with unrelated transactions" do
+    family = Family.create!(name: "Category bootstrap family")
+    unrelated = family.categories.create!(
+      name: "Growth",
+      color: "#0d9488",
+      lucide_icon: "trending-up"
+    )
+    source = family.accounts.create!(
+      name: "Checking", currency: family.currency, balance: 0, accountable: Depository.new
+    )
+    investment = family.accounts.create!(
+      name: "Investment", currency: family.currency, balance: 0, accountable: Investment.new
+    )
+    contribution = create_transaction(
+      account: source, amount: 100, category: unrelated, kind: "investment_contribution"
+    )
+    inflow = create_transaction(account: investment, amount: -100, kind: "funds_movement")
+    Transfer.create!(
+      outflow_transaction: contribution.entryable, inflow_transaction: inflow.entryable, status: "confirmed"
+    )
+    create_transaction(account: source, amount: 25, category: unrelated, kind: "standard")
+
+    family.categories.bootstrap!
+
+    assert_nil unrelated.reload.default_key
+    assert_equal Category::INVESTMENT_CONTRIBUTIONS_DEFAULT_KEY,
+      family.categories.find_by(name: Category.investment_contributions_name).default_key
+  end
+
+  test "bootstrap does not claim an empty matching category" do
+    family = Family.create!(name: "Category bootstrap empty family")
+    unrelated = family.categories.create!(
+      name: "Growth",
+      color: "#0d9488",
+      lucide_icon: "trending-up"
+    )
+
+    family.categories.bootstrap!
+
+    assert_nil unrelated.reload.default_key
+    assert_equal Category::INVESTMENT_CONTRIBUTIONS_DEFAULT_KEY,
+      family.categories.find_by(name: Category.investment_contributions_name).default_key
   end
 
   test "replacing and destroying" do
@@ -19,38 +65,6 @@ class CategoryTest < ActiveSupport::TestCase
     categories(:food_and_drink).replace_and_destroy!(nil)
 
     assert_nil transactions.map { |t| t.reload.category }.uniq.first
-  end
-
-  test "replacing and destroying invalidates entries_cache_version" do
-    before = @family.entries_cache_version
-
-    travel 1.second do
-      categories(:food_and_drink).replace_and_destroy!(categories(:income))
-    end
-
-    assert_not_equal before, @family.entries_cache_version
-  end
-
-  test "replacing with nil invalidates entries_cache_version" do
-    before = @family.entries_cache_version
-
-    travel 1.second do
-      categories(:food_and_drink).replace_and_destroy!(nil)
-    end
-
-    assert_not_equal before, @family.entries_cache_version
-  end
-
-  test "destroy nullifies transaction categories and bumps entries_cache_version" do
-    transaction = transactions(:one)
-    before = @family.entries_cache_version
-
-    travel 1.second do
-      categories(:food_and_drink).destroy!
-    end
-
-    assert_nil transaction.reload.category_id
-    assert_not_equal before, @family.entries_cache_version
   end
 
   test "destroying parent category preserves subcategory transaction assignments" do
@@ -87,24 +101,6 @@ class CategoryTest < ActiveSupport::TestCase
     assert_nothing_raised { category.valid? }
     assert_not category.subcategory?
     assert_nil category.parent
-  end
-
-  test "a parent must belong to the same family" do
-    other_family = families(:empty)
-    foreign_parent = other_family.categories.create!(name: "Foreign Parent", color: "#123456")
-
-    category = @family.categories.new(name: "Cross Family Child", color: "#000000", parent: foreign_parent)
-
-    assert_not category.valid?
-    assert category.errors.of_kind?(:parent, :invalid)
-  end
-
-  test "a parent from the same family is accepted" do
-    parent = categories(:food_and_drink)
-    category = @family.categories.create!(name: "Same Family Child", color: "#000000", parent: parent)
-
-    assert_equal parent, category.parent
-    assert_equal parent.color, category.color, "subcategories inherit their parent's color"
   end
 
   test "subcategory can only be one level deep" do

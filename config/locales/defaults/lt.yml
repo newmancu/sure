@@ -42,7 +42,6 @@ lt:
       default: "%Y-%m-%d"
       long: "%Y m. %B %d d."
       short: "%b %d"
-      short_with_year: "%Y m. %b %d d."
     month_names:
     -
     - sausio
