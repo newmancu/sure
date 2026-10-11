@@ -54,8 +54,7 @@ pl:
         many: Zaległe od %{count} dni
         one: Zaległe od 1 dnia
         other: Zaległe od %{count} dni
-      partial: Częściowo
-      paused: Wstrzymane
+      partial: Częściowo · pozostało %{amount}
     calendar:
       empty_month: Brak rachunków z terminem w tym miesiącu.
       month_totals: "%{expected} oczekiwane · %{paid} opłacone"
@@ -66,7 +65,7 @@ pl:
       today: Dziś
     cancelled_still_scheduled: Oznaczono to jako anulowane %{date}, ale nadal jest
       zaplanowane, więc kolejne rachunki będą się pojawiać.
-    debt_payment: Spłata zadłużenia
+    debt_payment: "· spłata zadłużenia"
     detail:
       annualized: Rocznie
       around: około %{date}
@@ -82,7 +81,6 @@ pl:
       manual_payment: Płatność ręczna
       next_payment: Następna płatność
       notes: Notatki
-      overview: Przegląd
       payment_count:
         few: "%{count} płatności"
         many: "%{count} płatności"
@@ -91,6 +89,7 @@ pl:
       price_change_line: "%{from} → %{to}"
       price_changes: Zmiany cen
       range: od %{min} do %{max}
+      recent_payments: Ostatnie płatności
       renews_chip: Odnawia się %{date}
       rule_aliases: Pasuje też do %{names}
       rule_amount_range: od %{min} do %{max}
@@ -132,8 +131,8 @@ pl:
     find_payment: Znajdź płatność
     index:
       accept: Zastosuj
-      add_bill: Nowy rachunek
-      add_income: Nowy przychód
+      add_bill: Dodaj rachunek
+      add_income: Dodaj przychód
       all_automatic: wszystkie na autopłatności
       attention_overdue_total: "%{amount} zaległe"
       confidence: dopasowanie %{percent}%
@@ -147,7 +146,7 @@ pl:
         other: Znaleźliśmy %{count} cyklicznych płatności w Twoich transakcjach. Sprawdź
           je, aby sumy tutaj zgadzały się z tym, co faktycznie płacisz.
       detected_review_action: Sprawdź je
-      dormant: Wstrzymane
+      dormant: Uśpione
       empty:
         action: Znajdź transakcje cykliczne
         description: Rachunki to Twoje cykliczne wydatki. Sure wykrywa je automatycznie
@@ -170,7 +169,6 @@ pl:
         one: 1 wymaga uwagi
         other: "%{count} wymaga uwagi"
       needs_attention: Wymaga uwagi
-      notices_heading: Zmiany
       needs_review: Wymaga sprawdzenia
       notice_price: "%{name}: zmiana ceny %{from} → %{to} (%{percent})"
       notice_renewal: "%{name} odnawia się %{date}"
@@ -216,7 +214,7 @@ pl:
         other: "%{count} rachunków nie jest uwzględnionych — brak dostępnego kursu
           wymiany"
     installment_progress: Płatność %{done_plus_one} z %{total}
-    manage: Zobacz
+    manage: Zarządzaj
     manage_payments: Zarządzaj płatnościami
     match:
       amount_off: różnica %{amount}
@@ -368,8 +366,10 @@ pl:
         trigger: Pozwól AI skonfigurować
         uncategorized: Bez kategorii
     summary:
+      cost_line: Średnio %{average} za płatność, około %{annualized} rocznie
       paid_headline: Zapłacono %{amount}
       remaining: Pozostało %{amount}
+    view_full_bill: Zobacz pełny rachunek
     views:
       all: Wszystkie rachunki
       aria_label: Widoki rachunków
