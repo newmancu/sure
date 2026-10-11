@@ -84,7 +84,7 @@ This single command generates:
 - ✅ Simple manual panel view for provider settings
 - ✅ Controller with CRUD actions and Turbo Stream support
 - ✅ Routes
-- ✅ Bank sync wiring: the settings controller's `FAMILY_PANELS` entry and sync maps, and a `provider_summary` case
+- ✅ Updates to settings controller and view
 
 The generated item partial renders the provider's logo with `ProviderLogo`. That reads the
 provider's `Provider::Metadata::REGISTRY` entry, which the generator does not create, so add
@@ -167,15 +167,10 @@ This single command generates:
 
 **File:** `db/migrate/xxx_create_my_bank_tables_and_accounts.rb`
 
-Creates two complete tables with all necessary fields. The generator writes the
-Rails version in use when it runs, from `Rails::VERSION::MAJOR` and
-`Rails::VERSION::MINOR` joined by a dot, so a provider generated on a later
-Rails will show that version here instead of `[8.1]`. The
-version in any generated migration is then fixed — it pins the semantics the
-migration was written against and is not rewritten by later upgrades.
+Creates two complete tables with all necessary fields:
 
 ```ruby
-class CreateMyBankTablesAndAccounts < ActiveRecord::Migration[8.1]
+class CreateMyBankTablesAndAccounts < ActiveRecord::Migration[7.2]
   def change
     # Create provider items table (stores per-family connection credentials)
     create_table :my_bank_items, id: :uuid do |t|
@@ -249,7 +244,7 @@ The item model stores per-family connection credentials:
 
 ```ruby
 class MyBankItem < ApplicationRecord
-  include Syncable, Provided, DestroyableLater
+  include Syncable, Provided
 
   enum :status, { good: "good", requires_update: "requires_update" }, default: :good
 
@@ -270,6 +265,11 @@ class MyBankItem < ApplicationRecord
   scope :active, -> { where(scheduled_for_deletion: false) }
   scope :ordered, -> { order(created_at: :desc) }
   scope :needs_update, -> { where(status: :requires_update) }
+
+  def destroy_later
+    update!(scheduled_for_deletion: true)
+    DestroyJob.perform_later(self)
+  end
 
   def credentials_configured?
     api_key.present? && refresh_token.present?
@@ -402,11 +402,10 @@ end
 
 **File:** `app/views/settings/providers/_my_bank_panel.html.erb`
 
-A simple manual form for configuring My Bank credentials. The root id is what the
-controller's Turbo Streams replace:
+A simple manual form for configuring My Bank credentials:
 
 ```erb
-<div id="my_bank-providers-panel" class="space-y-4">
+<div class="space-y-4">
   <div class="prose prose-sm text-secondary">
     <p class="text-primary font-medium">Setup instructions:</p>
     <ol>
@@ -475,10 +474,7 @@ controller's Turbo Streams replace:
 
 **File:** `app/controllers/my_bank_items_controller.rb`
 
-A simple controller with CRUD actions. The panel's forms post from the page (a
-connection row or the drawer), and `render_provider_panel` answers their updates and
-errors in place: it replaces the panel root named by the provider's `FAMILY_PANELS`
-entry, or redirects when the request isn't from Turbo. A new connection reloads Bank sync:
+A simple controller with CRUD actions and Turbo Stream support:
 
 ```ruby
 class MyBankItemsController < ApplicationController
@@ -489,17 +485,63 @@ class MyBankItemsController < ApplicationController
     @my_bank_item.name ||= "My Bank Connection"
 
     if @my_bank_item.save
-      redirect_to settings_providers_path, notice: t(".success"), status: :see_other
+      if turbo_frame_request?
+        flash.now[:notice] = t(".success", default: "Successfully configured My Bank.")
+        @my_bank_items = Current.family.my_bank_items.ordered
+        render turbo_stream: [
+          turbo_stream.replace(
+            "my-bank-providers-panel",
+            partial: "settings/providers/my_bank_panel",
+            locals: { my_bank_items: @my_bank_items }
+          ),
+          *flash_notification_stream_items
+        ]
+      else
+        redirect_to settings_providers_path, notice: t(".success"), status: :see_other
+      end
     else
-      render_provider_panel("my_bank", alert: @my_bank_item.errors.full_messages.join(", "))
+      @error_message = @my_bank_item.errors.full_messages.join(", ")
+
+      if turbo_frame_request?
+        render turbo_stream: turbo_stream.replace(
+          "my-bank-providers-panel",
+          partial: "settings/providers/my_bank_panel",
+          locals: { error_message: @error_message }
+        ), status: :unprocessable_entity
+      else
+        redirect_to settings_providers_path, alert: @error_message, status: :unprocessable_entity
+      end
     end
   end
 
   def update
     if @my_bank_item.update(my_bank_item_params)
-      render_provider_panel("my_bank", notice: t(".success"))
+      if turbo_frame_request?
+        flash.now[:notice] = t(".success", default: "Successfully updated My Bank configuration.")
+        @my_bank_items = Current.family.my_bank_items.ordered
+        render turbo_stream: [
+          turbo_stream.replace(
+            "my-bank-providers-panel",
+            partial: "settings/providers/my_bank_panel",
+            locals: { my_bank_items: @my_bank_items }
+          ),
+          *flash_notification_stream_items
+        ]
+      else
+        redirect_to settings_providers_path, notice: t(".success"), status: :see_other
+      end
     else
-      render_provider_panel("my_bank", alert: @my_bank_item.errors.full_messages.join(", "))
+      @error_message = @my_bank_item.errors.full_messages.join(", ")
+
+      if turbo_frame_request?
+        render turbo_stream: turbo_stream.replace(
+          "my-bank-providers-panel",
+          partial: "settings/providers/my_bank_panel",
+          locals: { error_message: @error_message }
+        ), status: :unprocessable_entity
+      else
+        redirect_to settings_providers_path, alert: @error_message, status: :unprocessable_entity
+      end
     end
   end
 
@@ -552,15 +594,11 @@ end
 ### 7. Settings Updates
 
 **File:** `app/controllers/settings/providers_controller.rb` (updated)
+- Excludes `my_bank` from global provider configurations
 - Adds `@my_bank_items` instance variable
-- Adds a `FAMILY_PANELS` entry, so Bank sync lists My Bank and opens its panel in the
-  drawer. `FAMILY_PANEL_KEYS` also keeps it out of the global provider forms.
-- Adds `my_bank` to `PANEL_SYNCABLE_TYPES` and `family_panel_items`, which give its
-  connection row a sync status and a working Sync button.
 
-**File:** `app/helpers/settings_helper.rb` (updated)
-- Adds a `"my_bank"` case to `provider_summary`, so a connected My Bank is listed under
-  Your connections. Keys it doesn't know stay under Available.
+**File:** `app/views/settings/providers/show.html.erb` (updated)
+- Adds My Bank section with turbo frame
 
 ---
 
@@ -783,14 +821,25 @@ end
 
 ### Panel Not Showing
 
-1. Check that `FAMILY_PANELS` in `settings/providers_controller.rb` lists the provider:
+1. Check that the provider is excluded in `settings/providers_controller.rb`:
    ```ruby
-   { key: "my_bank", title: "My Bank", turbo_id: "my_bank", partial: "my_bank_panel" }
+   @provider_configurations = Provider::ConfigurationRegistry.all.reject do |config|
+     config.provider_key.to_s.casecmp("my_bank").zero?
+   end
    ```
 
 2. Check that the instance variable is set:
    ```ruby
    @my_bank_items = Current.family.my_bank_items.ordered.select(:id)
+   ```
+
+3. Check that the section exists in `settings/providers/show.html.erb`:
+   ```erb
+   <%= settings_section title: "My Bank" do %>
+     <turbo-frame id="my-bank-providers-panel">
+       <%= render "settings/providers/my_bank_panel" %>
+     </turbo-frame>
+   <% end %>
    ```
 
 ### Form Not Submitting
@@ -800,9 +849,9 @@ end
    rails routes | grep my_bank
    ```
 
-2. Check the panel root ID matches:
-   - View: `<div id="my_bank-providers-panel">`
-   - `FAMILY_PANELS`: `turbo_id: "my_bank"`, which `render_provider_panel` replaces as `my_bank-providers-panel`
+2. Check turbo frame ID matches:
+   - View: `<turbo-frame id="my-bank-providers-panel">`
+   - Controller: Uses `"my-bank-providers-panel"` in turbo_stream.replace
 
 ### Encryption Not Working
 
