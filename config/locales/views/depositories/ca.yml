@@ -10,7 +10,7 @@ ca:
       title: Introdueix el saldo del compte
     subtypes:
       cd:
-        long: Dipòsit a termini
+        long: Certificat de dipòsit
         short: CD
       checking:
         long: Corrent
