@@ -8,24 +8,13 @@ Doorkeeper.configure do
   # This block will be called to check whether the resource owner is authenticated or not.
   resource_owner_authenticator do
     # Manually replicate the app's session-based authentication logic, since
-    # Doorkeeper controllers don't include our Authentication concern. This
-    # must reject (and destroy) a session whose user has been deactivated,
-    # the same way Authentication#find_session_by_cookie does — otherwise a
-    # stale session (e.g. `active` flipped via update_column, which skips
-    # callbacks) could still be used to issue a fresh OAuth authorization
-    # grant for a deactivated user.
+    # Doorkeeper controllers don't include our Authentication concern.
     if (session_id = cookies.signed[:session_token]).present?
       if (session_record = Session.find_by(id: session_id))
-        if session_record.user&.active?
-          # Set Current.session so downstream code expecting it behaves normally.
-          Current.session = session_record
-          # Return the authenticated user object as the resource owner.
-          session_record.user
-        else
-          Rails.logger.warn("[AUTH] Rejected OAuth authorization for deactivated user_id=#{session_record.user_id}")
-          session_record.destroy
-          redirect_to new_session_url
-        end
+        # Set Current.session so downstream code expecting it behaves normally.
+        Current.session = session_record
+        # Return the authenticated user object as the resource owner.
+        session_record.user
       else
         redirect_to new_session_url
       end
@@ -39,18 +28,11 @@ Doorkeeper.configure do
   # adding oauth authorized applications. In other case it will return 403 Forbidden response
   # every time somebody will try to access the admin web interface.
   #
-  # Same active?-check-and-destroy treatment as resource_owner_authenticator above.
   admin_authenticator do
     if (session_id = cookies.signed[:session_token]).present?
       if (session_record = Session.find_by(id: session_id))
-        if session_record.user&.active?
-          Current.session = session_record
-          head :forbidden unless session_record.user.super_admin?
-        else
-          Rails.logger.warn("[AUTH] Rejected Doorkeeper admin access for deactivated user_id=#{session_record.user_id}")
-          session_record.destroy
-          redirect_to new_session_url
-        end
+        Current.session = session_record
+        head :forbidden unless session_record.user&.super_admin?
       else
         redirect_to new_session_url
       end
