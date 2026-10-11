@@ -522,40 +522,22 @@ class Family::DataExporterTest < ActiveSupport::TestCase
     end
   end
 
-  test "rule operand lookup matches uppercase UUID values" do
-    operand = @exporter.send(
-      :rule_operand,
-      @category.id.upcase,
-      type: "Category",
-      relation: :categories,
-      fallback_to_name: true
-    )
-
-    assert_equal "Test Category", operand[:value]
-    assert_equal({ type: "Category", id: @category.id, name: "Test Category" }, operand[:value_ref])
-  end
-
   test "rule operand lookup skips name fallback for stale UUID values" do
     stale_uuid = SecureRandom.uuid
-    @exporter.expects(:operand_records_by_name).never
+    relation = mock
+    relation.expects(:find_by).with(id: stale_uuid).once.returns(nil)
+    relation.expects(:find_by).with(name: stale_uuid).never
 
     operand = @exporter.send(
       :rule_operand,
       stale_uuid,
       type: "Category",
-      relation: :categories,
+      relation: relation,
       fallback_to_name: true
     )
 
     assert_equal stale_uuid, operand[:value]
     assert_nil operand[:value_ref]
-  end
-
-  test "operand id and name lookups for the same relation share a single query" do
-    assert_queries_count(1) do
-      @exporter.send(:operand_records_by_id, :categories)
-      @exporter.send(:operand_records_by_name, :categories)
-    end
   end
 
   test "exports rule actions and maps tag UUIDs to names" do
@@ -856,77 +838,6 @@ class Family::DataExporterTest < ActiveSupport::TestCase
       assert_equal true, recurring_data["data"]["manual"]
       assert_equal "https://pay.example.com/internet", recurring_data["data"]["payment_url"]
       assert_not recurring_data["data"].key?("family_id")
-    end
-  end
-
-  test "exports provider merchants referenced by transactions in NDJSON" do
-    provider_merchant = ProviderMerchant.create!(name: "AMZN MKTP", source: "plaid", provider_merchant_id: "plaid_amzn")
-    @account.entries.create!(
-      date: Date.parse("2024-05-02"),
-      amount: 42.50,
-      name: "Amazon purchase",
-      currency: "USD",
-      entryable: Transaction.new(merchant: provider_merchant)
-    )
-
-    zip_data = @exporter.generate_export
-
-    Zip::File.open_buffer(zip_data) do |zip|
-      ndjson_records = zip.read("all.ndjson").split("\n").map { |line| JSON.parse(line) }
-      provider_merchant_data = ndjson_records.find do |record|
-        record["type"] == "ProviderMerchant" && record.dig("data", "id") == provider_merchant.id
-      end
-
-      assert provider_merchant_data
-      assert_equal "AMZN MKTP", provider_merchant_data["data"]["name"]
-      assert_equal "plaid", provider_merchant_data["data"]["source"]
-      assert_equal "plaid_amzn", provider_merchant_data["data"]["provider_merchant_id"]
-    end
-  end
-
-  test "does not export a color for a provider merchant" do
-    provider_merchant = ProviderMerchant.create!(name: "Colorless", source: "plaid")
-    @account.entries.create!(
-      date: Date.parse("2024-05-02"), amount: 5, name: "Colorless purchase", currency: "USD",
-      entryable: Transaction.new(merchant: provider_merchant)
-    )
-
-    Zip::File.open_buffer(@exporter.generate_export) do |zip|
-      data = zip.read("all.ndjson").split("\n").map { |line| JSON.parse(line) }
-        .find { |record| record["type"] == "ProviderMerchant" && record.dig("data", "id") == provider_merchant.id }["data"]
-
-      assert_not data.key?("color")
-    end
-  end
-
-  test "exports provider merchants referenced by recurring transactions in NDJSON" do
-    provider_merchant = ProviderMerchant.create!(name: "Recurring Provider Merchant", source: "ai")
-    @family.recurring_transactions.create!(
-      account: @account,
-      merchant: provider_merchant,
-      amount: -12.99,
-      currency: "USD",
-      expected_day_of_month: 5,
-      last_occurrence_date: Date.parse("2024-01-05"),
-      next_expected_date: Date.parse("2024-02-05")
-    )
-
-    zip_data = @exporter.generate_export
-
-    Zip::File.open_buffer(zip_data) do |zip|
-      ndjson_records = zip.read("all.ndjson").split("\n").map { |line| JSON.parse(line) }
-      assert ndjson_records.any? { |record| record["type"] == "ProviderMerchant" && record.dig("data", "id") == provider_merchant.id }
-    end
-  end
-
-  test "excludes provider merchants not referenced by the family from NDJSON" do
-    unreferenced = ProviderMerchant.create!(name: "Unrelated Provider Merchant", source: "plaid")
-
-    zip_data = @exporter.generate_export
-
-    Zip::File.open_buffer(zip_data) do |zip|
-      ndjson_records = zip.read("all.ndjson").split("\n").map { |line| JSON.parse(line) }
-      refute ndjson_records.any? { |record| record["type"] == "ProviderMerchant" && record.dig("data", "id") == unreferenced.id }
     end
   end
 

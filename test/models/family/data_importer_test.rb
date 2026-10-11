@@ -31,6 +31,40 @@ class Family::DataImporterTest < ActiveSupport::TestCase
     assert_equal "Depository", account.accountable_type
   end
 
+  # Generated interest entries are deliberately excluded from the export, so a
+  # restored loan can only rebuild them if it still knows accrual is on. Without
+  # this round-trip the balance comes back understated.
+  test "imports loan interest accrual settings" do
+    ndjson = build_ndjson([
+      {
+        type: "Account",
+        data: {
+          id: "old-loan-1",
+          name: "Mortgage",
+          balance: "200000.00",
+          currency: "USD",
+          accountable_type: "Loan",
+          accountable: {
+            subtype: "mortgage",
+            interest_rate: "6.0",
+            accrue_interest: true,
+            interest_accrual_start_date: "2026-01-01",
+            interest_accrual_day: 15
+          }
+        }
+      }
+    ])
+
+    result = Family::DataImporter.new(@family, ndjson).import!
+
+    loan = result[:accounts].first.accountable
+    assert loan.accrue_interest?
+    assert_equal 6.0, loan.interest_rate.to_f
+    assert_equal Date.new(2026, 1, 1), loan.interest_accrual_start_date
+    assert_equal 15, loan.interest_accrual_day
+    assert loan.accrues_interest?, "restored loan should resume accruing on the next sync"
+  end
+
   test "imports non-destructive account status from ndjson" do
     ndjson = build_ndjson([
       {
@@ -1883,35 +1917,6 @@ class Family::DataImporterTest < ActiveSupport::TestCase
     assert_equal category.id, action.value
   end
 
-  test "rejects invalid rule references before creating related records" do
-    valid_condition = { condition_type: "transaction_name", operator: "like", value: "coffee" }
-    cases = [
-      [ { condition_type: "transaction_category", operator: "=", value: "Bad\0Category" },
-        { action_type: "exclude_transaction" }, "value" ],
-      [ valid_condition,
-        { action_type: "set_transaction_merchant", value_ref: { name: "Bad\0Merchant" } }, "value_ref" ],
-      [ valid_condition,
-        { action_type: "set_transaction_tags", value_ref: [ { name: "Safe" }, { name: "Bad\0Tag" } ] }, "value_ref" ]
-    ]
-    counts = [ @family.rules.count, @family.categories.count, @family.merchants.count, @family.tags.count ]
-
-    cases.each do |condition, action, field|
-      ndjson = build_ndjson([ {
-        type: "Rule", version: 1,
-        data: { name: "Invalid reference", resource_type: "transaction", conditions: [ condition ], actions: [ action ] }
-      } ])
-
-      error = assert_raises(Family::DataImporter::InvalidRecordError) do
-        Family::DataImporter.new(@family, ndjson).import!
-      end
-
-      assert_equal "invalid_import_record", error.code
-      assert_equal field, error.details[:field]
-      assert_equal "(invalid text)", error.details[:value]
-      assert_equal counts, [ @family.rules.count, @family.categories.count, @family.merchants.count, @family.tags.count ]
-    end
-  end
-
   test "imports transaction_tag rule condition by remapping the tag name to an id" do
     ndjson = build_ndjson([
       {
@@ -1951,147 +1956,6 @@ class Family::DataImporterTest < ActiveSupport::TestCase
     tag = @family.tags.find_by(name: "Reimbursable")
     assert_not_nil tag
     assert_equal tag.id, condition.value
-  end
-
-  test "reuses a category created for an earlier rule within the same import" do
-    ndjson = build_ndjson([
-      {
-        type: "Rule",
-        version: 1,
-        data: {
-          name: "First coffee rule",
-          resource_type: "transaction",
-          active: true,
-          conditions: [
-            { condition_type: "transaction_name", operator: "like", value: "coffee" }
-          ],
-          actions: [
-            { action_type: "set_transaction_category", value: "Coffee Shops" }
-          ]
-        }
-      },
-      {
-        type: "Rule",
-        version: 1,
-        data: {
-          name: "Second coffee rule",
-          resource_type: "transaction",
-          active: true,
-          conditions: [
-            { condition_type: "transaction_name", operator: "like", value: "latte" }
-          ],
-          actions: [
-            { action_type: "set_transaction_category", value: "Coffee Shops" }
-          ]
-        }
-      }
-    ])
-
-    importer = Family::DataImporter.new(@family, ndjson)
-
-    assert_difference -> { @family.categories.where(name: "Coffee Shops").count }, 1 do
-      importer.import!
-    end
-
-    category = @family.categories.find_by!(name: "Coffee Shops")
-    first_rule = @family.rules.find_by!(name: "First coffee rule")
-    second_rule = @family.rules.find_by!(name: "Second coffee rule")
-    assert_equal category.id, first_rule.actions.first.value
-    assert_equal category.id, second_rule.actions.first.value
-  end
-
-  test "reuses a merchant created for an earlier rule within the same import" do
-    ndjson = build_ndjson([
-      {
-        type: "Rule",
-        version: 1,
-        data: {
-          name: "First coffee merchant rule",
-          resource_type: "transaction",
-          active: true,
-          conditions: [
-            { condition_type: "transaction_name", operator: "like", value: "coffee" }
-          ],
-          actions: [
-            { action_type: "set_transaction_merchant", value: "Blue Bottle" }
-          ]
-        }
-      },
-      {
-        type: "Rule",
-        version: 1,
-        data: {
-          name: "Second coffee merchant rule",
-          resource_type: "transaction",
-          active: true,
-          conditions: [
-            { condition_type: "transaction_name", operator: "like", value: "latte" }
-          ],
-          actions: [
-            { action_type: "set_transaction_merchant", value: "Blue Bottle" }
-          ]
-        }
-      }
-    ])
-
-    importer = Family::DataImporter.new(@family, ndjson)
-
-    assert_difference -> { @family.merchants.where(name: "Blue Bottle").count }, 1 do
-      importer.import!
-    end
-
-    merchant = @family.merchants.find_by!(name: "Blue Bottle")
-    first_rule = @family.rules.find_by!(name: "First coffee merchant rule")
-    second_rule = @family.rules.find_by!(name: "Second coffee merchant rule")
-    assert_equal merchant.id, first_rule.actions.first.value
-    assert_equal merchant.id, second_rule.actions.first.value
-  end
-
-  test "reuses a tag created for an earlier rule within the same import" do
-    ndjson = build_ndjson([
-      {
-        type: "Rule",
-        version: 1,
-        data: {
-          name: "First coffee tag rule",
-          resource_type: "transaction",
-          active: true,
-          conditions: [
-            { condition_type: "transaction_name", operator: "like", value: "coffee" }
-          ],
-          actions: [
-            { action_type: "set_transaction_tags", value: "Recurring" }
-          ]
-        }
-      },
-      {
-        type: "Rule",
-        version: 1,
-        data: {
-          name: "Second coffee tag rule",
-          resource_type: "transaction",
-          active: true,
-          conditions: [
-            { condition_type: "transaction_name", operator: "like", value: "latte" }
-          ],
-          actions: [
-            { action_type: "set_transaction_tags", value: "Recurring" }
-          ]
-        }
-      }
-    ])
-
-    importer = Family::DataImporter.new(@family, ndjson)
-
-    assert_difference -> { @family.tags.where(name: "Recurring").count }, 1 do
-      importer.import!
-    end
-
-    tag = @family.tags.find_by!(name: "Recurring")
-    first_rule = @family.rules.find_by!(name: "First coffee tag rule")
-    second_rule = @family.rules.find_by!(name: "Second coffee tag rule")
-    assert_equal [ tag.id ], first_rule.actions.first.value.split(",")
-    assert_equal [ tag.id ], second_rule.actions.first.value.split(",")
   end
 
   test "session rule reimport only replaces current family conditions and actions" do

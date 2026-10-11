@@ -16,7 +16,13 @@ class Rule::Registry::TransactionResource < Rule::Registry
   end
 
   def resource_scope
-    family.transactions.visible.with_entry.merge(Entry.excluding_split_parents).where(entry: { date: rule.effective_date.. })
+    # System-generated entries are excluded: they are derived output that the
+    # generating code rewrites on every sync, so a rule that renamed or
+    # recategorized one would fight the syncer indefinitely.
+    family.transactions.visible.with_entry
+          .merge(Entry.excluding_split_parents)
+          .merge(Entry.excluding_system_generated)
+          .where(entry: { date: rule.effective_date.. })
   end
 
   def condition_filters
@@ -35,11 +41,8 @@ class Rule::Registry::TransactionResource < Rule::Registry
       Rule::ActionExecutor::SendEmailNotification.new(rule)
     ]
 
-    if auto_categorization_enabled? || existing_action?("auto_categorize")
+    if ai_enabled?
       enabled_executors << Rule::ActionExecutor::AutoCategorize.new(rule)
-    end
-
-    if auto_merchant_detection_enabled? || existing_action?("auto_detect_merchants")
       enabled_executors << Rule::ActionExecutor::AutoDetectMerchants.new(rule)
     end
 
@@ -47,15 +50,7 @@ class Rule::Registry::TransactionResource < Rule::Registry
   end
 
   private
-    def auto_categorization_enabled?
-      family.resolved_categorization_provider.present?
-    end
-
-    def auto_merchant_detection_enabled?
-      Provider::Registry.preferred_llm_provider.present?
-    end
-
-    def existing_action?(action_type)
-      rule.actions.any? { |action| action.action_type == action_type }
+    def ai_enabled?
+      Provider::Registry.get_provider(:openai).present?
     end
 end
