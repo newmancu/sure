@@ -1,5 +1,5 @@
 class IbkrItem < ApplicationRecord
-  include Syncable, Provided, Unlinking, Encryptable, DestroyableLater
+  include Syncable, Provided, Unlinking, Encryptable
 
   enum :status, { good: "good", requires_update: "requires_update" }, default: :good
 
@@ -22,6 +22,11 @@ class IbkrItem < ApplicationRecord
   scope :syncable, -> { active.where.not(query_id: [ nil, "" ]).where.not(token: nil) }
   scope :ordered, -> { order(created_at: :desc) }
   scope :needs_update, -> { where(status: :requires_update) }
+
+  def destroy_later
+    update!(scheduled_for_deletion: true)
+    DestroyJob.perform_later(self)
+  end
 
   def credentials_configured?
     query_id.present? && token.present?

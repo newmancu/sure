@@ -251,11 +251,11 @@ export default class extends Controller {
 
   // Handles click on segment (optional, controlled by enableClick value)
   #handleClick(segment) {
-    if (!segment.filter_value) return;
+    if (!segment.name) return;
 
     Turbo.visit(
       buildCategoryTransactionsUrl({
-        filterValue: segment.filter_value,
+        name: segment.name,
         startDate: this.startDateValue,
         endDate: this.endDateValue,
       }),
