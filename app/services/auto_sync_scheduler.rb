@@ -30,7 +30,6 @@ class AutoSyncScheduler
       name: JOB_NAME,
       cron: cron,
       class: "SyncAllJob",
-      active_job: true, # see config/schedule.yml
       queue: "scheduled",
       description: "Syncs all accounts for all families"
     )
