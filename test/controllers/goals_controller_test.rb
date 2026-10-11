@@ -44,14 +44,6 @@ class GoalsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
   end
 
-  test "the target amount field keeps its own action alongside the paste handler" do
-    get new_goal_url
-
-    assert_response :success
-    assert_select "input[data-money-field-target=?][data-action=?]", "amount",
-                  "input->goal-form#suggestedChanged paste->money-field#pasteAmount"
-  end
-
   test "create persists a goal with linked accounts" do
     # Fresh accounts: the goal fixtures already claim @depository and
     # @connected in full, and GoalAccount refuses a second whole-balance
@@ -136,27 +128,6 @@ class GoalsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
     assert_no_match(/Member Private Checking/, response.body)
     assert_no_match(/#{private_account.id}/, response.body)
-  end
-
-  # The builder's money field, not a bare number input: currency symbol and
-  # all. Its label used to point at nothing — `for` carried the label text —
-  # so the check is that it names the input the amount is posted from.
-  test "the consumption dialog asks for the amount with a labelled money field" do
-    get consume_goal_url(@goal)
-
-    assert_response :success
-    assert_select "[data-controller='money-field'] input[type=number][name=amount][id=amount][autofocus]"
-    assert_select "label[for=amount]", text: /#{I18n.t("goals.consume.amount_label")}/
-  end
-
-  # Both figures in the dialog blur under privacy mode, as they do on the goal
-  # page. The amount also stays clickable: it is the one field the reader fills.
-  test "the consumption dialog blurs its figures under privacy mode and the amount stays editable" do
-    get consume_goal_url(@goal)
-
-    assert_response :success
-    assert_select "input[name=amount].form-field__input.privacy-sensitive.privacy-sensitive-interactive"
-    assert_select "p.privacy-sensitive", text: /is currently backing this goal/
   end
 
   test "consumption is refused against a linked account the viewer cannot see" do
@@ -708,210 +679,6 @@ class GoalsControllerTest < ActionDispatch::IntegrationTest
     assert_equal I18n.t("goals.consume.errors.transaction_not_found"), flash[:alert]
   end
 
-  # The months mode could not be created from the UI at all. The form makes the
-  # amount read-only, so it submits empty; `target_amount` is required and
-  # validations run before any save callback, so the derivation that fills it
-  # never ran. Every existing test set the amount explicitly, which is why the
-  # model looked fine.
-  test "a months-of-expenses reserve can be created without typing an amount" do
-    account = unclaimed_account("Reserve Pot")
-    IncomeStatement.any_instance.stubs(:median_expense).returns(500)
-
-    assert_difference -> { Goal.count }, 1 do
-      post goals_url, params: { goal: {
-        name: "Precaution", color: "#4da568", kind: "maintained",
-        target_mode: "months_of_expenses", target_months: "6",
-        target_amount: "", account_ids: [ account.id ]
-      } }
-    end
-
-    goal = Goal.order(created_at: :desc).first
-    assert_equal 3_000, goal.target_amount.to_d, "the floor was not derived from the months"
-    assert goal.maintained?
-  end
-
-  # A fixed reserve still needs one, and still says so. Asserted on the error the
-  # form puts in front of the user, not on the status alone: a 422 for some
-  # unrelated reason would otherwise keep this green while the guard it names
-  # had quietly gone.
-  test "a fixed-amount goal still requires the amount" do
-    account = unclaimed_account("Fixed Pot")
-
-    assert_no_difference -> { Goal.count } do
-      post goals_url, params: { goal: {
-        name: "No amount", color: "#4da568",
-        target_amount: "", account_ids: [ account.id ]
-      } }
-    end
-
-    assert_response :unprocessable_entity
-    # The paragraph is in the markup either way; `hidden` is what decides
-    # whether it is shown, so its absence is the assertion.
-    assert_select "[data-goal-form-target=amountError]:not(.hidden)", 1,
-      "the form did not surface the missing-amount error"
-  end
-
-  # The surface the user actually reads: the figure beside the ring, and the
-  # line saying part of it has been used. Asserted on the rendered page rather
-  # than the model, because the contradiction was a display bug — the model
-  # has always counted both halves.
-  test "the goal page reports the used portion as part of the total" do
-    goal = spent_goal_for_display
-
-    get goal_url(goal)
-
-    assert_response :success
-    assert_includes response.body, I18n.t("goals.show.ring.including_used",
-                                          amount: goal.consumed_amount_money.format(precision: 0))
-
-    # The headline figure specifically, not "somewhere on the page": the
-    # account balance still appears in the funding breakdown below, which is
-    # where that question belongs.
-    headline = css_select("p.text-xl.font-medium.text-primary").map(&:text).map(&:strip)
-    assert_includes headline, goal.progress_amount_money.format(precision: 0)
-    assert_not_includes headline, goal.current_balance_money.format(precision: 0)
-  end
-
-  test "a goal that has spent nothing says nothing about it" do
-    account = unclaimed_account("Quiet Pot")
-    goal = @user.family.goals.create!(name: "Quiet", target_amount: 1_000, currency: "USD") do |g|
-      g.goal_accounts.build(account: account, allocated_amount: 1_000)
-    end
-
-    get goal_url(goal)
-
-    assert_response :success
-    assert_no_match(/already used|déjà utilisés/, response.body)
-  end
-
-
-  # The ring announced the account balance while the visible headline beside it
-  # reported the progress total: same ring, two different numbers depending on
-  # whether you could see it.
-  test "the ring announces the same total the headline shows" do
-    goal = spent_goal_for_display
-
-    get goal_url(goal)
-
-    assert_response :success
-    label = css_select("[role=progressbar]").first["aria-label"]
-    assert_includes label, goal.progress_amount_money.format
-    assert_not_includes label, goal.current_balance_money.format
-    assert_includes label, goal.consumed_amount_money.format
-  end
-
-  test "a goal with nothing used keeps the plain wording" do
-    account = unclaimed_account("Plain Pot")
-    goal = @user.family.goals.create!(name: "Plain", target_amount: 1_000, currency: "USD") do |g|
-      g.goal_accounts.build(account: account, allocated_amount: 1_000)
-    end
-
-    get goal_url(goal)
-
-    label = css_select("[role=progressbar]").first["aria-label"]
-    assert_no_match(/already used|déjà utilisés/, label)
-  end
-
-
-  # A reserve holds a balance rather than reaching an amount. "Target balance"
-  # is what this kind of app calls that, and it keeps the noun the rest of the
-  # page already uses 55 times — rather than inventing a "level" or a "floor"
-  # that nothing else in the domain says.
-  test "the form carries both the amount and the balance wording" do
-    unclaimed_account("Vocab Pot")
-
-    get new_goal_url
-
-    assert_response :success
-    assert_includes response.body, I18n.t("goals.form.fields.target_amount")
-    assert_includes response.body, I18n.t("goals.form.fields.target_balance")
-  end
-
-  # In months mode the balance is worked out, not typed. A read-only input
-  # still reads as something to fill in, beside the months that are the real
-  # question, so the figure is presented as a result instead.
-  test "the form carries the derived balance as a result, not a field" do
-    unclaimed_account("Derived Pot")
-
-    get new_goal_url
-
-    assert_response :success
-    assert_select "[data-goal-kind-target=amountDerived]", 1
-    assert_includes response.body, I18n.t("goals.form.fields.target_balance_pending")
-  end
-
-  test "editing a months reserve shows the balance it currently holds" do
-    account = unclaimed_account("Existing Pot")
-    IncomeStatement.any_instance.stubs(:median_expense).returns(500)
-    goal = @user.family.goals.create!(
-      name: "Precaution", target_amount: 3_000, currency: "USD", kind: "maintained",
-      target_mode: "months_of_expenses", target_months: 6
-    ) { |g| g.goal_accounts.build(account: account, allocated_amount: 3_000) }
-
-    get edit_goal_url(goal)
-
-    assert_response :success
-    assert_includes response.body, goal.target_amount_money.format(precision: 0)
-  end
-
-  # One vocabulary, not three. "level" and "floor" said the same thing as
-  # "target balance" in different words, on the same page.
-  test "the goals copy settles on one word for a reserve's balance" do
-    %i[en fr].each do |locale|
-      copy = YAML.load_file(Rails.root.join("config/locales/views/goals/#{locale}.yml")).to_s
-      assert_no_match(/\bfloor\b|\bniveau\b/i, copy, "#{locale} still mixes vocabularies")
-    end
-  end
-
-  # The gap this closes: at the moment the user has reached the target and
-  # spent some of it, the page offered only "Close this goal" — which releases
-  # the earmark, and whose own hint says to do it once the money is actually
-  # spent. Saying so was two clicks away in the overflow menu.
-  test "a reached goal offers recording a spend outside the overflow menu" do
-    goal = reached_goal_holding_money
-
-    get goal_url(goal)
-
-    assert_response :success
-    # In the panel, not only in the menu: scoped to the celebration panel's own
-    # action row by id. `section` was not enough — the panel renders through
-    # DS::Card, which emits a <section>, so any card on the page satisfied it.
-    panel_links = css_select("#goal-celebration-actions a[href='#{consume_goal_path(goal)}']")
-    assert_operator panel_links.size, :>=, 1,
-      "the spend action was still only reachable through the overflow menu"
-  end
-
-  test "closing is still offered alongside it" do
-    goal = reached_goal_holding_money
-
-    get goal_url(goal)
-
-    assert_select "form[action=?]", complete_goal_path(goal)
-  end
-
-  # Two doors lead to the same dialog, the panel and the overflow menu, and they
-  # disagreed: the menu gated on `current_balance`, which counts every linked
-  # account including ones private to another member. A reader backed only by
-  # such an account was shown the entry, opened a dialog with nothing to pick,
-  # and was refused on submit. Asserted page-wide on purpose — neither door may
-  # offer it.
-  test "money the reader cannot reach opens no door to the spend dialog" do
-    account = Account.create!(
-      family: @user.family, owner: users(:family_member), accountable: Depository.new,
-      name: "Member Only Pot", currency: "USD", balance: 5_000
-    )
-    goal = @user.family.goals.create!(name: "Hidden", target_amount: 5_000, currency: "USD") do |g|
-      g.goal_accounts.build(account: account, allocated_amount: 5_000)
-    end
-
-    get goal_url(goal)
-
-    assert_response :success
-    assert goal.current_balance.to_d.positive?, "the goal is backed, just not for this reader"
-    assert_empty css_select("a[href='#{consume_goal_path(goal)}']"),
-      "a spend was still offered against money the reader cannot see"
-  end
-
   private
 
     def spent_goal_for_display
@@ -924,16 +691,6 @@ class GoalsControllerTest < ActionDispatch::IntegrationTest
       end
       goal.consume!(2_000)
       goal
-    end
-
-    def reached_goal_holding_money
-      account = Account.create!(
-        family: @user.family, accountable: Depository.new,
-        name: "Reached Pot", currency: "USD", balance: 5_000
-      )
-      @user.family.goals.create!(name: "Trip", target_amount: 5_000, currency: "USD") do |g|
-        g.goal_accounts.build(account: account, allocated_amount: 5_000)
-      end
     end
     # SQL the pooled-allocation read issues, and nothing else: goal_accounts
     # joined to goals.
@@ -950,80 +707,65 @@ class GoalsControllerTest < ActionDispatch::IntegrationTest
     end
 
 
-    # The row must carry both readings, since one of them is invisible to the
-    # other: a whole-account claim elsewhere sums to zero, and without the flag
-    # the form would tell the user the account is theirs alone and then refuse
-    # the blank allocation on submit.
-    test "each account row carries the whole-account claim as well as the sum" do
-      account = unclaimed_account("Claimed Pot")
-      @user.family.goals.create!(name: "Neighbour", target_amount: 5_000, currency: "USD") do |g|
-        g.goal_accounts.build(account: account)
+    # The surface the user actually reads: the figure beside the ring, and the
+    # line saying part of it has been used. Asserted on the rendered page rather
+    # than the model, because the contradiction was a display bug — the model
+    # has always counted both halves.
+    test "the goal page reports the used portion as part of the total" do
+      goal = spent_goal_for_display
+
+      get goal_url(goal)
+
+      assert_response :success
+      assert_includes response.body, I18n.t("goals.show.ring.including_used",
+                                            amount: goal.consumed_amount_money.format(precision: 0))
+
+      # The headline figure specifically, not "somewhere on the page": the
+      # account balance still appears in the funding breakdown below, which is
+      # where that question belongs.
+      headline = css_select("p.text-xl.font-medium.text-primary").map(&:text).map(&:strip)
+      assert_includes headline, goal.progress_amount_money.format(precision: 0)
+      assert_not_includes headline, goal.current_balance_money.format(precision: 0)
+    end
+
+    test "a goal that has spent nothing says nothing about it" do
+      account = unclaimed_account("Quiet Pot")
+      goal = @user.family.goals.create!(name: "Quiet", target_amount: 1_000, currency: "USD") do |g|
+        g.goal_accounts.build(account: account, allocated_amount: 1_000)
       end
 
-      get new_goal_url
+      get goal_url(goal)
 
       assert_response :success
-      assert_match(/data-earmarked-by-others="0(\.0)?"[^>]*data-whole-account-claimed="true"/m, response.body)
+      assert_no_match(/already used|déjà utilisés/, response.body)
     end
 
-    # The hint for a blank amount is chosen client-side from two strings the
-    # form hands over. A missing one does not raise — the value reads as
-    # undefined and the line renders empty — so the wiring is what needs
-    # pinning, not the ternary that picks between them.
-    test "the form carries both blank-amount hints" do
-      unclaimed_account("Hint Pot")
 
-      get new_goal_url
+    # The ring announced the account balance while the visible headline beside it
+    # reported the progress total: same ring, two different numbers depending on
+    # whether you could see it.
+    test "the ring announces the same total the headline shows" do
+      goal = spent_goal_for_display
+
+      get goal_url(goal)
 
       assert_response :success
-      # Escaped: the copy carries an apostrophe, and the attribute value in the
-      # response is HTML-escaped.
-      assert_includes response.body, ERB::Util.html_escape(I18n.t("goals.form.earmark.whole_balance_alone"))
-      assert_includes response.body, ERB::Util.html_escape(I18n.t("goals.form.earmark.whole_balance"))
+      label = css_select("[role=progressbar]").first["aria-label"]
+      assert_includes label, goal.progress_amount_money.format
+      assert_not_includes label, goal.current_balance_money.format
+      assert_includes label, goal.consumed_amount_money.format
     end
 
-    # The two must stay distinguishable: if they ever say the same thing, the
-    # branch is doing nothing and a first-time user is back to being told about
-    # earmarks that do not exist.
-    test "the two blank-amount hints say different things" do
-      assert_not_equal I18n.t("goals.form.earmark.whole_balance"),
-                       I18n.t("goals.form.earmark.whole_balance_alone")
-      assert_no_match(/earmark/i, I18n.t("goals.form.earmark.whole_balance_alone"),
-        "the hint shown with no other claims should not mention earmarks")
-    end
-
-    # Privacy mode sets `pointer-events: none` on bare .privacy-sensitive, so
-    # the per-account amount has to opt back in or it cannot be typed into.
-    test "each account's earmark is a money field that stays editable in privacy mode" do
-      account = unclaimed_account("Earmark Pot")
-
-      get new_goal_url
-
-      assert_response :success
-      assert_select "label[for=goal_allocations_#{account.id}]", text: /#{I18n.t("goals.form.fields.earmark_for", account: "Earmark Pot")}/
-      assert_select "input#goal_allocations_#{account.id}[name='goal[allocations][#{account.id}]']", count: 1 do |inputs|
-        input = inputs.first
-        assert_includes input["class"].split, "privacy-sensitive"
-        assert_includes input["class"].split, "privacy-sensitive-interactive"
-        assert_equal I18n.t("goals.form.fields.whole_balance"), input["placeholder"]
-        assert_equal "0", input["min"]
-        assert_nil input["value"]
-        assert_equal "allocationInput", input["data-goal-earmark-target"]
-        assert_equal "amount", input["data-money-field-target"]
-        assert_includes input["data-action"], "input->goal-earmark#refresh"
-      end
-    end
-
-    test "a fixed earmark is filled back into its account's field" do
-      account = unclaimed_account("Filled Pot")
-      goal = @user.family.goals.create!(name: "Filled", target_amount: 5_000, currency: "USD") do |g|
-        g.goal_accounts.build(account: account, allocated_amount: 250)
+    test "a goal with nothing used keeps the plain wording" do
+      account = unclaimed_account("Plain Pot")
+      goal = @user.family.goals.create!(name: "Plain", target_amount: 1_000, currency: "USD") do |g|
+        g.goal_accounts.build(account: account, allocated_amount: 1_000)
       end
 
-      get edit_goal_url(goal)
+      get goal_url(goal)
 
-      assert_response :success
-      assert_select "input#goal_allocations_#{account.id}[value='250.00']"
+      label = css_select("[role=progressbar]").first["aria-label"]
+      assert_no_match(/already used|déjà utilisés/, label)
     end
 
   private

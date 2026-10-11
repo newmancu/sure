@@ -47,7 +47,7 @@ de:
         notes_placeholder: Eine Erinnerung an dein späteres Ich …
         target_amount: Zielbetrag
         target_date: Zieldatum
-        whole_balance: "Leer: ganzer Saldo"
+        whole_balance: Ganzer Saldo
       save: Änderungen speichern
       subtypes:
         cd: Festgeld
