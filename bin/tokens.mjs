@@ -119,22 +119,8 @@ function build() {
         ? `${raw}: ${resolveTemplate(node.$value)};`
         : `@apply ${utilityClasses(node.$value, prefix)};`;
 
-      const flipsViaVariable = dark && (raw || (node.$value.includes("{") && dark.includes("{")));
-
       let block = `@utility ${name} {\n  ${lightLine}`;
-      if (flipsViaVariable) {
-        // Flip through a variable, like the color tokens, so pseudo-element
-        // variants (`placeholder:`, `backdrop:`) get the dark value too. The
-        // light line stays first: Tailwind sorts a utility with more
-        // declarations earlier, so a plain utility on the same element still
-        // wins (`text-secondary text-indigo-500` is indigo).
-        const cssVar = varName(path);
-        themeLines.push(`  ${cssVar}: ${resolveTemplate(node.$value)};`);
-        darkLines.push(`    ${cssVar}: ${resolveTemplate(dark)};`);
-        block += `\n  ${raw ? `${raw}: var(${cssVar});` : `@apply ${prefix}-(${cssVar});`}`;
-      } else if (dark) {
-        // A class list can't be a variable, so it keeps the nested variant,
-        // which doesn't reach pseudo-element variants.
+      if (dark) {
         const darkLine = raw
           ? `${raw}: ${resolveTemplate(dark)};`
           : `@apply ${utilityClasses(dark, prefix)};`;
@@ -171,7 +157,7 @@ ${utilityBlocks.join("\n\n")}
 `;
 
   writeFileSync(OUT, css);
-  console.log(`tokens → ${OUT.replace(ROOT + "/", "")} (${themeLines.length} variables, ${darkLines.length} dark overrides, ${utilityBlocks.length} utilities)`);
+  console.log(`tokens → ${OUT.replace(ROOT + "/", "")} (${themeLines.length} primitives, ${darkLines.length} dark overrides, ${utilityBlocks.length} utilities)`);
 }
 
 try {

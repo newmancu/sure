@@ -43,14 +43,6 @@ const RADIUS_TOKENS = [
   ["radiusLg", "border.radius.lg"],
 ];
 
-// Named font-weight tiers, mirroring the web DS's Tailwind weight utilities
-// (font-medium / font-semibold) so widgets reference a named token instead of a
-// raw FontWeight.
-const WEIGHT_TOKENS = [
-  ["weightMedium", "font.weight.medium"],
-  ["weightSemibold", "font.weight.semibold"],
-];
-
 // Single-layer elevation scale (shadow/*). Mode-aware: each token carries a
 // `sure.dark` extension, so light/dark emit different shadow colors.
 const SHADOW_TOKENS = [
@@ -125,15 +117,6 @@ function resolveDimension(tokens, path) {
   return Number(match[1]).toFixed(1);
 }
 
-function resolveWeight(tokens, path) {
-  const node = nodeAt(tokens, path);
-  const value = Number(valueForMode(node, "light"));
-  if (!Number.isInteger(value) || value < 100 || value > 900 || value % 100 !== 0) {
-    throw new Error(`[mobile-tokens] ${path} must be a font weight (100-900 in steps of 100)`);
-  }
-  return `FontWeight.w${value}`;
-}
-
 // Parse a single-layer CSS box-shadow ("<x>px <y>px <blur>px <spread>px {color}")
 // into a Dart `BoxShadow(...)` literal. Offsets and spread may be negative
 // (e.g. -4px); blur must be >= 0. A strict number pattern rejects malformed
@@ -187,9 +170,6 @@ function buildDart(tokens) {
   const radiusLines = RADIUS_TOKENS.map(
     ([name, path]) => `  static const double ${name} = ${resolveDimension(tokens, path)};`,
   );
-  const weightLines = WEIGHT_TOKENS.map(
-    ([name, path]) => `  static const FontWeight ${name} = ${resolveWeight(tokens, path)};`,
-  );
 
   return `// GENERATED CODE - DO NOT EDIT BY HAND.
 // Source: design/tokens/sure.tokens.json
@@ -213,8 +193,6 @@ class SureTokens {
   ];
 
 ${radiusLines.join("\n")}
-
-${weightLines.join("\n")}
 
 ${emitPalette(tokens, "light")}
 
