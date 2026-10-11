@@ -312,23 +312,31 @@ class Family::DataExporter
         }.to_json
       end
 
-      # Export provider-assigned merchants (auto-detected by bank sync/AI enrichment)
-      # referenced by this family's transactions and recurring transactions. These
-      # are shared across every family on the instance, so only the ones actually
-      # in use here are included -- see #3113. ProviderMerchant does not support
-      # color, so none is exported for it.
-      referenced_provider_merchants.each do |merchant|
+      # Export Gems and Bullion items after accounts and merchants so their
+      # ownership and optional merchant can be remapped on restore.
+      ValuableItem.joins(:account)
+                     .where(accounts: { family_id: @family.id })
+                     .find_each do |lot|
         lines << {
-          type: "ProviderMerchant",
+          type: "ValuableItem",
           data: {
-            id: merchant.id,
-            name: merchant.name,
-            source: merchant.source,
-            provider_merchant_id: merchant.provider_merchant_id,
-            logo_url: merchant.logo_url,
-            website_url: merchant.website_url,
-            created_at: merchant.created_at,
-            updated_at: merchant.updated_at
+            id: lot.id,
+            account_id: lot.account_id,
+            merchant_id: lot.merchant_id,
+            description: lot.description,
+            acquired_on: lot.acquired_on,
+            weight: lot.weight,
+            weight_unit: lot.weight_unit,
+            item_type: lot.item_type,
+            material: lot.material,
+            purity: lot.purity,
+            cost_amount: lot.cost_amount,
+            currency: lot.currency,
+            making_charge: lot.making_charge,
+            manual_value: lot.manual_value,
+            notes: lot.notes,
+            created_at: lot.created_at,
+            updated_at: lot.updated_at
           }
         }.to_json
       end
@@ -588,16 +596,6 @@ class Family::DataExporter
       else
         parent_entry.child_entries.order(:created_at, :id).to_a
       end
-    end
-
-    def referenced_provider_merchants
-      @referenced_provider_merchants ||= ProviderMerchant.where(id: referenced_merchant_ids).to_a
-    end
-
-    def referenced_merchant_ids
-      transaction_ids = @family.transactions.where.not(merchant_id: nil).distinct.pluck(:merchant_id)
-      recurring_ids = @family.recurring_transactions.where.not(merchant_id: nil).distinct.pluck(:merchant_id)
-      (transaction_ids + recurring_ids).uniq
     end
 
     def family_transaction_ids
