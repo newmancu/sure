@@ -12,18 +12,16 @@ tr:
       holdings_value: Varlık değeri
       liability_balance: borç bakiyesi
       loan_balance: kredi bakiyesi
-      'on': "—"
+      'on': tarihinde
       property_value: mülk değeri
       recalculate_notice: Bu %{change_or_update} temel alınarak gelecekteki tüm işlemler
         ve bakiyeler yeniden hesaplanacaktır.
-      this_will: Bu işlem hesap değerinde %{action_verb} yapacak.
-      to: 'tarihi itibarıyla yeni değer:'
-      to_colon: 'tarihli yeni değerler:'
+      this_will: Bu, hesap değerini %{action_verb} yapacak
+      to: şuraya
+      to_colon: 'şuraya:'
       total_account_value: Toplam hesap değeri
       update: güncelleme
       vehicle_value: araç değeri
-      action_set: ayarlama
-      action_update: güncelleme
     create:
       account_updated: Hesap güncellendi
     errors:
@@ -36,7 +34,7 @@ tr:
     index:
       change: Değişim
       date: Tarih
-      new_entry: Yeni kayıt
+      new_entry: Yeni giriş
       no_valuations: Bu hesap için henüz değerleme yok
       valuations: Değer
       value: Değer
@@ -50,22 +48,16 @@ tr:
       date_label: Tarih
       delete: Sil
       delete_subtitle: Bu işlem geri alınamaz
-      delete_title: Kaydı Sil
+      delete_title: Girişi Sil
       details: Detaylar
       name_label: İsim
-      name_placeholder: Bu kayıt için bir ad girin
+      name_placeholder: Bu giriş için bir isim girin
       note_label: Notlar
-      note_placeholder: Bu kayıtla ilgili ek ayrıntılar ekleyin
+      note_placeholder: Bu girişle ilgili ek detaylar ekleyin
       opening_balance: Açılış bakiyesi
       overview: Genel Bakış
       settings: Ayarlar
       update_value: Değeri güncelle
     update:
       account_updated: Hesap güncellendi
-      entry_updated: Kayıt güncellendi
-    confirm_create:
-      confirm: Onayla
-      title: Yeni bakiyeyi onayla
-    confirm_update:
-      title: Bakiyeyi güncelle
-      update: Güncelle
+      entry_updated: Giriş güncellendi
