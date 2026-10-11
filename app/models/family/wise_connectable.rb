@@ -11,13 +11,12 @@ module Family::WiseConnectable
     true
   end
 
-  def create_wise_item!(token:, profile_id:, profile_type:, item_name:, import_all_history: false)
+  def create_wise_item!(token:, profile_id:, profile_type:, item_name:)
     item = wise_items.create!(
       token: token,
       profile_id: profile_id,
       profile_type: profile_type,
-      name: item_name,
-      import_all_history: import_all_history
+      name: item_name
     )
 
     item.sync_later

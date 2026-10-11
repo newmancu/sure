@@ -59,7 +59,6 @@ gem "image_processing", ">= 1.2"
 gem "ostruct"
 gem "bcrypt", "~> 3.1"
 gem "jwt"
-gem "apnotic", "~> 1.8"
 gem "jbuilder"
 gem "countries"
 
@@ -76,7 +75,7 @@ gem "octokit"
 gem "pagy"
 gem "rails-i18n"
 gem "rails-settings-cached"
-gem "tzinfo-data", platforms: %i[mswin mswin64 mingw x64_mingw jruby]
+gem "tzinfo-data", platforms: %i[windows jruby]
 gem "csv"
 gem "rchardet" # Character encoding detection
 gem "redcarpet"
@@ -86,9 +85,8 @@ gem "httparty"
 gem "rotp", "~> 6.3"
 gem "rqrcode", "~> 3.0"
 gem "webauthn", "~> 3.4"
-gem "websocket-driver", "~> 0.8"
 gem "activerecord-import"
-gem "rubyzip", "~> 3.4"
+gem "rubyzip", "~> 2.3"
 gem "pdf-reader", "~> 2.12"
 
 # OpenID Connect, OAuth & SAML authentication
@@ -109,7 +107,7 @@ gem "anthropic", "~> 1.0"
 gem "langfuse-ruby", "~> 0.1.4", require: "langfuse"
 
 group :development, :test do
-  gem "debug", platforms: %i[mri mswin mswin64 mingw x64_mingw]
+  gem "debug", platforms: %i[mri windows]
   gem "brakeman", require: false
   gem "rubocop-rails-omakase", require: false
   gem "i18n-tasks"
