@@ -7,7 +7,7 @@ ru:
       over_set: "> 100% установлено"
       percent_set: "%{percent} установлено"
     budget_category_form:
-      monthly_average: "В среднем %{amount}/мес."
+      monthly_average: "%{amount}/мес среднее"
       shared_placeholder: Общий
       shared_title: Оставьте пустым, чтобы использовать бюджет родителя
       rollover_label: Перенос остатка
@@ -136,7 +136,7 @@ ru:
       household: Общий
     available_cash:
       heading: Свободные деньги
-      subtitle: Помимо плана выше — эта сумма в него не входит.
+      subtitle: Рядом с планом выше, но не входит в него.
       available: Доступно на денежных счетах
       earmarked: Уже зарезервировано для целей
       free: Действительно свободно
