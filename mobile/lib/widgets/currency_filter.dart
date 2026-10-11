@@ -1,8 +1,5 @@
 import 'package:flutter/material.dart';
 
-import '../l10n/app_localizations.dart';
-import 'sure_chip.dart';
-
 class CurrencyFilter extends StatelessWidget {
   final Set<String> availableCurrencies;
   final Set<String> selectedCurrencies;
@@ -40,18 +37,14 @@ class CurrencyFilter extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final l = AppLocalizations.of(context);
     if (availableCurrencies.length <= 1) {
       return const SizedBox.shrink();
     }
 
     final sortedCurrencies = availableCurrencies.toList()..sort();
-    // Ignore stale codes that are no longer available, otherwise a leftover
-    // selection could make length-based "All" detection fire incorrectly.
-    final normalizedSelected =
-        selectedCurrencies.intersection(availableCurrencies);
-    final isAllSelected = normalizedSelected.isEmpty ||
-        normalizedSelected.length == availableCurrencies.length;
+    final colorScheme = Theme.of(context).colorScheme;
+    final isAllSelected = selectedCurrencies.isEmpty ||
+        selectedCurrencies.length == availableCurrencies.length;
 
     return Container(
       height: 44,
@@ -62,29 +55,44 @@ class CurrencyFilter extends StatelessWidget {
           // "All" chip
           Padding(
             padding: const EdgeInsets.only(right: 8),
-            child: SureChip(
-              label: l.commonAll,
+            child: FilterChip(
+              label: const Text('All'),
               selected: isAllSelected,
-              onSelected: (_) => onSelectionChanged({}),
+              onSelected: (_) {
+                onSelectionChanged({});
+              },
+              backgroundColor: colorScheme.surfaceContainerHighest,
+              selectedColor: colorScheme.primaryContainer,
+              checkmarkColor: colorScheme.onPrimaryContainer,
+              labelStyle: TextStyle(
+                color: isAllSelected
+                    ? colorScheme.onPrimaryContainer
+                    : colorScheme.onSurfaceVariant,
+                fontWeight: isAllSelected ? FontWeight.bold : FontWeight.normal,
+              ),
+              side: BorderSide(
+                color: isAllSelected
+                    ? colorScheme.primary
+                    : colorScheme.outline.withValues(alpha: 0.3),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 8),
             ),
           ),
 
           // Currency chips
           ...sortedCurrencies.map((currency) {
             final isSelected =
-                normalizedSelected.contains(currency) && !isAllSelected;
+                selectedCurrencies.contains(currency) && !isAllSelected;
             final symbol = _getCurrencySymbol(currency);
-            final displayText = symbol.isNotEmpty
-                ? '$currency ($symbol)'
-                : currency;
+            final displayText = symbol.isNotEmpty ? '$currency ($symbol)' : currency;
 
             return Padding(
               padding: const EdgeInsets.only(right: 8),
-              child: SureChip(
-                label: displayText,
+              child: FilterChip(
+                label: Text(displayText),
                 selected: isSelected,
                 onSelected: (_) {
-                  final newSelection = Set<String>.from(normalizedSelected);
+                  final newSelection = Set<String>.from(selectedCurrencies);
                   if (isSelected) {
                     newSelection.remove(currency);
                   } else {
@@ -95,13 +103,27 @@ class CurrencyFilter extends StatelessWidget {
                     newSelection.add(currency);
                   }
                   // If all currencies selected, treat as "All"
-                  if (newSelection.length == availableCurrencies.length &&
-                      newSelection.containsAll(availableCurrencies)) {
+                  if (newSelection.length == availableCurrencies.length) {
                     onSelectionChanged({});
                   } else {
                     onSelectionChanged(newSelection);
                   }
                 },
+                backgroundColor: colorScheme.surfaceContainerHighest,
+                selectedColor: colorScheme.primaryContainer,
+                checkmarkColor: colorScheme.onPrimaryContainer,
+                labelStyle: TextStyle(
+                  color: isSelected
+                      ? colorScheme.onPrimaryContainer
+                      : colorScheme.onSurfaceVariant,
+                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                ),
+                side: BorderSide(
+                  color: isSelected
+                      ? colorScheme.primary
+                      : colorScheme.outline.withValues(alpha: 0.3),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 8),
               ),
             );
           }),
