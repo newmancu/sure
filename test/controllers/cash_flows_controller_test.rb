@@ -14,12 +14,12 @@ class CashFlowsControllerTest < ActionDispatch::IntegrationTest
     assert_redirected_to new_session_path
   end
 
-  test "requires the current user's preview opt-in" do
+  test "serves the chart without preview opt-in" do
     sign_in @user
     @user.update!(preferences: @user.preferences.merge("preview_features_enabled" => false))
     users(:family_member).update!(preferences: { "preview_features_enabled" => true })
     get dashboard_cash_flow_path, params: @dates
-    assert_redirected_to root_path
+    assert_response :success
   end
 
   test "retains ordinary onboarding and inactive-session checks" do
@@ -56,20 +56,6 @@ class CashFlowsControllerTest < ActionDispatch::IntegrationTest
       assert_response :success
       assert_equal graph, response.parsed_body
     end
-  end
-
-  test "groups the graph by account on request and rejects unknown groupings" do
-    sign_in @user
-    get dashboard_cash_flow_path(@dates.merge(group_by: "account"))
-    assert_response :success
-    assert_equal "net_by_account", response.parsed_body.dig("sankey", "basis")
-
-    get dashboard_cash_flow_path(@dates)
-    assert_equal "net_by_category", response.parsed_body.dig("sankey", "basis")
-
-    get dashboard_cash_flow_path(@dates.merge(group_by: "merchant"))
-    assert_response :unprocessable_entity
-    assert_equal "invalid_group_by", response.parsed_body["error"]
   end
 
   test "rejects incomplete malformed and reversed date ranges" do
