@@ -653,14 +653,6 @@ class User < ApplicationRecord
     preferences&.dig("dashboard_section_layout", section_key, "height")
   end
 
-  CASHFLOW_SANKEY_GROUPINGS = IncomeStatement::CashFlowGraph::GROUPINGS.keys.freeze
-
-  # Preview cash-flow Sankey: flows by category (default) or through each account.
-  def cashflow_sankey_group_by
-    group_by = preferences&.dig("cashflow_sankey_group_by")
-    CASHFLOW_SANKEY_GROUPINGS.include?(group_by) ? group_by : "category"
-  end
-
   # Per-widget column-span override ("single" | "full"); nil = use default.
   def dashboard_section_width(section_key)
     preferences&.dig("dashboard_section_layout", section_key, "col_span")
@@ -721,9 +713,39 @@ class User < ApplicationRecord
     end
   end
 
+  TRANSACTIONS_PER_PAGE_OPTIONS = [ 10, 20, 30, 50, 100 ].freeze
+
   # Transactions preferences management
   def show_split_grouped?
     preferences&.dig("show_split_grouped") != false
+  end
+
+  def transactions_compact?
+    preferences&.dig("transactions_compact") == true
+  end
+
+  def transactions_group_by_date?
+    preferences&.dig("transactions_group_by_date") != false
+  end
+
+  def transactions_show_notes?
+    preferences&.dig("transactions_show_notes") == true
+  end
+
+  def transactions_per_page
+    value = preferences&.dig("transactions_per_page").to_i
+    TRANSACTIONS_PER_PAGE_OPTIONS.include?(value) ? value : nil
+  end
+
+  def update_transaction_preferences(prefs)
+    transaction do
+      lock!
+      updated_prefs = (preferences || {}).deep_dup
+      prefs.each do |key, value|
+        updated_prefs[key.to_s] = value
+      end
+      update!(preferences: updated_prefs)
+    end
   end
 
   # Returns whether the user has enabled the two-column dashboard layout.
