@@ -10,8 +10,6 @@ export default class extends Controller {
   static values = {
     precision: Number,
     step: String,
-    separator: String,
-    separatorCurrency: String,
   };
 
   requestSequence = 0;
@@ -46,8 +44,6 @@ export default class extends Controller {
       }
 
       this.symbolTarget.innerText = currencyData.symbol;
-      this.separatorValue = currencyData.separator;
-      this.separatorCurrencyValue = currency;
     }).catch(() => {
       // Catch prevents Unhandled Promise Rejection for network failures.
       // Silently ignored as they are unactionable by the user.
@@ -58,11 +54,10 @@ export default class extends Controller {
   // "1.234,56", "$1,234.56"), leaving the field blank. Intercept the paste,
   // parse the amount, and insert the plain number instead so copy/paste from
   // statements and spreadsheets just works. Text that is not an amount is left
-  // to the browser. The selected currency's decimal separator settles pastes
-  // that read both ways, so "1,234" in a euro field is 1.234, not 1234.
+  // to the browser.
   pasteAmount(event) {
     const text = (event.clipboardData || window.clipboardData)?.getData("text") ?? "";
-    const parsed = parseAmountPaste(text, { separator: this.#pasteSeparator() });
+    const parsed = parseAmountPaste(text);
     if (parsed === null) return;
 
     event.preventDefault();
@@ -75,18 +70,6 @@ export default class extends Controller {
     // emits neither.
     this.amountTarget.dispatchEvent(new Event("input", { bubbles: true }));
     this.amountTarget.dispatchEvent(new Event("change", { bubbles: true }));
-  }
-
-  // The separator belongs to the currency it was rendered or last fetched for.
-  // While a currency switch is still loading, or after it failed to load, that
-  // is not the selected currency, so the paste falls back to the unhinted
-  // heuristic instead of settling it with another currency's separator.
-  #pasteSeparator() {
-    if (this.hasCurrencyTarget && this.currencyTarget.value !== this.separatorCurrencyValue) {
-      return undefined;
-    }
-
-    return this.separatorValue;
   }
 
   // The amount input's step already carries the selected currency's precision,
