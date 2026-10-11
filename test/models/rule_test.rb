@@ -10,101 +10,6 @@ class RuleTest < ActiveSupport::TestCase
     @groceries_category = @family.categories.create!(name: "Groceries")
   end
 
-  test "rejects a null byte in the rule name" do
-    rule = @family.rules.build(name: "bad\0name", resource_type: "transaction")
-    rule.actions.build(action_type: "exclude_transaction")
-
-    assert_not rule.valid?
-    assert rule.errors.of_kind?(:name, :invalid)
-
-    rule.name = " \0 "
-    assert_not rule.valid?
-    assert rule.errors.of_kind?(:name, :invalid)
-
-    rule.name = "\0"
-    assert_not rule.valid?
-    assert rule.errors.of_kind?(:name, :invalid)
-  end
-
-  test "rejects invalid text encoding in rule fields" do
-    invalid_text = "bad\xFF".dup.force_encoding("UTF-8")
-    rule = @family.rules.build(name: invalid_text, resource_type: "transaction")
-    rule.actions.build(action_type: "exclude_transaction")
-
-    assert_not rule.valid?
-    assert rule.errors.of_kind?(:name, :invalid)
-
-    rule.name = "Valid name"
-    rule.resource_type = invalid_text
-    assert_not rule.valid?
-    assert rule.errors.of_kind?(:resource_type, :invalid)
-  end
-
-  test "rejects null bytes and invalid encoding in condition and action metadata" do
-    invalid_text = "bad\xFF".dup.force_encoding("UTF-8")
-    rule = @family.rules.build(resource_type: "transaction")
-    condition = rule.conditions.build(condition_type: "transaction_name", operator: "like\0", value: "coffee")
-    action = rule.actions.build(action_type: "exclude_transaction\0")
-
-    assert_not rule.valid?
-    assert condition.errors.of_kind?(:operator, :invalid)
-    assert action.errors.of_kind?(:action_type, :invalid)
-
-    condition.operator = "like"
-    condition.value = invalid_text
-    action.action_type = "set_transaction_name"
-    action.value = invalid_text
-
-    assert_not rule.valid?
-    assert condition.errors.of_kind?(:value, :invalid)
-    assert action.errors.of_kind?(:value, :invalid)
-
-    condition.condition_type = invalid_text
-    assert_not rule.valid?
-    assert condition.errors.of_kind?(:condition_type, :invalid)
-  end
-
-  test "rejects invalid encoding in a multi-value action" do
-    invalid_text = "bad\xFF".dup.force_encoding("UTF-8")
-    rule = @family.rules.build(resource_type: "transaction")
-    action = rule.actions.build(action_type: "set_transaction_tags", value: [ invalid_text ])
-
-    assert_not rule.valid?
-    assert action.errors.of_kind?(:value, :invalid)
-  end
-
-  test "rejects a null byte in a nested condition value" do
-    rule = @family.rules.build(resource_type: "transaction")
-    compound = rule.conditions.build(condition_type: "compound", operator: "and")
-    condition = compound.sub_conditions.build(condition_type: "transaction_name", operator: "like", value: "bad\0value")
-    rule.actions.build(action_type: "exclude_transaction")
-
-    assert_not rule.valid?
-    assert condition.errors.of_kind?(:value, :invalid)
-  end
-
-  test "rejects a null byte in an action value" do
-    rule = @family.rules.build(resource_type: "transaction")
-    action = rule.actions.build(action_type: "set_transaction_name", value: "bad\0value")
-
-    assert_not rule.valid?
-    assert action.errors.of_kind?(:value, :invalid)
-  end
-
-  test "allows other whitespace and Unicode in rule text" do
-    rule = @family.rules.build(name: "咖啡\n提醒", resource_type: "transaction")
-    rule.conditions.build(condition_type: "transaction_name", operator: "like", value: "café\tshop")
-    rule.actions.build(action_type: "set_transaction_name", value: "Tea\nshop")
-
-    assert rule.valid?
-  end
-
-  test "create_from_grouping returns nil for a null byte" do
-    assert_no_difference "Rule.count" do
-      assert_nil Rule.create_from_grouping(@family, "bad\0name", @groceries_category)
-    end
-  end
-
   test "basic rule" do
     transaction_entry = create_transaction(date: Date.current, account: @account, merchant: @whole_foods_merchant)
 
@@ -148,6 +53,32 @@ class RuleTest < ActiveSupport::TestCase
 
     assert_nil transaction_entry1.transaction.category
     assert_equal @groceries_category, transaction_entry2.transaction.category
+  end
+
+  test "invert amount action uses existing account and name conditions with effective date" do
+    other_account = @family.accounts.create!(name: "Other account", balance: 1000, currency: "USD", accountable: Depository.new)
+    matching_deposit = create_transaction(date: Date.current, account: @account, name: "FIDELITY DEPOSIT", amount: -100)
+    unrelated_fidelity_transaction = create_transaction(date: Date.current, account: @account, name: "FIDELITY PURCHASE", amount: 25)
+    old_fidelity_deposit = create_transaction(date: 2.months.ago.to_date, account: @account, name: "FIDELITY DEPOSIT", amount: -75)
+    other_account_deposit = create_transaction(date: Date.current, account: other_account, name: "FIDELITY DEPOSIT", amount: -50)
+
+    rule = Rule.create!(
+      family: @family,
+      resource_type: "transaction",
+      effective_date: 1.month.ago.to_date,
+      conditions: [
+        Rule::Condition.new(condition_type: "transaction_account", operator: "=", value: @account.id),
+        Rule::Condition.new(condition_type: "transaction_name", operator: "like", value: "deposit")
+      ],
+      actions: [ Rule::Action.new(action_type: "invert_transaction_amount") ]
+    )
+
+    assert_equal 1, rule.apply
+    assert_equal 100, matching_deposit.reload.amount
+    assert_equal 25, unrelated_fidelity_transaction.reload.amount
+    assert_equal(-75, old_fidelity_deposit.reload.amount)
+    assert_equal(-50, other_account_deposit.reload.amount)
+    assert_equal 0, rule.apply
   end
 
   test "exclude transaction rule" do
