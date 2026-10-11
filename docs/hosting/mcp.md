@@ -146,7 +146,6 @@ At the time of writing, `tools/list` includes:
 | `get_tags` | Tags with pagination |
 | `get_categories` | Categories with hierarchy and pagination |
 | `create_goal` | Create a savings goal linked to depository accounts |
-| `set_opening_balance` | Set a manual account's opening balance and the date it applies from, reporting whether the current balance changes. Supports `dry_run` |
 | `create_tag` / `update_tag` | Manage tags |
 | `create_category` / `update_category` | Manage categories |
 | `update_transaction` | Edit a transaction's metadata (name, notes, category, merchant, tags) |
@@ -393,19 +392,6 @@ If your Claude Desktop build expects a raw MCP endpoint instead of an OAuth inte
 - `http://your-server:3000/mcp` for direct access
 
 Use either the client's OAuth support or a bearer token, depending on what that build supports.
-
-### Cursor and other native MCP clients
-
-Desktop MCP clients such as Cursor and VS Code authenticate with OAuth Dynamic Client Registration (`POST /register`) and then open a browser for consent. Native clients register a private-use redirect URI rather than an `https://` callback, for example:
-
-- Cursor desktop: `cursor://anysphere.cursor-mcp/oauth/callback`
-- Newer Cursor IDE/CLI builds: `http://localhost:8787/callback`
-- Cursor web: `https://www.cursor.com/agents/mcp/oauth/callback`
-- VS Code extensions: `vscode://...`
-
-Sure accepts those native-app URI schemes, loopback `http://` callbacks, and `https://` callbacks. After you authorize in the browser, the client exchanges the authorization code (PKCE) for a bearer token and calls `/mcp`.
-
-If OAuth is inconvenient (CI, scripts, or a client that cannot complete the browser flow), use the static `MCP_API_TOKEN` bearer token instead.
 
 ### Custom Agents
 
