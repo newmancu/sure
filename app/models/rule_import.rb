@@ -14,6 +14,13 @@ class RuleImport < Import
     committed_by_named_records?(family.rules)
   end
 
+  def directly_deletable?
+    return false unless super
+    return true unless complete?
+
+    !rows.where("name IS NULL OR name ~ '^[[:space:]]*$'").exists?
+  end
+
   def column_keys
     %i[name resource_type active effective_date conditions actions]
   end
@@ -64,8 +71,8 @@ class RuleImport < Import
 
       rows.create!(
         source_row_number: index,
-        name: normalized_rule_text(normalized_row[:name], attribute: :name),
-        resource_type: normalized_rule_text(normalized_row[:resource_type], attribute: :resource_type),
+        name: normalized_row[:name].to_s.strip,
+        resource_type: normalized_row[:resource_type].to_s.strip,
         active: parse_boolean(normalized_row[:active]),
         effective_date: normalized_row[:effective_date].to_s.strip,
         conditions: normalized_row[:conditions].to_s.strip,
@@ -96,20 +103,6 @@ class RuleImport < Import
       }
     end
 
-    def normalized_rule_text(value, attribute:)
-      text = value.to_s
-      reject_invalid_text!(text, label: Rule.human_attribute_name(attribute))
-
-      text.strip
-    end
-
-    def reject_invalid_text!(value, label:)
-      return if DatabaseTextValidator.acceptable?(value)
-
-      errors.add(:base, :invalid, message: "#{label} #{I18n.t("errors.messages.invalid")}")
-      raise ActiveRecord::RecordInvalid.new(self)
-    end
-
     def extract_conditions_and_actions(fragments)
       pieces = Array(fragments).compact
       return [ "", "" ] if pieces.empty?
@@ -131,8 +124,8 @@ class RuleImport < Import
     end
 
     def create_or_update_rule_from_row(row)
-      rule_name = normalized_rule_text(row.name, attribute: :name).presence
-      resource_type = normalized_rule_text(row.resource_type, attribute: :resource_type)
+      rule_name = row.name.to_s.strip.presence
+      resource_type = row.resource_type.to_s.strip
 
       # Validate resource type
       unless resource_type == "transaction"
@@ -224,7 +217,6 @@ class RuleImport < Import
     def resolve_import_condition_value(condition_data)
       condition_type = condition_data["condition_type"]
       value = condition_data["value"]
-      reject_invalid_text!(value, label: Rule::Condition.human_attribute_name(:value))
 
       return value unless value.present?
 
@@ -249,7 +241,6 @@ class RuleImport < Import
     def resolve_import_action_value(action_data)
       action_type = action_data["action_type"]
       value = action_data["value"]
-      reject_invalid_text!(value, label: Rule::Action.human_attribute_name(:value))
 
       return value unless value.present?
 

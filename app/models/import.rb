@@ -2,6 +2,8 @@ class Import < ApplicationRecord
   MaxRowCountExceededError = Class.new(StandardError)
   MappingError = Class.new(StandardError)
 
+  attr_accessor :csv_format
+
   # A hard-killed worker (OOM, SIGKILL during deploy) loses its in-flight job
   # permanently, wedging the record in importing/reverting with no UI recourse.
   # After this idle window the job is presumed lost and the user may force the
@@ -33,7 +35,9 @@ class Import < ApplicationRecord
 
   # Shared CSV upload/content limit for web and API imports, including preflight.
   MAX_CSV_SIZE = 10.megabytes
-  MAX_PDF_SIZE = 25.megabytes
+  UPLOAD_WARNING_SIZE = 25.megabytes
+  MAX_BATCH_UPLOAD_SIZE = 100.megabytes
+  MAX_BATCH_DELETE_IMPORTS = 100
   ALLOWED_CSV_MIME_TYPES = %w[text/csv text/plain application/vnd.ms-excel application/csv].freeze
   ALLOWED_PDF_MIME_TYPES = %w[application/pdf].freeze
 
@@ -472,25 +476,25 @@ class Import < ApplicationRecord
     complete? || revert_failed?
   end
 
-  # Whether the user may write to every pre-existing account this import
-  # targets (its own account, account mappings) or has already written into
-  # (entries). Accounts the import created itself are excluded.
-  def accounts_writable_by?(user)
-    ids = [ account_id ]
-    ids += mappings.accounts.where.not(mappable_id: nil).pluck(:mappable_id)
-    ids += entries.distinct.pluck(:account_id)
-    ids += preexisting_target_account_ids
-    ids = ids.compact.uniq - accounts.pluck(:id)
-    return true if ids.empty?
-    return false if user.nil?
-
-    (ids - family.accounts.writable_by(user).where(id: ids).pluck(:id)).empty?
+  def file_name
+    nil
   end
 
-  # Existing family accounts the import resolves on its own at publish time
-  # (e.g. by name). Subclasses that do this override it.
-  def preexisting_target_account_ids
-    []
+  # Terminal imports that did not commit data can be removed without a revert.
+  # This includes PDF imports left in an unknown UI state after processing
+  # stopped before rows or derived reconciliation data were written.
+  def directly_deletable?
+    !data_committed? && !importing? && !reverting?
+  end
+
+  # Delete only while holding the same row lock used by import state changes.
+  def destroy_if_directly_deletable!
+    with_lock do
+      next false unless directly_deletable?
+
+      destroy!
+      true
+    end
   end
 
   def has_unassigned_account?
