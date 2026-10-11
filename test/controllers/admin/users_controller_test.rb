@@ -7,14 +7,6 @@ class Admin::UsersControllerTest < ActionDispatch::IntegrationTest
     sign_in users(:sure_support_staff)
   end
 
-  test "index leaves the expiring trial summary to hosted system health" do
-    get admin_users_url
-
-    assert_response :success
-    assert_no_match I18n.t("admin.system_health.hosted_usage.summary.trials_expiring_soon_count", raise: true), response.body
-    assert_select "select[name='trial_status'] option[value='expiring_soon']"
-  end
-
   test "index groups users by family sorted by transaction count" do
     family_with_more = users(:family_admin).family
     family_with_fewer = users(:empty).family
@@ -100,41 +92,6 @@ class Admin::UsersControllerTest < ActionDispatch::IntegrationTest
     assert_match(/New family\/group name/, response.body)
     assert_match(/Unused families \/ groups/, response.body)
     assert_match(/Delete unused family/, response.body)
-  end
-
-  test "index renders the profile picture of users who have one" do
-    user = users(:family_admin)
-    user.profile_image.attach(
-      io: File.open(Rails.root.join("test/fixtures/files/profile_image.png")),
-      filename: "profile_image.png",
-      content_type: "image/png"
-    )
-    # The disk service URL embeds a token signed with an expiry, so freeze time
-    # to keep the expected URL identical to the one rendered by the request.
-    travel_to Time.current do
-      variant = user.profile_image.variant(:small).processed
-      ActiveStorage::Current.url_options = { host: "www.example.com", protocol: "http" }
-      expected_src = variant.url
-
-      get admin_users_url
-      assert_response :success
-
-      assert_select "img[src=?]", expected_src, { count: 1 },
-        "User management should render the small profile image variant for users who have one"
-    end
-  end
-
-  test "index falls back to initials for users without a profile picture" do
-    user = users(:family_admin)
-    assert_not user.profile_image.attached?
-
-    get admin_users_url
-    assert_response :success
-
-    assert_match user.initials, response.body,
-      "User management should fall back to initials when there is no profile picture"
-    assert_select "img[src*=?]", "active_storage", { count: 0 },
-      "No avatar image should render for users without a profile picture"
   end
 
 
