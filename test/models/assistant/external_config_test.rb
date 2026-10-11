@@ -4,7 +4,6 @@ class Assistant::ExternalConfigTest < ActiveSupport::TestCase
   test "config reads URL from environment with priority over Setting" do
     with_env_overrides("EXTERNAL_ASSISTANT_URL" => "http://from-env/v1/chat") do
       assert_equal "http://from-env/v1/chat", Assistant::External.config.url
-      assert_equal "openclaw/main", Assistant::External.config.model
       assert_equal "main", Assistant::External.config.agent_id
       assert_equal "agent:main:main", Assistant::External.config.session_key
     end
@@ -23,13 +22,12 @@ class Assistant::ExternalConfigTest < ActiveSupport::TestCase
     Setting.external_assistant_token = nil
   end
 
-  test "config reads external model and derives the routing agent id" do
+  test "config reads agent_id with custom value" do
     with_env_overrides(
       "EXTERNAL_ASSISTANT_URL" => "http://example.com/v1/chat",
       "EXTERNAL_ASSISTANT_TOKEN" => "test-token",
-      "EXTERNAL_ASSISTANT_MODEL" => "openclaw/finance-bot"
+      "EXTERNAL_ASSISTANT_AGENT_ID" => "finance-bot"
     ) do
-      assert_equal "openclaw/finance-bot", Assistant::External.config.model
       assert_equal "finance-bot", Assistant::External.config.agent_id
       assert_equal "test-token", Assistant::External.config.token
     end
@@ -47,7 +45,7 @@ class Assistant::ExternalConfigTest < ActiveSupport::TestCase
 
   test "available_for? allows any user when no allowlist is set" do
     user = OpenStruct.new(email: "anyone@example.com")
-    with_env_overrides("EXTERNAL_ASSISTANT_URL" => "http://x", "EXTERNAL_ASSISTANT_TOKEN" => "t", "EXTERNAL_ASSISTANT_MODEL" => "openclaw/main", "EXTERNAL_ASSISTANT_ALLOWED_EMAILS" => nil) do
+    with_env_overrides("EXTERNAL_ASSISTANT_URL" => "http://x", "EXTERNAL_ASSISTANT_TOKEN" => "t", "EXTERNAL_ASSISTANT_ALLOWED_EMAILS" => nil) do
       assert Assistant::External.available_for?(user)
     end
   end
@@ -55,17 +53,42 @@ class Assistant::ExternalConfigTest < ActiveSupport::TestCase
   test "available_for? restricts to allowlisted emails" do
     allowed = OpenStruct.new(email: "josh@example.com")
     denied = OpenStruct.new(email: "other@example.com")
-    with_env_overrides("EXTERNAL_ASSISTANT_URL" => "http://x", "EXTERNAL_ASSISTANT_TOKEN" => "t", "EXTERNAL_ASSISTANT_MODEL" => "openclaw/main", "EXTERNAL_ASSISTANT_ALLOWED_EMAILS" => "josh@example.com, admin@example.com") do
+    with_env_overrides("EXTERNAL_ASSISTANT_URL" => "http://x", "EXTERNAL_ASSISTANT_TOKEN" => "t", "EXTERNAL_ASSISTANT_ALLOWED_EMAILS" => "josh@example.com, admin@example.com") do
       assert Assistant::External.available_for?(allowed)
       assert_not Assistant::External.available_for?(denied)
     end
   end
 
-  test "build_conversation_messages truncates to last 20 messages" do
+  test "build_conversation_messages trims to the configured token budget, keeping the newest" do
     chat = chats(:one)
+    chat.messages.destroy_all
 
-    # Create enough messages to exceed the 20-message cap
-    25.times do |i|
+    # ~40 tokens per message (see Assistant::TokenEstimator); a tight budget
+    # should drop the oldest ones rather than truncating by a flat count.
+    30.times do |i|
+      role_class = i.even? ? UserMessage : AssistantMessage
+      role_class.create!(chat: chat, content: "msg #{i} " + ("x" * 90), ai_model: "test")
+    end
+
+    with_env_overrides(
+      "EXTERNAL_ASSISTANT_URL" => "http://x",
+      "EXTERNAL_ASSISTANT_TOKEN" => "t",
+      "EXTERNAL_ASSISTANT_MAX_HISTORY_TOKENS" => "200"
+    ) do
+      external = Assistant::External.new(chat)
+      messages = external.send(:build_conversation_messages)
+
+      assert_operator messages.length, :<, 30
+      assert_match(/\Amsg 29 /, messages.last[:content])
+      assert messages.none? { |m| m[:content].start_with?("msg 0 ") }
+    end
+  end
+
+  test "build_conversation_messages keeps everything when the budget is generous" do
+    chat = chats(:one)
+    chat.messages.destroy_all
+
+    5.times do |i|
       role_class = i.even? ? UserMessage : AssistantMessage
       role_class.create!(chat: chat, content: "msg #{i}", ai_model: "test")
     end
@@ -74,9 +97,24 @@ class Assistant::ExternalConfigTest < ActiveSupport::TestCase
       external = Assistant::External.new(chat)
       messages = external.send(:build_conversation_messages)
 
-      assert_equal 20, messages.length
-      # Last message should be the most recent one we created
-      assert_equal "msg 24", messages.last[:content]
+      assert_equal 5, messages.length
+      assert_equal "msg 4", messages.last[:content]
+    end
+  end
+
+  test "max_history_tokens falls back to the default when unset or invalid" do
+    with_env_overrides("EXTERNAL_ASSISTANT_MAX_HISTORY_TOKENS" => nil) do
+      assert_equal Assistant::External::DEFAULT_MAX_HISTORY_TOKENS, Assistant::External.max_history_tokens
+    end
+
+    with_env_overrides("EXTERNAL_ASSISTANT_MAX_HISTORY_TOKENS" => "not-a-number") do
+      assert_equal Assistant::External::DEFAULT_MAX_HISTORY_TOKENS, Assistant::External.max_history_tokens
+    end
+  end
+
+  test "max_history_tokens reads a configured positive value" do
+    with_env_overrides("EXTERNAL_ASSISTANT_MAX_HISTORY_TOKENS" => "1000") do
+      assert_equal 1000, Assistant::External.max_history_tokens
     end
   end
 
@@ -88,39 +126,8 @@ class Assistant::ExternalConfigTest < ActiveSupport::TestCase
       assert_not Assistant::External.configured?
     end
 
-    # URL + token installs keep the pre-discovery implicit "main" agent.
-    with_env_overrides("EXTERNAL_ASSISTANT_URL" => "http://x", "EXTERNAL_ASSISTANT_TOKEN" => "t", "EXTERNAL_ASSISTANT_MODEL" => nil, "EXTERNAL_ASSISTANT_AGENT_ID" => nil) do
-      assert Assistant::External.configured?
-      assert_equal "openclaw/main", Assistant::External.config.model
-    end
-
-    with_env_overrides("EXTERNAL_ASSISTANT_URL" => "http://x", "EXTERNAL_ASSISTANT_TOKEN" => "t", "EXTERNAL_ASSISTANT_MODEL" => "openclaw/main") do
+    with_env_overrides("EXTERNAL_ASSISTANT_URL" => "http://x", "EXTERNAL_ASSISTANT_TOKEN" => "t") do
       assert Assistant::External.configured?
     end
-  end
-
-  test "legacy agent id maps to a model only while no model is selected" do
-    with_env_overrides("EXTERNAL_ASSISTANT_MODEL" => nil, "EXTERNAL_ASSISTANT_AGENT_ID" => "finance-bot") do
-      assert_equal "openclaw/finance-bot", Assistant::External.config.model
-      assert_equal "finance-bot", Assistant::External.config.agent_id
-    end
-
-    with_env_overrides("EXTERNAL_ASSISTANT_MODEL" => "openclaw/research", "EXTERNAL_ASSISTANT_AGENT_ID" => "finance-bot") do
-      assert_equal "openclaw/research", Assistant::External.config.model
-      assert_equal "research", Assistant::External.config.agent_id
-    end
-  end
-
-  test "selected model wins over a stale stored legacy agent id" do
-    Setting.external_assistant_agent_id = "old-bot"
-    Setting.external_assistant_model = "openclaw/new-bot"
-
-    with_env_overrides("EXTERNAL_ASSISTANT_MODEL" => nil, "EXTERNAL_ASSISTANT_AGENT_ID" => nil) do
-      assert_equal "openclaw/new-bot", Assistant::External.config.model
-      assert_equal "new-bot", Assistant::External.config.agent_id
-    end
-  ensure
-    Setting.external_assistant_agent_id = nil
-    Setting.external_assistant_model = nil
   end
 end
