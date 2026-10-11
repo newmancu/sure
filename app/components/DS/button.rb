@@ -25,8 +25,7 @@ class DS::Button < DS::Buttonish
       data = merged_opts.delete(:data) || {}
 
       if confirm.present?
-        confirm_value = confirm.respond_to?(:to_data_attribute) ? confirm.to_data_attribute : confirm
-        data = data.merge(turbo_confirm: confirm_value)
+        data = data.merge(turbo_confirm: confirm.to_data_attribute)
       end
 
       if frame.present?
@@ -41,16 +40,6 @@ class DS::Button < DS::Buttonish
       # and we leave its default alone.
       if href.blank?
         merged_opts[:type] ||= "button"
-      end
-
-      # A bare `aria_label:` option reaches the tag helpers as a literal
-      # `aria_label` attribute — Rails only dasherizes the nested `aria:` hash.
-      # Callers use both spellings, so fold `aria_label:` into the aria hash
-      # (before the icon fallback below, which must see it as a real label).
-      if (aria_label = merged_opts.delete(:aria_label)).present?
-        aria = (merged_opts[:aria] || {}).symbolize_keys
-        aria[:label] = aria_label if aria[:label].blank?
-        merged_opts[:aria] = aria
       end
 
       # Icon-only buttons have no visible text node, so screen readers fall

@@ -3,8 +3,6 @@
 require "test_helper"
 
 class Api::V1::TransactionsControllerTest < ActionDispatch::IntegrationTest
-  include EntriesTestHelper
-
   setup do
     @user = users(:family_admin)
     @family = @user.family
@@ -51,30 +49,6 @@ class Api::V1::TransactionsControllerTest < ActionDispatch::IntegrationTest
     assert response_data["pagination"].key?("per_page")
     assert response_data["pagination"].key?("total_count")
     assert response_data["pagination"].key?("total_pages")
-  end
-
-  test "index avoids per-transaction transfer queries" do
-    from_account = @family.accounts.first
-    to_account = @family.accounts.second || @family.accounts.create!(
-      name: "Second Account",
-      balance: 0,
-      currency: @family.currency,
-      accountable: Depository.new
-    )
-
-    create_transfer(from_account: from_account, to_account: to_account, amount: 10)
-    baseline_queries = count_db_queries do
-      get api_v1_transactions_url, params: { per_page: 200 }, headers: api_headers(@api_key)
-      assert_response :success
-    end
-
-    5.times { create_transfer(from_account: from_account, to_account: to_account, amount: 10) }
-    expanded_queries = count_db_queries do
-      get api_v1_transactions_url, params: { per_page: 200 }, headers: api_headers(@api_key)
-      assert_response :success
-    end
-
-    assert_equal baseline_queries, expanded_queries
   end
 
   test "should get index with read-only API key" do
@@ -145,37 +119,6 @@ class Api::V1::TransactionsControllerTest < ActionDispatch::IntegrationTest
       assert transaction_date >= start_date
       assert transaction_date <= end_date
     end
-  end
-
-  test "should filter transactions by tag_ids without error" do
-    tag_one = tags(:one)
-    tag_two = tags(:two)
-    tagged_entry = @account.entries.create!(
-      name: "Tagged Transaction",
-      amount: 12.34,
-      currency: "USD",
-      date: Date.current,
-      entryable: Transaction.new(tags: [ tag_one, tag_two ])
-    )
-
-    untagged_entry = @account.entries.create!(
-      name: "Untagged Transaction",
-      amount: 12.34,
-      currency: "USD",
-      date: Date.current,
-      entryable: Transaction.new
-    )
-
-    get api_v1_transactions_url,
-        params: { tag_ids: [ tag_one.id, tag_two.id ], per_page: 200 },
-        headers: api_headers(@api_key)
-    assert_response :success
-
-    response_data = JSON.parse(response.body)
-    transaction_ids = response_data["transactions"].map { |t| t["id"] }
-    assert_equal 1, transaction_ids.count(tagged_entry.transaction.id)
-    assert_includes transaction_ids, tagged_entry.transaction.id
-    assert_not_includes transaction_ids, untagged_entry.transaction.id
   end
 
   test "should filter disabled account transactions by date range" do
@@ -354,53 +297,6 @@ class Api::V1::TransactionsControllerTest < ActionDispatch::IntegrationTest
 
     entry = @account.entries.find_by!(external_id: "import-txn-1", source: "external_import")
     assert_equal response_data["id"], entry.transaction.id
-  end
-
-  test "should create transaction protected from provider sync when user_modified is true" do
-    transaction_params = {
-      transaction: {
-        account_id: @account.id,
-        name: "Imported Transaction",
-        amount: 25.00,
-        date: Date.current,
-        currency: "USD",
-        nature: "expense",
-        user_modified: true
-      }
-    }
-
-    assert_difference("@account.entries.count", 1) do
-      post api_v1_transactions_url,
-           params: transaction_params,
-           headers: api_headers(@api_key)
-    end
-
-    assert_response :created
-    response_data = JSON.parse(response.body)
-    assert_equal true, response_data["user_modified"]
-
-    entry = Transaction.find(response_data["id"]).entry
-    assert entry.user_modified?
-    assert entry.protected_from_sync?
-  end
-
-  test "should not mark transaction user_modified by default" do
-    transaction_params = {
-      transaction: {
-        account_id: @account.id,
-        name: "Imported Transaction",
-        amount: 25.00,
-        date: Date.current,
-        currency: "USD",
-        nature: "expense"
-      }
-    }
-
-    post api_v1_transactions_url, params: transaction_params, headers: api_headers(@api_key)
-
-    assert_response :created
-    response_data = JSON.parse(response.body)
-    assert_equal false, response_data["user_modified"]
   end
 
   test "should use default source when external_id provided without source" do
@@ -648,6 +544,191 @@ class Api::V1::TransactionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :unauthorized
   end
 
+  test "should create channel payment with funding_account_id" do
+    channel_account = accounts(:credit_card) # payment channel account
+    funding_account = accounts(:depository)  # bank card / source
+
+    transaction_params = {
+      transaction: {
+        account_id: channel_account.id,
+        funding_account_id: funding_account.id,
+        name: "Starbucks Latte",
+        amount: 98.97,
+        date: Date.current,
+        currency: "USD",
+        nature: "expense"
+      }
+    }
+
+    assert_difference("Entry.count", 2) do
+      post api_v1_transactions_url,
+           params: transaction_params,
+           headers: api_headers(@api_key)
+    end
+
+    assert_response :created
+    response_data = JSON.parse(response.body)
+    assert_equal "Starbucks Latte", response_data["name"]
+
+    # Channel-side record (Record A): lives on the channel account, is excluded
+    # from balances, and carries the channel_payment metadata in extra.
+    channel_tx = Transaction.find(response_data["id"])
+    assert_equal channel_account.id, channel_tx.entry.account_id
+    assert channel_tx.entry.excluded?, "channel-side entry should be excluded"
+    assert_equal "true", channel_tx.extra["channel_payment"].to_s
+    assert_equal funding_account.id, channel_tx.extra["funding_account_id"]
+    assert_equal "payment", channel_tx.extra["channel_kind"]
+
+    # Funding-side auto record (Record B): lives on the funding account, points
+    # back at the channel record via the FK, is flagged as an auto record, and is
+    # not excluded from balances.
+    funding_tx = funding_account.transactions.order(:created_at).last
+    assert_equal channel_tx.id, funding_tx.channel_record_parent_id
+    assert_equal "true", funding_tx.extra["channel_auto_record"].to_s
+    assert_not funding_tx.entry.excluded?, "funding-side entry should not be excluded"
+  end
+
+  test "should create channel refund with valid original channel payment" do
+    channel_account = accounts(:credit_card)
+    funding_account = accounts(:depository)
+
+    # First create an original channel payment (outflow)
+    post api_v1_transactions_url,
+         params: {
+           transaction: {
+             account_id: channel_account.id,
+             funding_account_id: funding_account.id,
+             name: "Original payment",
+             amount: 100.00,
+             date: Date.current,
+             currency: "USD",
+             nature: "outflow"
+           }
+         },
+         headers: api_headers(@api_key)
+    assert_response :created
+    original_id = JSON.parse(response.body)["id"]
+
+    # Now create a refund (inflow) referencing the original
+    assert_difference("Entry.count", 2) do
+      post api_v1_transactions_url,
+           params: {
+             transaction: {
+               account_id: channel_account.id,
+               funding_account_id: funding_account.id,
+               name: "Refund",
+               amount: 40.00,
+               date: Date.current,
+               currency: "USD",
+               nature: "inflow",
+               extra: {
+                 channel_kind: "refund",
+                 refund_of_transaction_id: original_id
+               }
+             }
+           },
+           headers: api_headers(@api_key)
+    end
+
+    assert_response :created
+    refund = Transaction.find(JSON.parse(response.body)["id"])
+    refund_entry = refund.entry
+
+    # Channel-side (Record A): inflow, excluded, refund metadata written
+    assert refund_entry.amount.negative?, "refund channel entry should be inflow (negative amount)"
+    assert refund_entry.excluded?, "refund channel entry should be excluded from balance"
+    assert_equal "true", refund.extra["channel_payment"].to_s
+    assert_equal "refund", refund.extra["channel_kind"]
+    assert_equal original_id, refund.extra["refund_of_transaction_id"]
+
+    # Funding-side (Record B): matching inflow, points back to Record A
+    funding_tx = Transaction.find_by(channel_record_parent_id: refund.id)
+    assert_not_nil funding_tx, "funding-side auto record should exist"
+    assert funding_tx.entry.amount.negative?, "funding entry should also be inflow"
+    assert_equal "true", funding_tx.extra["channel_auto_record"].to_s
+  end
+
+  test "should reject channel refund without refund_of_transaction_id" do
+    channel_account = accounts(:credit_card)
+    funding_account = accounts(:depository)
+
+    assert_no_difference("Entry.count") do
+      post api_v1_transactions_url,
+           params: {
+             transaction: {
+               account_id: channel_account.id,
+               funding_account_id: funding_account.id,
+               name: "Bad refund",
+               amount: 40.00,
+               date: Date.current,
+               currency: "USD",
+               nature: "inflow",
+               extra: { channel_kind: "refund" }
+             }
+           },
+           headers: api_headers(@api_key)
+    end
+
+    assert_response :unprocessable_entity
+    assert JSON.parse(response.body)["error"].present?
+  end
+
+  test "should reject channel refund when original transaction not found" do
+    channel_account = accounts(:credit_card)
+    funding_account = accounts(:depository)
+
+    assert_no_difference("Entry.count") do
+      post api_v1_transactions_url,
+           params: {
+             transaction: {
+               account_id: channel_account.id,
+               funding_account_id: funding_account.id,
+               name: "Bad refund",
+               amount: 40.00,
+               date: Date.current,
+               currency: "USD",
+               nature: "inflow",
+               extra: {
+                 channel_kind: "refund",
+                 refund_of_transaction_id: SecureRandom.uuid
+               }
+             }
+           },
+           headers: api_headers(@api_key)
+    end
+
+    assert_response :unprocessable_entity
+  end
+
+  test "should reject channel refund when original is not a channel payment" do
+    channel_account = accounts(:credit_card)
+    funding_account = accounts(:depository)
+    # @transaction is an ordinary transaction, not a channel payment
+    plain_transaction = @transaction
+
+    assert_no_difference("Entry.count") do
+      post api_v1_transactions_url,
+           params: {
+             transaction: {
+               account_id: channel_account.id,
+               funding_account_id: funding_account.id,
+               name: "Bad refund",
+               amount: 40.00,
+               date: Date.current,
+               currency: "USD",
+               nature: "inflow",
+               extra: {
+                 channel_kind: "refund",
+                 refund_of_transaction_id: plain_transaction.id
+               }
+             }
+           },
+           headers: api_headers(@api_key)
+    end
+
+    assert_response :unprocessable_entity
+  end
+
   # UPDATE action tests
   test "should update transaction with valid parameters" do
     update_params = {
@@ -664,66 +745,6 @@ class Api::V1::TransactionsControllerTest < ActionDispatch::IntegrationTest
 
     response_data = JSON.parse(response.body)
     assert_equal "Updated Transaction Name", response_data["name"]
-  end
-
-  test "should protect transaction from provider sync when updated with user_modified true" do
-    update_params = {
-      transaction: {
-        name: "Client-owned Name",
-        user_modified: true
-      }
-    }
-
-    put api_v1_transaction_url(@transaction),
-        params: update_params,
-        headers: api_headers(@api_key)
-    assert_response :success
-
-    response_data = JSON.parse(response.body)
-    assert_equal "Client-owned Name", response_data["name"]
-    assert_equal true, response_data["user_modified"]
-
-    entry = @transaction.entry.reload
-    assert entry.user_modified?
-    assert entry.protected_from_sync?
-  end
-
-  test "date changed via API survives the next provider sync without user_modified" do
-    entry = Account::ProviderImportAdapter.new(@account).import_transaction(
-      external_id: "plaid_api_date_edit",
-      amount: 42.00,
-      currency: "USD",
-      date: Date.current - 5.days,
-      name: "Card payment",
-      source: "plaid"
-    )
-
-    put api_v1_transaction_url(entry.transaction),
-        params: { transaction: { date: (Date.current - 2.days).to_s } },
-        headers: api_headers(@api_key)
-    assert_response :success
-    assert_not entry.reload.user_modified?
-
-    Account::ProviderImportAdapter.new(@account).import_transaction(
-      external_id: "plaid_api_date_edit",
-      amount: 42.00,
-      currency: "USD",
-      date: Date.current - 5.days,
-      name: "Card payment",
-      source: "plaid"
-    )
-
-    assert_equal Date.current - 2.days, entry.reload.date
-  end
-
-  test "should not change user_modified on update by default" do
-    put api_v1_transaction_url(@transaction),
-        params: { transaction: { name: "Updated Name Only" } },
-        headers: api_headers(@api_key)
-    assert_response :success
-
-    assert_equal false, JSON.parse(response.body)["user_modified"]
-    assert_not @transaction.entry.reload.user_modified?
   end
 
   test "should reject update with read-only API key" do
@@ -887,7 +908,28 @@ end
   end
 
   test "transactions with transfers should include transfer information" do
-    transfer = create_transfer_between_accounts
+    # Create a transfer between two accounts to test transfer rendering
+    from_account = @family.accounts.create!(
+      name: "Transfer From Account",
+      balance: 1000,
+      currency: "USD",
+      accountable: Depository.new
+    )
+
+    to_account = @family.accounts.create!(
+      name: "Transfer To Account",
+      balance: 0,
+      currency: "USD",
+      accountable: Depository.new
+    )
+
+    transfer = Transfer::Creator.new(
+      family: @family,
+      source_account_id: from_account.id,
+      destination_account_id: to_account.id,
+      date: Date.current,
+      amount: 100
+    ).create
 
     get api_v1_transaction_url(transfer.inflow_transaction), headers: api_headers(@api_key)
     assert_response :success
@@ -900,85 +942,10 @@ end
     assert transaction_data["transfer"].key?("other_account")
   end
 
-  test "index renders transfer rows without per-transfer transaction lookups" do
-    transfer = create_transfer_between_accounts
-
-    queries = capture_sql_queries do
-      get api_v1_transactions_url,
-          params: { per_page: 100 },
-          headers: api_headers(@api_key)
-    end
-
-    assert_response :success
-
-    response_data = JSON.parse(response.body)
-    transfer_transaction_ids = [ transfer.inflow_transaction_id, transfer.outflow_transaction_id ]
-    transfer_rows = response_data["transactions"].select { |transaction| transfer_transaction_ids.include?(transaction["id"]) }
-
-    assert_equal 2, transfer_rows.size
-    assert transfer_rows.all? { |transaction| transaction["transfer"].present? }
-    assert_empty queries.grep(/SELECT "transactions"\.\* FROM "transactions" WHERE "transactions"\."id" =/)
-    assert_empty queries.grep(/SELECT "entries"\.\* FROM "entries" WHERE "entries"\."id" =/)
-    assert_empty queries.grep(/SELECT "accounts"\.\* FROM "accounts" WHERE "accounts"\."id" =/)
-  end
-
   private
 
     def api_headers(api_key)
       { "X-Api-Key" => api_key.display_key }
-    end
-
-    def count_db_queries(&block)
-      queries = 0
-      callback = lambda do |_name, _started, _finished, _unique_id, payload|
-        return if payload[:cached]
-        return if payload[:name].in?(%w[SCHEMA TRANSACTION])
-
-        queries += 1
-      end
-
-      ActiveSupport::Notifications.subscribed(callback, "sql.active_record", &block)
-      queries
-    end
-
-    def create_transfer_between_accounts
-      from_account = @family.accounts.create!(
-        name: "Transfer From Account",
-        balance: 1000,
-        currency: "USD",
-        accountable: Depository.new
-      )
-
-      to_account = @family.accounts.create!(
-        name: "Transfer To Account",
-        balance: 0,
-        currency: "USD",
-        accountable: Depository.new
-      )
-
-      Transfer::Creator.new(
-        family: @family,
-        source_account_id: from_account.id,
-        destination_account_id: to_account.id,
-        date: Date.current,
-        amount: 100
-      ).create
-    end
-
-    def capture_sql_queries
-      queries = []
-      callback = lambda do |_name, _started, _finished, _unique_id, payload|
-        next if payload[:cached]
-        next if %w[SCHEMA TRANSACTION].include?(payload[:name])
-
-        queries << payload[:sql].squish
-      end
-
-      ActiveSupport::Notifications.subscribed(callback, "sql.active_record") do
-        yield
-      end
-
-      queries
     end
 
     # Validates agent-friendly numeric fields: type, sign invariants

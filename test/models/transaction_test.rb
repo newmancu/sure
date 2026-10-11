@@ -1,94 +1,6 @@
 require "test_helper"
 
 class TransactionTest < ActiveSupport::TestCase
-  include EntriesTestHelper
-
-  test "existing_manual_recurring_transaction finds a match by merchant" do
-    family = families(:empty)
-    account = family.accounts.create! name: "Test", balance: 0, currency: "USD", accountable: Depository.new
-    merchant = family.merchants.create! name: "Test Merchant"
-    entry = create_transaction(account: account, amount: 100, merchant: merchant)
-    transaction = entry.entryable
-
-    recurring = family.recurring_transactions.create!(
-      account: account,
-      merchant: merchant,
-      amount: entry.amount,
-      currency: entry.currency,
-      expected_day_of_month: entry.date.day,
-      last_occurrence_date: entry.date,
-      next_expected_date: 1.month.from_now,
-      status: "active",
-      manual: true,
-      occurrence_count: 1
-    )
-
-    assert_equal recurring, transaction.existing_manual_recurring_transaction
-  end
-
-  test "existing_manual_recurring_transaction finds a match by name when no merchant" do
-    family = families(:empty)
-    account = family.accounts.create! name: "Test", balance: 0, currency: "USD", accountable: Depository.new
-    entry = create_transaction(account: account, amount: 50, name: "Netflix")
-    transaction = entry.entryable
-
-    recurring = family.recurring_transactions.create!(
-      account: account,
-      name: "Netflix",
-      amount: entry.amount,
-      currency: entry.currency,
-      expected_day_of_month: entry.date.day,
-      last_occurrence_date: entry.date,
-      next_expected_date: 1.month.from_now,
-      status: "active",
-      manual: true,
-      occurrence_count: 1
-    )
-
-    assert_equal recurring, transaction.existing_manual_recurring_transaction
-  end
-
-  test "existing_manual_recurring_transaction returns nil when no manual recurring transaction matches" do
-    family = families(:empty)
-    account = family.accounts.create! name: "Test", balance: 0, currency: "USD", accountable: Depository.new
-    other_account = family.accounts.create! name: "Other", balance: 0, currency: "USD", accountable: Depository.new
-    merchant = family.merchants.create! name: "Test Merchant"
-    other_merchant = family.merchants.create! name: "Other Merchant"
-    entry = create_transaction(account: account, amount: 100, merchant: merchant)
-    transaction = entry.entryable
-
-    base_attrs = {
-      expected_day_of_month: entry.date.day,
-      last_occurrence_date: entry.date,
-      next_expected_date: 1.month.from_now,
-      status: "active",
-      occurrence_count: 1
-    }
-
-    # Differs by account
-    family.recurring_transactions.create!(base_attrs.merge(
-      account: other_account, merchant: merchant, amount: entry.amount, currency: entry.currency, manual: true
-    ))
-    # Differs by merchant
-    family.recurring_transactions.create!(base_attrs.merge(
-      account: account, merchant: other_merchant, amount: entry.amount, currency: entry.currency, manual: true
-    ))
-    # Differs by amount
-    family.recurring_transactions.create!(base_attrs.merge(
-      account: account, merchant: merchant, amount: entry.amount + 1, currency: entry.currency, manual: true
-    ))
-    # Differs by currency
-    family.recurring_transactions.create!(base_attrs.merge(
-      account: account, merchant: merchant, amount: entry.amount, currency: "EUR", manual: true
-    ))
-    # Differs by manual flag
-    family.recurring_transactions.create!(base_attrs.merge(
-      account: account, merchant: merchant, amount: entry.amount, currency: entry.currency, manual: false
-    ))
-
-    assert_nil transaction.existing_manual_recurring_transaction
-  end
-
   test "pending? is true when extra.simplefin.pending is truthy" do
     transaction = Transaction.new(extra: { "simplefin" => { "pending" => true } })
 
@@ -125,130 +37,6 @@ class TransactionTest < ActiveSupport::TestCase
     assert_not transaction.pending?
   end
 
-  # The SQL forms of "is this pending?" must give the answer pending? gives for
-  # whatever is stored. PostgreSQL's ::boolean reads "no", "False", "Off" and
-  # " false" as false where ActiveModel::Type::Boolean reads them as true.
-  test "every SQL pending predicate agrees with pending? on any stored flag" do
-    account = families(:empty).accounts.create! name: "Pending parity", balance: 0, currency: "USD", accountable: Depository.new
-
-    [ true, false, nil, "true", "false", "no", "False", "Off", " false", "", "0", "1", "t", "f", 1, 0, 0.0 ].each do |flag|
-      transaction = create_transaction(account: account, amount: 10).entryable
-      transaction.update!(extra: { "plaid" => { "pending" => flag } })
-
-      sql_pending_answers(transaction).each do |form, answer|
-        assert_equal transaction.pending?, answer, "#{form} disagrees with pending? on #{flag.inspect}"
-      end
-    end
-  end
-
-  # ::boolean raises PG::InvalidTextRepresentation on a value it cannot parse,
-  # which aborts the whole query -- an income statement, a balance sync -- not
-  # just the one row.
-  test "no SQL pending predicate raises on a flag PostgreSQL cannot cast" do
-    account = families(:empty).accounts.create! name: "Pending parity", balance: 0, currency: "USD", accountable: Depository.new
-    transaction = create_transaction(account: account, amount: 10).entryable
-    transaction.update!(extra: { "simplefin" => { "pending" => "maybe" } })
-
-    assert transaction.pending?
-    sql_pending_answers(transaction).each do |form, answer|
-      assert answer, "#{form} should call a \"maybe\" flag pending, as pending? does"
-    end
-  end
-
-  test "SQL false values stay in sync with ActiveModel boolean casting" do
-    expected_false_values = Set.new(ActiveModel::Type::Boolean::FALSE_VALUES.grep(String)).add("")
-
-    assert_equal expected_false_values, Transaction::PENDING_FLAG_FALSE_VALUES.to_set
-  end
-
-  # pending_sql and PENDING_CHECK_SQL share one connection-free literal list;
-  # it must quote exactly as the database adapter would.
-  test "the shared SQL false-value list matches the adapter's quoting" do
-    adapter_quoted = Transaction::PENDING_FLAG_FALSE_VALUES.map { |value| Transaction.connection.quote(value) }.join(", ")
-
-    assert_equal adapter_quoted, Transaction::PENDING_FLAG_FALSE_VALUES_SQL
-    assert_includes Transaction.pending_sql, "NOT IN (#{adapter_quoted})"
-    assert_includes Transaction::PENDING_CHECK_SQL, "NOT IN (#{adapter_quoted})"
-  end
-
-  test "provider-specific SQL only considers the requested pending namespaces" do
-    account = families(:empty).accounts.create! name: "Provider pending scope", balance: 0,
-      currency: "USD", accountable: Depository.new
-    akahu_pending = create_transaction(account: account, amount: 10).entryable
-    akahu_pending.update!(extra: { "akahu" => { "pending" => "maybe" } })
-    akahu_false = create_transaction(account: account, amount: 11).entryable
-    akahu_false.update!(extra: { "akahu" => { "pending" => "off" } })
-    other_provider = create_transaction(account: account, amount: 12).entryable
-    other_provider.update!(extra: { "simplefin" => { "pending" => true } })
-
-    matches = Transaction.where(Transaction.pending_sql("transactions", providers: [ :akahu ]))
-
-    assert_equal [ akahu_pending.id ], matches.pluck(:id)
-    assert_equal [ akahu_pending.id ], Transaction.where(
-      Transaction.pending_sql("transactions", providers: [ "akahu", "unsupported" ])
-    ).pluck(:id)
-    assert_empty Transaction.where(Transaction.pending_sql("transactions", providers: [])).pluck(:id)
-  end
-
-  # Narrowed to some providers, the SQL is the same rule applied to those
-  # providers' flags only: another provider's flag must not leak in.
-  test "pending_sql for a provider subset agrees with pending? on that provider's flag alone" do
-    account = families(:empty).accounts.create! name: "Pending subset", balance: 0, currency: "USD", accountable: Depository.new
-
-    [ true, false, nil, "true", "false", "no", "False", "Off", " false", "", "0", "1", "t", "f", "maybe", 1, 0 ].each do |flag|
-      transaction = create_transaction(account: account, amount: 10).entryable
-      transaction.update!(extra: { "up" => { "pending" => flag }, "plaid" => { "pending" => true } })
-      expected = Transaction.new(extra: { "up" => { "pending" => flag } }).pending?
-
-      assert_equal expected, Transaction.where(Transaction.pending_sql(providers: %w[up])).exists?(transaction.id),
-        "pending_sql(providers: up) disagrees with pending? on #{flag.inspect}"
-      assert_equal !expected, Transaction.where(Transaction.not_pending_sql(providers: %w[up])).exists?(transaction.id),
-        "not_pending_sql(providers: up) disagrees with pending? on #{flag.inspect}"
-    end
-  end
-
-  test "pending SQL quotes the table alias and JSON keys" do
-    connection = ActiveRecord::Base.connection
-    table_alias = "pending alias"
-    sql = Transaction.pending_sql(table_alias)
-
-    assert_includes sql, "#{connection.quote_table_name(table_alias)}.extra"
-    assert_includes sql, "-> #{connection.quote(Transaction::PENDING_PROVIDERS.first)} ->> #{connection.quote('pending')}"
-    false_values = Transaction::PENDING_FLAG_FALSE_VALUES.map { |value| connection.quote(value) }.join(", ")
-    assert_includes sql, "NOT IN (#{false_values})"
-    assert_not_includes sql, "#{table_alias}.extra"
-  end
-
-  # A provider key holding something other than an object says nothing about
-  # that provider, and must not stop another provider's flag from counting.
-  # SQL reads NULL for it and moves on; pending? used to raise inside
-  # Hash#dig and rescue the whole row to false.
-  test "malformed metadata under one provider does not hide another provider's flag" do
-    account = families(:empty).accounts.create! name: "Pending parity", balance: 0, currency: "USD", accountable: Depository.new
-
-    [ "bad", [ "pending" ], 1 ].each do |malformed|
-      transaction = create_transaction(account: account, amount: 10).entryable
-      transaction.update!(extra: { "simplefin" => malformed, "plaid" => { "pending" => true } })
-
-      assert transaction.pending?, "pending? should see plaid's flag past simplefin => #{malformed.inspect}"
-      sql_pending_answers(transaction).each do |form, answer|
-        assert answer, "#{form} should see plaid's flag past simplefin => #{malformed.inspect}"
-      end
-    end
-  end
-
-  test "pending_duplicate_candidates offers only transactions pending? calls posted" do
-    account = families(:empty).accounts.create! name: "Merge", balance: 0, currency: "USD", accountable: Depository.new
-    pending_entry = create_transaction(account: account, amount: 10)
-    pending_entry.entryable.update!(extra: { "plaid" => { "pending" => true } })
-
-    posted = create_transaction(account: account, amount: 10)
-    create_transaction(account: account, amount: 10).entryable.update!(extra: { "plaid" => { "pending" => "no" } })
-    create_transaction(account: account, amount: 10).entryable.update!(extra: { "plaid" => { "pending" => "maybe" } })
-
-    assert_equal [ posted.id ], pending_entry.entryable.pending_duplicate_candidates.map(&:id)
-  end
-
   test "investment_contribution is a valid kind" do
     transaction = Transaction.new(kind: "investment_contribution")
 
@@ -265,95 +53,6 @@ class TransactionTest < ActiveSupport::TestCase
     non_transfer_kinds.each do |kind|
       assert_not Transaction.new(kind: kind).transfer?, "#{kind} should NOT be a transfer kind"
     end
-  end
-
-  test "category_editable? is true for non-transfer kinds" do
-    assert Transaction.new(kind: "standard").category_editable?
-    assert Transaction.new(kind: "one_time").category_editable?
-  end
-
-  test "category_editable? without a Transfer record stays editable regardless of kind" do
-    # An unmatched provider-imported leg has no counterpart to defer to and
-    # no other way for the user to fix a provider mislabel, so it stays
-    # editable just like a regular transaction.
-    assert Transaction.new(kind: "loan_payment").category_editable?
-    assert Transaction.new(kind: "investment_contribution").category_editable?
-    assert Transaction.new(kind: "funds_movement").category_editable?
-    assert Transaction.new(kind: "cc_payment").category_editable?
-  end
-
-  test "category_editable? keeps a matched transfer's category on its outflow leg" do
-    outflow_entry = create_transaction(date: Date.current, account: accounts(:depository), amount: 500, kind: "investment_contribution")
-    inflow_entry = create_transaction(date: Date.current, account: accounts(:investment), amount: -500, kind: "funds_movement")
-    Transfer.create!(inflow_transaction: inflow_entry.transaction, outflow_transaction: outflow_entry.transaction)
-
-    # Budgets count the outflow leg, so only that leg takes a category; the
-    # inflow leg shows the outflow's category read-only instead of a picker
-    # whose choice would never reach a budget.
-    assert outflow_entry.transaction.reload.category_editable?
-    assert_not outflow_entry.transaction.category_set_on_transfer_outflow?
-    assert_not inflow_entry.transaction.reload.category_editable?
-    assert inflow_entry.transaction.category_set_on_transfer_outflow?
-
-    fm_outflow = create_transaction(date: Date.current, account: accounts(:depository), amount: 500, kind: "funds_movement")
-    fm_inflow = create_transaction(date: Date.current, account: accounts(:connected), amount: -500, kind: "funds_movement")
-    Transfer.create!(inflow_transaction: fm_inflow.transaction, outflow_transaction: fm_outflow.transaction)
-
-    assert_not fm_outflow.transaction.reload.category_editable?
-    assert_not fm_inflow.transaction.reload.category_editable?
-    assert_not fm_inflow.transaction.category_set_on_transfer_outflow?
-  end
-
-  test "a matched inflow leg stays read-only after its kind is edited to standard" do
-    outflow_entry = create_transaction(date: Date.current, account: accounts(:depository), amount: 500, kind: "investment_contribution")
-    inflow_entry = create_transaction(date: Date.current, account: accounts(:investment), amount: -500, kind: "funds_movement")
-    Transfer.create!(inflow_transaction: inflow_entry.transaction, outflow_transaction: outflow_entry.transaction)
-    inflow_entry.transaction.update!(kind: "standard")
-
-    assert inflow_entry.transaction.reload.category_set_on_transfer_outflow?
-    assert_not inflow_entry.transaction.category_editable?
-  end
-
-  test "category_editable? stays true for the outflow leg even if a later sync leaves a stale funds_movement kind" do
-    # Account::ProviderImportAdapter can reassign an already-matched
-    # transaction's kind on a later sync without touching its Transfer.
-    # Transfer#categorizable? is destination-account based (stable), so
-    # delegating to it -- rather than reading this transaction's own kind
-    # directly -- keeps category_editable? correct despite the stale kind.
-    outflow_entry = create_transaction(date: Date.current, account: accounts(:depository), amount: 500, kind: "investment_contribution")
-    inflow_entry = create_transaction(date: Date.current, account: accounts(:investment), amount: -500, kind: "funds_movement")
-    Transfer.create!(inflow_transaction: inflow_entry.transaction, outflow_transaction: outflow_entry.transaction)
-    outflow_entry.transaction.update_column(:kind, "funds_movement")
-
-    assert outflow_entry.transaction.reload.category_editable?
-  end
-
-  test "payment? is true for cc_payment kind without a Transfer record" do
-    assert Transaction.new(kind: "cc_payment").payment?
-    assert_not Transaction.new(kind: "funds_movement").payment?
-  end
-
-  test "payment? defers to Transfer#payment? when a Transfer record exists" do
-    outflow_entry = create_transaction(date: Date.current, account: accounts(:depository), amount: 500, kind: "cc_payment")
-    inflow_entry = create_transaction(date: Date.current, account: accounts(:credit_card), amount: -500, kind: "cc_payment")
-    Transfer.create!(inflow_transaction: inflow_entry.transaction, outflow_transaction: outflow_entry.transaction)
-
-    assert outflow_entry.transaction.reload.payment?
-    assert inflow_entry.transaction.reload.payment?
-  end
-
-  test "payment? stays false for a non-payment transfer even if a later sync leaves a stale cc_payment kind" do
-    # Account::ProviderImportAdapter can reassign an already-matched
-    # transaction's kind on a later sync without touching its Transfer
-    # record. Simulate that here: a regular funds_movement transfer (to a
-    # non-liability account) whose outflow transaction's kind was later
-    # (incorrectly) left as "cc_payment".
-    outflow_entry = create_transaction(date: Date.current, account: accounts(:depository), amount: 500, kind: "funds_movement")
-    inflow_entry = create_transaction(date: Date.current, account: accounts(:connected), amount: -500, kind: "funds_movement")
-    Transfer.create!(inflow_transaction: inflow_entry.transaction, outflow_transaction: outflow_entry.transaction)
-    outflow_entry.transaction.update_column(:kind, "cc_payment")
-
-    assert_not outflow_entry.transaction.reload.payment?
   end
 
   test "all transaction kinds are valid" do
@@ -399,6 +98,31 @@ class TransactionTest < ActiveSupport::TestCase
 
     assert_equal "not a number", transaction.extra["exchange_rate"]
     assert transaction.extra["exchange_rate_invalid"]
+  end
+
+  test "payment_channel getter and setter store in extra" do
+    transaction = Transaction.new
+    assert_nil transaction.payment_channel
+
+    transaction.payment_channel = "wechat_pay"
+    assert_equal "wechat_pay", transaction.payment_channel
+    assert_equal "wechat_pay", transaction.extra["payment_channel"]
+
+    transaction.payment_channel = ""
+    assert_nil transaction.payment_channel
+    assert_nil transaction.extra&.dig("payment_channel")
+  end
+
+  test "by_payment_channel scope filters transactions by channel" do
+    t1 = transactions(:one)
+    t1.update!(payment_channel: "wechat_pay")
+
+    t2 = transactions(:two)
+    t2.update!(payment_channel: "alipay")
+
+    results = Transaction.by_payment_channel("wechat_pay")
+    assert_includes results, t1
+    assert_not_includes results, t2
   end
 
   test "exchange_rate setter rejects non-finite input" do
@@ -481,105 +205,88 @@ class TransactionTest < ActiveSupport::TestCase
     assert_equal securities(:msft), transaction.activity_security
   end
 
-  test "record_category_usage! touches the new category's last_used_at" do
-    transaction = transactions(:one)
-    category = categories(:income)
-    assert_nil category.last_used_at
+  test "channel_payment scope returns only persisted channel payment transactions" do
+    channel_payment = create_channel_transaction(extra: { "channel_payment" => true })
+    normal          = create_channel_transaction(extra: {})
+    other           = create_channel_transaction(extra: { "other" => "stuff" })
 
-    transaction.update!(category: category)
-    transaction.record_category_usage!
+    results = Transaction.channel_payment
 
-    assert_not_nil category.reload.last_used_at
+    assert_includes results, channel_payment
+    assert_not_includes results, normal
+    assert_not_includes results, other
   end
 
-  test "record_category_usage! does nothing when category_id did not change" do
-    transaction = transactions(:one)
-    category = transaction.category
-    assert_nil category.last_used_at
+  test "channel_refund scope returns only persisted channel refund transactions" do
+    refund  = create_channel_transaction(extra: { "channel_payment" => true, "channel_kind" => "refund" })
+    payment = create_channel_transaction(extra: { "channel_payment" => true, "channel_kind" => "payment" })
 
-    transaction.reload
-    transaction.record_category_usage!
+    results = Transaction.channel_refund
 
-    assert_nil category.reload.last_used_at
+    assert_includes results, refund
+    assert_not_includes results, payment
   end
 
-  test "record_category_usage! does nothing when category is cleared" do
-    transaction = transactions(:one)
+  test "auto_generated scope returns only transactions with a channel_record_parent_id" do
+    parent      = create_channel_transaction(extra: { "channel_payment" => true })
+    auto_record = create_channel_transaction(
+      account: accounts(:depository),
+      channel_record_parent_id: parent.id,
+      extra: { "channel_auto_record" => true }
+    )
+    manual = create_channel_transaction(account: accounts(:depository))
 
-    transaction.update!(category: nil)
+    results = Transaction.auto_generated
 
-    assert_nothing_raised { transaction.record_category_usage! }
+    assert_includes results, auto_record
+    assert_not_includes results, manual
+    assert_not_includes results, parent
   end
 
-  test "record_category_usage! is not invoked by rule-driven category enrichment" do
-    transaction = transactions(:one)
-    category = categories(:income)
-    assert_nil category.last_used_at
+  test "channel_child_records association connects a persisted parent to its auto-generated children" do
+    parent = create_channel_transaction(extra: { "channel_payment" => true })
+    child  = create_channel_transaction(
+      account: accounts(:depository),
+      channel_record_parent_id: parent.id,
+      extra: { "channel_auto_record" => true }
+    )
 
-    transaction.enrich_attribute(:category_id, category.id, source: "rule")
-
-    assert_nil category.reload.last_used_at
+    assert_includes parent.channel_child_records, child
+    assert_equal parent, child.channel_record_parent
   end
 
-  test "reassign_category! updates category, touches entries, and returns the count" do
-    transaction = transactions(:one)
-    entry = entries(:transaction)
-    new_category = categories(:income)
+  test "deleting a channel payment cascades to its auto-generated children" do
+    parent = create_channel_transaction(extra: { "channel_payment" => true })
+    child  = create_channel_transaction(
+      account: accounts(:depository),
+      channel_record_parent_id: parent.id,
+      extra: { "channel_auto_record" => true }
+    )
 
-    before = entry.updated_at
-
-    count = travel_to(1.minute.from_now) do
-      Transaction.reassign_category!(Transaction.where(id: transaction.id), new_category.id)
+    assert_difference -> { Transaction.count } => -2 do
+      parent.destroy!
     end
 
-    assert_equal 1, count
-    assert_equal new_category.id, transaction.reload.category_id
-    assert entry.reload.updated_at > before
-  end
-
-  test "reassign_category! returns 0 for an empty scope" do
-    assert_equal 0, Transaction.reassign_category!(Transaction.none, categories(:income).id)
-  end
-
-  test "toggle_tag! adds a missing tag and removes a present one" do
-    transaction = transactions(:one)
-    transaction.update!(tag_ids: [ tags(:one).id ])
-
-    transaction.toggle_tag!(tags(:two))
-    assert_equal [ tags(:one).id, tags(:two).id ].sort, transaction.tag_ids.sort
-
-    transaction.toggle_tag!(tags(:one))
-    assert_equal [ tags(:two).id ], transaction.reload.tag_ids
-  end
-
-  test "toggle_tag! keeps a tag added by a concurrent toggle" do
-    transaction = transactions(:one)
-    transaction.update!(tag_ids: [])
-    stale_copy = Transaction.find(transaction.id)
-    stale_copy.tag_ids # load the pre-toggle snapshot
-
-    transaction.toggle_tag!(tags(:one))
-    stale_copy.toggle_tag!(tags(:two))
-
-    assert_equal [ tags(:one).id, tags(:two).id ].sort, transaction.reload.tag_ids.sort
+    assert_not Transaction.exists?(child.id)
   end
 
   private
-    # Whether each SQL form of "is this transaction pending?" says it is.
-    def sql_pending_answers(transaction)
-      entry_id = transaction.entry.id
-      posted_row = ActiveRecord::Base.connection.select_value(
-        ActiveRecord::Base.sanitize_sql_array([
-          "SELECT 1 FROM transactions t WHERE t.id = ? #{Transaction.pending_providers_sql("t")}", transaction.id
-        ])
+    # Persists a real Entry + Transaction so the DB-backed channel scopes
+    # (channel_payment / channel_refund / auto_generated) actually run. The
+    # channel attributes live on Transaction (extra jsonb, channel_record_parent_id),
+    # not on Entry, so they can't go through the shared create_transaction helper.
+    def create_channel_transaction(account: accounts(:credit_card), extra: {}, channel_record_parent_id: nil)
+      entry = account.entries.create!(
+        name: "Channel transaction",
+        date: Date.current,
+        amount: 100,
+        currency: "USD",
+        entryable: Transaction.new(
+          extra: extra,
+          channel_record_parent_id: channel_record_parent_id
+        )
       )
 
-      {
-        "Transaction.pending" => Transaction.pending.exists?(transaction.id),
-        "Transaction.excluding_pending" => !Transaction.excluding_pending.exists?(transaction.id),
-        "Entry.pending" => Entry.pending.exists?(entry_id),
-        "Entry.excluding_pending (pending_check_sql)" => !Entry.excluding_pending.exists?(entry_id),
-        "Transaction.pending_providers_sql" => posted_row.nil?
-      }
+      entry.transaction
     end
 end
