@@ -129,8 +129,7 @@ class RecurringTransactionsController < ApplicationController
     @recurring_transaction = Current.family.recurring_transactions.new(
       # Paychecks default to the most common pay cadence; bills to monthly.
       frequency_preset: income ? "biweekly" : "monthly",
-      first_due_on: Date.current,
-      currency: Current.family.currency
+      first_due_on: Date.current
     )
     @recurring_transaction.is_income = income
 
@@ -222,7 +221,7 @@ class RecurringTransactionsController < ApplicationController
     respond_to do |format|
       format.html do
         flash[:notice] = message
-        redirect_back_or_to recurring_transactions_path
+        redirect_to recurring_transactions_path
       end
     end
   end
@@ -244,12 +243,7 @@ class RecurringTransactionsController < ApplicationController
     end
 
     flash[:notice] = t(income ? "recurring_transactions.deleted_income" : "recurring_transactions.deleted")
-    # Back to a visited /bills/:id would reopen, or 404 on, what was just removed.
-    if came_from?(bill_path(@recurring_transaction))
-      redirect_to bills_path
-    else
-      redirect_back_or_to bills_path
-    end
+    redirect_back_or_to bills_path
   end
 
   protected
@@ -260,7 +254,6 @@ class RecurringTransactionsController < ApplicationController
     def prefill_recurring_from_entry(entry)
       @recurring_transaction.name = entry.entryable.try(:merchant)&.name.presence || entry.name
       @recurring_transaction.amount = entry.amount.abs
-      @recurring_transaction.currency = entry.currency
       @recurring_transaction.account_id = entry.account_id
       # A negative entry is an inflow: pre-fill as income, not as a bill.
       @recurring_transaction.is_income = true if entry.amount.negative?
@@ -369,14 +362,13 @@ class RecurringTransactionsController < ApplicationController
         :payment_url, :autopay, :notes, :bill_type, :category_id,
         :renews_on, :trial_ends_on, :cancelled_on, :end_after_count,
         :frequency_preset, :frequency_day_of_month, :frequency_second_day_of_month,
-        :frequency_weekday, :frequency_month_of_year, :frequency_interval, :frequency_interval_unit
+        :frequency_weekday, :frequency_month_of_year
       )
     end
 
     def new_recurring_transaction_params
       params.require(:recurring_transaction).permit(
-        :name, :amount, :currency, :account_id, :first_due_on, :frequency_preset,
-        :frequency_interval, :frequency_interval_unit,
+        :name, :amount, :account_id, :first_due_on, :frequency_preset,
         :payment_url, :autopay, :notes, :is_income
       )
     end
@@ -403,8 +395,6 @@ class RecurringTransactionsController < ApplicationController
       @recurring_transaction.frequency_second_day_of_month = detection.second_day_of_month
       @recurring_transaction.frequency_weekday = detection.weekday
       @recurring_transaction.frequency_month_of_year = detection.month_of_year
-      @recurring_transaction.frequency_interval = detection.interval
-      @recurring_transaction.frequency_interval_unit = detection.interval_unit
     end
 
     # A bill outliving its own price is the normal case, and the only way to
@@ -431,13 +421,8 @@ class RecurringTransactionsController < ApplicationController
 
       if attrs[:amount].present?
         magnitude = attrs[:amount].to_d.abs
-        # Checked on the input: assigning it already rounded to the column.
-        if RecurringTransaction.storable_amount?(magnitude)
-          @recurring_transaction.amount =
-            @recurring_transaction.typed_income? ? -magnitude : magnitude
-        else
-          @recurring_transaction.errors.add(:base, t("recurring_transactions.create.amount_too_precise"))
-        end
+        @recurring_transaction.amount =
+          @recurring_transaction.typed_income? ? -magnitude : magnitude
       end
 
       if attrs.key?(:account_id)
@@ -462,9 +447,7 @@ class RecurringTransactionsController < ApplicationController
         day_of_month: @recurring_transaction.frequency_day_of_month,
         second_day_of_month: @recurring_transaction.frequency_second_day_of_month,
         weekday: @recurring_transaction.frequency_weekday,
-        month_of_year: @recurring_transaction.frequency_month_of_year,
-        interval: @recurring_transaction.frequency_interval,
-        interval_unit: @recurring_transaction.frequency_interval_unit
+        month_of_year: @recurring_transaction.frequency_month_of_year
       )
 
       # A hand-set cadence is intent, not a guess for detection to correct.
