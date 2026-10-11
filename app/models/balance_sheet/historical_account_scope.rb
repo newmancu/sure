@@ -9,7 +9,7 @@ class BalanceSheet::HistoricalAccountScope
   end
 
   def relation
-    scope = family.accounts.historical.included_in_reports
+    scope = family.accounts.historical
     user.present? ? scope.included_in_finances_for(user) : scope
   end
 

@@ -1,6 +1,4 @@
 class IncomeStatement::CategoryStats
-  include IncomeStatement::ScopedTransactionsQuery
-
   def initialize(family, interval: "month", account_ids: nil)
     @family = family
     @interval = interval
@@ -31,7 +29,35 @@ class IncomeStatement::CategoryStats
     end
 
     def sql_params
-      base_sql_params(interval: @interval)
+      params = {
+        target_currency: @family.currency,
+        interval: @interval,
+        family_id: @family.id
+      }
+
+      ids = @family.tax_advantaged_account_ids
+      params[:tax_advantaged_account_ids] = ids if ids.present?
+
+      params
+    end
+
+    def budget_excluded_kinds_sql
+      @budget_excluded_kinds_sql ||= Transaction::BUDGET_EXCLUDED_KINDS.map { |k| "'#{k}'" }.join(", ")
+    end
+
+    def pending_providers_sql
+      Transaction.pending_providers_sql("t")
+    end
+
+    def exclude_tax_advantaged_sql
+      ids = @family.tax_advantaged_account_ids
+      return "" if ids.empty?
+      "AND a.id NOT IN (:tax_advantaged_account_ids)"
+    end
+
+    def scope_to_account_ids_sql
+      return "" if @account_ids.nil?
+      ActiveRecord::Base.sanitize_sql([ "AND a.id IN (?)", @account_ids ])
     end
 
     def query_sql
@@ -40,21 +66,24 @@ class IncomeStatement::CategoryStats
           SELECT
             c.id as category_id,
             date_trunc(:interval, ae.date) as period,
-            #{classification_sql("t")} as classification,
-            SUM(#{converted_amount_sql("t")}) as total
+            CASE WHEN t.kind IN ('investment_contribution', 'loan_payment') THEN 'expense' WHEN ae.amount < 0 THEN 'income' ELSE 'expense' END as classification,
+            SUM(CASE WHEN t.kind IN ('investment_contribution', 'loan_payment') THEN ABS(ae.amount * COALESCE(er.rate, 1)) ELSE ae.amount * COALESCE(er.rate, 1) END) as total
           FROM transactions t
-          #{entries_join_sql("t")}
-          #{accounts_join_sql}
+          JOIN entries ae ON ae.entryable_id = t.id AND ae.entryable_type = 'Transaction'
+          JOIN accounts a ON a.id = ae.account_id
           LEFT JOIN categories c ON c.id = t.category_id
-          #{exchange_rates_join_sql}
+          LEFT JOIN exchange_rates er ON (
+            er.date = ae.date AND
+            er.from_currency = ae.currency AND
+            er.to_currency = :target_currency
+          )
           WHERE a.family_id = :family_id
             AND t.kind NOT IN (#{budget_excluded_kinds_sql})
             AND ae.excluded = false
-            AND a.exclude_from_reports = false
             #{pending_providers_sql}
             #{exclude_tax_advantaged_sql}
             #{scope_to_account_ids_sql}
-          GROUP BY c.id, period, #{classification_sql("t")}
+          GROUP BY c.id, period, CASE WHEN t.kind IN ('investment_contribution', 'loan_payment') THEN 'expense' WHEN ae.amount < 0 THEN 'income' ELSE 'expense' END
         )
         SELECT
           category_id,

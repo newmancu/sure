@@ -11,15 +11,9 @@ import '../widgets/account_card.dart';
 import '../widgets/connectivity_banner.dart';
 import '../widgets/net_worth_card.dart';
 import '../widgets/currency_filter.dart';
-import '../widgets/sure_button.dart';
 import '../widgets/sure_icon.dart';
-import '../theme/sure_colors.dart';
-import '../theme/sure_spacing.dart';
-import '../theme/sure_tokens.dart';
-import '../theme/sure_typography.dart';
 import 'transaction_form_screen.dart';
 import 'transactions_list_screen.dart';
-import '../l10n/app_localizations.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -136,8 +130,6 @@ class DashboardScreenState extends State<DashboardScreen> {
   Future<void> _performManualSync() async {
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     final transactionsProvider = Provider.of<TransactionsProvider>(context, listen: false);
-    final l = AppLocalizations.of(context);
-    final palette = SureColors.of(context).palette;
 
     final accessToken = await authProvider.getValidAccessToken();
     if (accessToken == null) {
@@ -148,10 +140,10 @@ class DashboardScreenState extends State<DashboardScreen> {
     // Show syncing indicator
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
+        const SnackBar(
           content: Row(
             children: [
-              const SizedBox(
+              SizedBox(
                 width: 16,
                 height: 16,
                 child: CircularProgressIndicator(
@@ -159,11 +151,11 @@ class DashboardScreenState extends State<DashboardScreen> {
                   valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                 ),
               ),
-              const SizedBox(width: 12),
-              Expanded(child: Text(l.dashboardSyncing)),
+              SizedBox(width: 12),
+              Text('Syncing data from server...'),
             ],
           ),
-          duration: const Duration(seconds: 30),
+          duration: Duration(seconds: 30),
         ),
       );
     }
@@ -182,17 +174,12 @@ class DashboardScreenState extends State<DashboardScreen> {
             SnackBar(
               content: Row(
                 children: [
-                  SureIcon(SureIcons.circleAlert, color: palette.textInverse),
+                  const SureIcon(SureIcons.circleAlert, color: Colors.white),
                   const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      l.dashboardSyncFailed,
-                      style: TextStyle(color: palette.textInverse),
-                    ),
-                  ),
+                  const Expanded(child: Text('Sync failed. Please try again.')),
                 ],
               ),
-              backgroundColor: palette.destructive,
+              backgroundColor: Colors.red,
               duration: const Duration(seconds: 3),
             ),
           );
@@ -205,21 +192,16 @@ class DashboardScreenState extends State<DashboardScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).clearSnackBars();
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
+          const SnackBar(
             content: Row(
               children: [
-                SureIcon(SureIcons.circleAlert, color: palette.textInverse),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    l.dashboardSyncError,
-                    style: TextStyle(color: palette.textInverse),
-                  ),
-                ),
+                SureIcon(SureIcons.circleAlert, color: Colors.white),
+                SizedBox(width: 12),
+                Expanded(child: Text('Sync failed. Please try again.')),
               ],
             ),
-            backgroundColor: palette.destructive,
-            duration: const Duration(seconds: 3),
+            backgroundColor: Colors.red,
+            duration: Duration(seconds: 3),
           ),
         );
       }
@@ -299,8 +281,6 @@ class DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _handleAccountTap(Account account) async {
-    final l = AppLocalizations.of(context);
-    final palette = SureColors.of(context).palette;
     final result = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
@@ -312,10 +292,10 @@ class DashboardScreenState extends State<DashboardScreen> {
     if (result == true && mounted) {
       // Show loading indicator
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
+        const SnackBar(
           content: Row(
             children: [
-              const SizedBox(
+              SizedBox(
                 width: 16,
                 height: 16,
                 child: CircularProgressIndicator(
@@ -323,11 +303,11 @@ class DashboardScreenState extends State<DashboardScreen> {
                   valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                 ),
               ),
-              const SizedBox(width: 12),
-              Expanded(child: Text(l.dashboardRefreshing)),
+              SizedBox(width: 12),
+              Text('Refreshing accounts...'),
             ],
           ),
-          duration: const Duration(seconds: 2),
+          duration: Duration(seconds: 2),
         ),
       );
 
@@ -341,19 +321,16 @@ class DashboardScreenState extends State<DashboardScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).clearSnackBars();
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
+          const SnackBar(
             content: Row(
               children: [
-                SureIcon(SureIcons.circleCheck, color: palette.textInverse),
-                const SizedBox(width: 12),
-                Text(
-                  l.dashboardAccountsUpdated,
-                  style: TextStyle(color: palette.textInverse),
-                ),
+                SureIcon(SureIcons.circleCheck, color: Colors.white),
+                SizedBox(width: 12),
+                Text('Accounts updated'),
               ],
             ),
-            backgroundColor: palette.success,
-            duration: const Duration(seconds: 1),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 1),
           ),
         );
       }
@@ -376,8 +353,7 @@ class DashboardScreenState extends State<DashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final l = AppLocalizations.of(context);
-    final palette = SureColors.of(context).palette;
+    final colorScheme = Theme.of(context).colorScheme;
 
     return Scaffold(
       body: Column(
@@ -388,22 +364,20 @@ class DashboardScreenState extends State<DashboardScreen> {
               opacity: _showSyncSuccess ? 1.0 : 0.0,
               duration: const Duration(milliseconds: 300),
               child: Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: SureSpacing.xl, vertical: SureSpacing.sm),
-                color: palette.success.withValues(alpha: 0.1),
-                child: Row(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                color: Colors.green.withValues(alpha: 0.1),
+                child: const Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     SureIcon(
                       SureIcons.cloudCheck,
-                      color: palette.success,
+                      color: Colors.green,
                       size: 18,
                     ),
-                    const SizedBox(width: SureSpacing.md),
+                    SizedBox(width: 8),
                     Text(
-                      l.dashboardSynced,
-                      style: TextStyle(
-                          color: palette.success, fontSize: SureTypography.sm),
+                      'Synced',
+                      style: TextStyle(color: Colors.green, fontSize: 13),
                     ),
                   ],
                 ),
@@ -431,24 +405,24 @@ class DashboardScreenState extends State<DashboardScreen> {
                     SureIcon(
                       SureIcons.circleAlert,
                       size: 64,
-                      color: palette.destructive,
+                      color: colorScheme.error,
                     ),
-                    const SizedBox(height: SureSpacing.xl),
+                    const SizedBox(height: 16),
                     Text(
-                      l.dashboardErrorLoadingAccounts,
+                      'Failed to load accounts',
                       style: Theme.of(context).textTheme.titleLarge,
                     ),
-                    const SizedBox(height: SureSpacing.md),
+                    const SizedBox(height: 8),
                     Text(
                       accountsProvider.errorMessage!,
-                      style: TextStyle(color: palette.textSecondary),
+                      style: TextStyle(color: colorScheme.onSurfaceVariant),
                       textAlign: TextAlign.center,
                     ),
-                    const SizedBox(height: SureSpacing.xxxl),
-                    SureButton(
-                      label: l.commonTryAgain,
+                    const SizedBox(height: 24),
+                    ElevatedButton.icon(
                       onPressed: _handleRefresh,
-                      leading: const SureIcon(SureIcons.refresh, size: 18),
+                      icon: const SureIcon(SureIcons.refresh),
+                      label: const Text('Try Again'),
                     ),
                   ],
                 ),
@@ -467,24 +441,24 @@ class DashboardScreenState extends State<DashboardScreen> {
                     SureIcon(
                       SureIcons.wallet,
                       size: 64,
-                      color: palette.textSubdued,
+                      color: colorScheme.onSurfaceVariant,
                     ),
-                    const SizedBox(height: SureSpacing.xl),
+                    const SizedBox(height: 16),
                     Text(
-                      l.dashboardNoAccounts,
+                      'No accounts yet',
                       style: Theme.of(context).textTheme.titleLarge,
                     ),
-                    const SizedBox(height: SureSpacing.md),
+                    const SizedBox(height: 8),
                     Text(
-                      l.dashboardNoAccountsSubtitle,
-                      style: TextStyle(color: palette.textSecondary),
+                      'Add accounts in the web app to see them here.',
+                      style: TextStyle(color: colorScheme.onSurfaceVariant),
                       textAlign: TextAlign.center,
                     ),
-                    const SizedBox(height: SureSpacing.xxxl),
-                    SureButton(
-                      label: l.commonRefresh,
+                    const SizedBox(height: 24),
+                    ElevatedButton.icon(
                       onPressed: _handleRefresh,
-                      leading: const SureIcon(SureIcons.refresh, size: 18),
+                      icon: const SureIcon(SureIcons.refresh),
+                      label: const Text('Refresh'),
                     ),
                   ],
                 ),
@@ -552,28 +526,25 @@ class DashboardScreenState extends State<DashboardScreen> {
 
   List<Widget> _buildFilteredAccountsSection(AccountsProvider accountsProvider) {
     final filteredAccounts = _getFilteredAccounts(accountsProvider);
-    final l = AppLocalizations.of(context);
-
-    final palette = SureColors.of(context).palette;
 
     if (filteredAccounts.isEmpty) {
       return [
         SliverToBoxAdapter(
           child: Center(
             child: Padding(
-              padding: const EdgeInsets.all(SureSpacing.huge),
+              padding: const EdgeInsets.all(32),
               child: Column(
                 children: [
                   SureIcon(
                     SureIcons.wallet,
                     size: 48,
-                    color: palette.textSubdued,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
-                  const SizedBox(height: SureSpacing.xl),
+                  const SizedBox(height: 16),
                   Text(
-                    l.dashboardFilterEmpty,
+                    'No accounts match the current filter',
                     style: TextStyle(
-                      color: palette.textSecondary,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
                   ),
                 ],
@@ -727,40 +698,39 @@ class _CollapsibleTypeHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final palette = SureColors.of(context).palette;
+    final colorScheme = Theme.of(context).colorScheme;
 
     return InkWell(
       onTap: onToggle,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(
-            SureSpacing.xl, SureSpacing.xl, SureSpacing.xl, SureSpacing.md),
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
         child: Row(
           children: [
             SureIcon(
               _getTypeIconName(),
               size: 18,
-              color: palette.textSubdued,
+              color: colorScheme.onSurfaceVariant,
             ),
-            const SizedBox(width: SureSpacing.lg),
+            const SizedBox(width: 10),
             Text(
               title,
               style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    fontWeight: SureTokens.weightMedium,
+                    fontWeight: FontWeight.w500,
                   ),
             ),
-            const SizedBox(width: SureSpacing.md),
+            const SizedBox(width: 8),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1),
               decoration: BoxDecoration(
-                color: palette.surfaceInset,
-                borderRadius: BorderRadius.circular(SureTokens.radiusLg),
+                color: colorScheme.primaryContainer.withValues(alpha: 0.5),
+                borderRadius: BorderRadius.circular(10),
               ),
               child: Text(
                 count.toString(),
                 style: TextStyle(
-                  color: palette.textSecondary,
-                  fontWeight: SureTokens.weightMedium,
-                  fontSize: SureTypography.xs,
+                  color: colorScheme.onPrimaryContainer,
+                  fontWeight: FontWeight.w500,
+                  fontSize: 11,
                 ),
               ),
             ),
@@ -768,7 +738,7 @@ class _CollapsibleTypeHeader extends StatelessWidget {
             SureIcon(
               isCollapsed ? SureIcons.chevronDown : SureIcons.chevronUp,
               size: SureIconSize.md,
-              color: palette.textSubdued,
+              color: colorScheme.onSurfaceVariant,
             ),
           ],
         ),

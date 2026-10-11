@@ -1,15 +1,6 @@
 # frozen_string_literal: true
 
 namespace :security do
-  # Scope note: this task encrypts values that are still stored as PLAINTEXT.
-  # It cannot detect or repair rows that were double-encoded by the pre-fix
-  # version of this task (issue #2611): those decrypt "successfully" to a
-  # JSON-text String on a json/jsonb column, which is indistinguishable here
-  # from a legitimately stored string value, so mutating them automatically
-  # would risk mangling valid data. If your instance ran the backfill before
-  # the #2611 fix and provider payloads now decrypt to Strings (symptom:
-  # zero balances on every provider-linked account after a sync), run the
-  # manual recovery script in issue #2611 first, then re-run this task.
   desc "Backfill encryption for sensitive fields (idempotent). Args: batch_size, dry_run"
   task :backfill_encryption, [ :batch_size, :dry_run ] => :environment do |_, args|
     raw_batch = args[:batch_size].presence || ENV["BATCH_SIZE"].presence || "100"
@@ -90,11 +81,8 @@ namespace :security do
         # Skip if filter block returns false
         next if block_given? && !filter_block.call(record)
 
-        # Check if any field has data (use safe read to handle plaintext).
-        # Nil-check rather than present?: empty values ({}, [], "") are still
-        # plaintext that needs encrypting — present? skips them, leaving data
-        # the encrypted getters raise on once keys are live.
-        next unless fields.any? { |f| !safe_read_field(record, f).nil? }
+        # Check if any field has data (use safe read to handle plaintext)
+        next unless fields.any? { |f| safe_read_field(record, f).present? }
 
         next if dry_run
 
@@ -103,7 +91,7 @@ namespace :security do
           plaintext_values = {}
           fields.each do |field|
             value = safe_read_field(record, field)
-            plaintext_values[field] = value unless value.nil?
+            plaintext_values[field] = value if value.present?
           end
 
           next if plaintext_values.empty?
@@ -141,25 +129,11 @@ namespace :security do
   # Safely read a field value, handling both encrypted and plaintext data.
   # When encryption is configured but the value is plaintext, the getter
   # raises ActiveRecord::Encryption::Errors::Decryption. In this case,
-  # we fall back to reading the raw database value. For json/jsonb columns
-  # the raw value is the JSON text, not the deserialized Array/Hash the
-  # encrypted setter expects, so parse it first — otherwise the backfill
-  # encrypts the JSON text itself and the column thereafter decrypts to a
-  # String, breaking every consumer of the payload.
+  # we fall back to reading the raw database value.
   def safe_read_field(record, field)
     record.send(field)
   rescue ActiveRecord::Encryption::Errors::Decryption
-    raw = record.read_attribute_before_type_cast(field)
-    column = record.class.columns_hash[field.to_s]
-    if raw.is_a?(String) && [ :json, :jsonb ].include?(column&.type)
-      begin
-        JSON.parse(raw)
-      rescue JSON::ParserError
-        raw
-      end
-    else
-      raw
-    end
+    record.read_attribute_before_type_cast(field)
   end
 
   def backfill_sessions(batch_size, dry_run)
@@ -177,7 +151,7 @@ namespace :security do
 
           # Re-save user_agent to trigger encryption (use safe read for plaintext)
           user_agent_value = safe_read_field(session, :user_agent)
-          unless user_agent_value.nil?
+          if user_agent_value.present?
             # Use temporary instance to encrypt
             encryptor = Session.new
             encryptor.user_agent = user_agent_value

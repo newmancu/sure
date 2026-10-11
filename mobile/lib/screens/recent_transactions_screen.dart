@@ -6,12 +6,8 @@ import '../models/account.dart';
 import '../providers/transactions_provider.dart';
 import '../providers/accounts_provider.dart';
 import '../providers/auth_provider.dart';
-import '../theme/sure_tokens.dart';
-import '../providers/privacy_provider.dart';
 import '../utils/amount_parser.dart';
-import '../utils/money_masker.dart';
 import '../widgets/money_text.dart';
-import '../l10n/app_localizations.dart';
 
 class RecentTransactionsScreen extends StatefulWidget {
   const RecentTransactionsScreen({super.key});
@@ -88,10 +84,8 @@ class _RecentTransactionsScreenState extends State<RecentTransactionsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final l = AppLocalizations.of(context);
     final colorScheme = Theme.of(context).colorScheme;
     final transactionsProvider = context.watch<TransactionsProvider>();
-    final hideAmounts = context.watch<PrivacyProvider>().hidden;
 
     final recentTransactions = _getSortedTransactions(
       transactionsProvider.transactions,
@@ -99,12 +93,12 @@ class _RecentTransactionsScreenState extends State<RecentTransactionsScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(l.recentTransactionsTitle),
+        title: const Text('Recent Transactions'),
         actions: [
           PopupMenuButton<int>(
             initialValue: _transactionLimit,
             icon: const Icon(Icons.filter_list),
-            tooltip: l.recentTransactionsDisplayLimit,
+            tooltip: 'Display Limit',
             onSelected: (int value) {
               setState(() {
                 _transactionLimit = value;
@@ -120,7 +114,7 @@ class _RecentTransactionsScreenState extends State<RecentTransactionsScreen> {
                     else
                       const SizedBox(width: 20),
                     const SizedBox(width: 8),
-                    Text(l.recentTransactionsShowN(limit)),
+                    Text('Show $limit'),
                   ],
                 ),
               );
@@ -146,7 +140,6 @@ class _RecentTransactionsScreenState extends State<RecentTransactionsScreen> {
                         context,
                         transaction,
                         colorScheme,
-                        hideAmounts,
                       );
                     },
                   ),
@@ -155,7 +148,6 @@ class _RecentTransactionsScreenState extends State<RecentTransactionsScreen> {
   }
 
   Widget _buildEmptyState(ColorScheme colorScheme) {
-    final l = AppLocalizations.of(context);
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(24),
@@ -169,12 +161,12 @@ class _RecentTransactionsScreenState extends State<RecentTransactionsScreen> {
             ),
             const SizedBox(height: 16),
             Text(
-              l.recentTransactionsEmpty,
+              'No Transactions',
               style: Theme.of(context).textTheme.titleLarge,
             ),
             const SizedBox(height: 8),
             Text(
-              l.recentTransactionsPullToRefresh,
+              'Pull to refresh',
               style: TextStyle(color: colorScheme.onSurfaceVariant),
             ),
           ],
@@ -183,11 +175,10 @@ class _RecentTransactionsScreenState extends State<RecentTransactionsScreen> {
     );
   }
 
-  Widget _buildTransactionItem(BuildContext context, Transaction transaction,
-      ColorScheme colorScheme, bool hideAmounts) {
+  Widget _buildTransactionItem(
+      BuildContext context, Transaction transaction, ColorScheme colorScheme) {
     final account = _getAccount(transaction.accountId);
-    final accountName = account?.name ??
-        AppLocalizations.of(context).recentTransactionsUnknownAccount;
+    final accountName = account?.name ?? 'Unknown Account';
 
     double? amount;
     try {
@@ -217,9 +208,7 @@ class _RecentTransactionsScreenState extends State<RecentTransactionsScreen> {
     String formattedDate;
     try {
       final date = DateTime.parse(transaction.date);
-      formattedDate = DateFormat('yyyy-MM-dd HH:mm',
-              Localizations.localeOf(context).toString())
-          .format(date);
+      formattedDate = DateFormat('yyyy-MM-dd HH:mm').format(date);
     } catch (e) {
       formattedDate = transaction.date;
     }
@@ -243,7 +232,7 @@ class _RecentTransactionsScreenState extends State<RecentTransactionsScreen> {
       ),
       title: Text(
         transaction.name,
-        style: const TextStyle(fontWeight: SureTokens.weightMedium),
+        style: const TextStyle(fontWeight: FontWeight.w500),
       ),
       subtitle: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -280,15 +269,12 @@ class _RecentTransactionsScreenState extends State<RecentTransactionsScreen> {
         ],
       ),
       trailing: MoneyText(
-        MoneyMasker.mask(
-          amount == null
-              ? transaction.amount
-              : '$sign${transaction.currency} ${_formatAmount(amount.abs())}',
-          hidden: hideAmounts,
-        ),
+        amount == null
+            ? transaction.amount
+            : '$sign${transaction.currency} ${_formatAmount(amount.abs())}',
         trend: moneyTrend,
         style: const TextStyle(
-          fontWeight: SureTokens.weightMedium,
+          fontWeight: FontWeight.w500,
           fontSize: 16,
         ),
       ),
