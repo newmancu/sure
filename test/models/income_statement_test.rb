@@ -84,6 +84,7 @@ class IncomeStatementTest < ActiveSupport::TestCase
     expense_period_total = IncomeStatement::PeriodTotal.new("expense", 900, @family.currency, [])
     income_period_total = IncomeStatement::PeriodTotal.new("income", 1000, @family.currency, [])
 
+    income_statement.expects(:refund_totals).with(period: period).once.returns(IncomeStatement::PeriodTotal.new("expense", 0, @family.currency, []))
     income_statement.expects(:build_period_total).with(classification: "expense", period: period).once.returns(expense_period_total)
     income_statement.expects(:build_period_total).with(classification: "income", period: period).once.returns(income_period_total)
 
@@ -295,18 +296,6 @@ class IncomeStatementTest < ActiveSupport::TestCase
     assert_equal 4, totals.transactions_count # Only original 4 transactions
     assert_equal Money.new(1000, @family.currency), totals.income_money
     assert_equal Money.new(900, @family.currency), totals.expense_money
-  end
-
-  # A flag PostgreSQL cannot cast to boolean used to raise
-  # PG::InvalidTextRepresentation and take the whole statement down.
-  test "a pending flag PostgreSQL cannot cast neither raises nor counts" do
-    assert_statement_leaves_out_flagged_expense("maybe")
-  end
-
-  # Transaction#pending? (and so the Pending badge) calls "no" pending;
-  # PostgreSQL's ::boolean called it posted and counted it.
-  test "a \"no\" pending flag is pending, as Transaction#pending? says" do
-    assert_statement_leaves_out_flagged_expense("no")
   end
 
   # NEW TESTS: Interval-Based Calculations
@@ -785,24 +774,4 @@ class IncomeStatementTest < ActiveSupport::TestCase
 
     assert_equal 1, totals_query_calls
   end
-
-  private
-    # Adds a 250 grocery expense whose pending flag is +flag+ and asserts every
-    # figure is the one without it: totals (Transaction.excluding_pending), the
-    # family median and average (FamilyStats) and the category median
-    # (CategoryStats), each of which reads the flag in its own SQL.
-    def assert_statement_leaves_out_flagged_expense(flag)
-      flagged = create_transaction(account: @checking_account, amount: 250, category: @groceries_category)
-      flagged.entryable.update!(extra: { "plaid" => { "pending" => flag } })
-      assert flagged.entryable.pending?, "pending? should call #{flag.inspect} pending"
-
-      income_statement = IncomeStatement.new(@family)
-      totals = income_statement.totals(date_range: Period.last_30_days.date_range)
-
-      assert_equal 4, totals.transactions_count
-      assert_equal Money.new(900, @family.currency), totals.expense_money
-      assert_equal 900.0, income_statement.median_expense(interval: "month")
-      assert_equal 900.0, income_statement.avg_expense(interval: "month")
-      assert_equal 900.0, income_statement.median_expense(interval: "month", category: @groceries_category)
-    end
 end

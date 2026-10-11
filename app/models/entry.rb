@@ -33,9 +33,10 @@ class Entry < ApplicationRecord
 
   validate :cannot_unexclude_split_parent
   validate :split_child_date_matches_parent
+  validate :refund_direction_unchanged
+  validate :cannot_exclude_refund_linked_purchase
 
   before_destroy :prevent_individual_child_deletion, if: :split_child?
-  after_save :track_earliest_saved_date, if: :saved_change_to_date?
 
   scope :visible, -> {
     joins(:account).where(accounts: { status: [ "draft", "active" ] })
@@ -67,8 +68,9 @@ class Entry < ApplicationRecord
   # Pending transaction scopes - check Transaction.extra for provider pending flags
   # Works with any provider that stores pending status in extra["provider_name"]["pending"]
   scope :pending, -> {
+    conditions = Transaction::PENDING_PROVIDERS.map { |p| "(transactions.extra -> '#{p}' ->> 'pending')::boolean = true" }
     joins("INNER JOIN transactions ON transactions.id = entries.entryable_id AND entries.entryable_type = 'Transaction'")
-      .where(Transaction.pending_sql)
+      .where(conditions.join(" OR "))
   }
 
   scope :excluding_pending, -> {
@@ -165,7 +167,9 @@ class Entry < ApplicationRecord
   def self.reconcile_pending_duplicates(account: nil, dry_run: false, date_window: 8, amount_tolerance: 0.25)
     stats = { checked: 0, reconciled: 0, details: [] }
 
-    not_pending_sql = Transaction.not_pending_sql
+    not_pending_sql = Transaction::PENDING_PROVIDERS
+      .map { |p| "(transactions.extra -> '#{p}' ->> 'pending')::boolean IS NOT TRUE" }
+      .join(" AND ")
 
     # Get pending entries to check
     scope = Entry.pending.where(excluded: false)
@@ -295,19 +299,8 @@ class Entry < ApplicationRecord
     entryable.lock_saved_attributes!
   end
 
-  # Enqueues an account sync whose window starts at the earliest date this
-  # entry has occupied since it was loaded, so balances are recomputed from
-  # wherever the entry used to sit.
-  #
-  # Later saves (lock_saved_attributes!, mark_user_modified!) reset
-  # date_previously_was, so the earliest date tracked across saves is used too.
-  # Starting the window after the old date would seed the incremental balance
-  # calculation from a balance that still includes this entry.
-  #
-  # @return [void]
   def sync_account_later
-    sync_start_date = [ @earliest_saved_date, date_previously_was, date ].compact.min unless destroyed?
-    @earliest_saved_date = nil
+    sync_start_date = [ date_previously_was, date ].compact.min unless destroyed?
     account.sync_later(window_start_date: sync_start_date)
   end
 
@@ -457,12 +450,21 @@ class Entry < ApplicationRecord
   # @param splits [Array<Hash>] array of { name:, amount:, category_id:, excluded: } hashes
   # @return [Array<Entry>] the created child entries
   def split!(splits)
-    total = splits.sum { |s| s[:amount].to_d }
-    unless total == amount
-      raise ActiveRecord::RecordInvalid.new(self), "Split amounts must sum to parent amount (expected #{amount}, got #{total})"
-    end
-
     self.class.transaction do
+      # Refund linking and splitting must serialize on the same row. Reload
+      # the entry after waiting so its amount and associations are current.
+      transaction.lock! if transaction?
+      reload
+      if transaction? && transaction.refund_linked?
+        errors.add(:base, :refund_links_present)
+        raise ActiveRecord::RecordInvalid, self
+      end
+
+      total = splits.sum { |s| s[:amount].to_d }
+      unless total == amount
+        raise ActiveRecord::RecordInvalid.new(self), "Split amounts must sum to parent amount (expected #{amount}, got #{total})"
+      end
+
       children = splits.map do |split_attrs|
         child_transaction = Transaction.new(
           category_id: split_attrs[:category_id],
@@ -494,7 +496,19 @@ class Entry < ApplicationRecord
   # Removes split children and restores parent entry.
   def unsplit!
     self.class.transaction do
-      child_entries.each do |child|
+      transaction.lock! if transaction?
+      reload
+      children = child_entries.includes(:entryable).to_a
+      transactions = children.select(&:transaction?).map(&:transaction).sort_by { |record| record.id.to_s }
+      # Refund linking takes these same locks. Recheck after waiting so a
+      # concurrently linked child cannot be deleted and lose its refund link.
+      transactions.each(&:lock!)
+      if transactions.any? { |record| record.refund? || record.refund_linked? }
+        errors.add(:base, :refund_links_present)
+        raise ActiveRecord::RecordInvalid, self
+      end
+
+      children.each do |child|
         child.unsplitting = true
         child.destroy!
       end
@@ -580,18 +594,24 @@ class Entry < ApplicationRecord
 
   private
 
-    # Remembers the earliest date this entry had before any save that changed
-    # it, for sync_account_later to use as the sync window start.
-    #
-    # @return [Date]
-    def track_earliest_saved_date
-      @earliest_saved_date = [ @earliest_saved_date, date_before_last_save ].compact.min
+    def refund_direction_unchanged
+      return unless transaction? && amount.present?
+
+      if (transaction.refund? && !amount.negative?) || (amount <= 0 && transaction.purchase_refunds.exists?)
+        errors.add(:amount, :invalid_refund)
+      end
     end
 
     def cannot_unexclude_split_parent
       return unless excluded_changed?(from: true, to: false) && split_parent?
 
       errors.add(:excluded, "cannot be toggled off for a split transaction")
+    end
+
+    def cannot_exclude_refund_linked_purchase
+      return unless transaction? && excluded_changed?(to: true)
+
+      errors.add(:base, :refund_links_present) if transaction.purchase_refunds.exists?
     end
 
     def split_child_date_matches_parent
