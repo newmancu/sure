@@ -209,8 +209,9 @@ module Security::Provided
     Security::Price.find_or_create_by!(
       security_id: self.id,
       date: price.date,
+      price: price.price,
       currency: price.currency
-    ) { |record| record.price = price.price } if cache
+    ) if cache
     price
   end
 
