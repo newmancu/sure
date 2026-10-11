@@ -7,6 +7,7 @@ class DataEnrichment < ApplicationRecord
     simplefin: "simplefin",
     lunchflow: "lunchflow",
     akahu: "akahu",
+    open_banking_io: "open_banking_io",
     up: "up",
     monobank: "monobank",
     synth: "synth",
@@ -21,7 +22,6 @@ class DataEnrichment < ApplicationRecord
     questrade: "questrade",
     redbark: "redbark",
     trade_republic: "trade_republic",
-    bayes: "bayes",
-    fio: "fio"
+    bayes: "bayes"
   }
 end

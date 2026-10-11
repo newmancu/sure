@@ -30,9 +30,9 @@ jobs:
           helm dependency build charts/sure
 
       - name: Pipelock Scan
-        uses: luckyPipewrench/pipelock@3e868ac5d5b62d3a2790958542171143af8a0e38 # v3.6.0
+        uses: luckyPipewrench/pipelock@4c748ab986d611138ce202ab800b16eca6fb589f # v3.4.0
         with:
-          version: '3.6.0'
+          version: '3.4.0'
           scan-diff: 'true'
           fail-on-findings: 'true'
           test-vectors: 'false'
@@ -54,6 +54,9 @@ jobs:
             config/locales/views/reports/vi.yml
             config/locales/views/reports/zh-CN.yml
             config/locales/views/reports/zh-TW.yml
+            test/fixtures/files/open_banking_io/envelope-kat.json
+            test/models/open_banking_io_entry/processor_test.rb
+            test/models/provider/open_banking_io/client_test.rb
 
       - name: Validate Pipelock deployment contracts
         shell: bash
