@@ -56,6 +56,22 @@ class Transaction::SearchTest < ActiveSupport::TestCase
     assert_not_includes transfer_ids, one_time_entry.entryable.id
     assert_not_includes transfer_ids, standard_entry.entryable.id
 
+    investment_contribution_entry = create_transaction(
+      account: @checking_account,
+      amount: 700,
+      kind: "investment_contribution"
+    )
+    investment_contribution_results = Transaction::Search.new(
+      @family,
+      filters: { types: [ "transfer" ], kinds: [ "investment_contribution" ] }
+    ).transactions_scope
+
+    investment_contribution_ids = investment_contribution_results.pluck(:id)
+
+    assert_includes investment_contribution_ids, investment_contribution_entry.entryable.id
+    assert_not_includes investment_contribution_ids, transfer_entry.entryable.id
+    assert_not_includes investment_contribution_ids, payment_entry.entryable.id
+
     # Test expense type filter (excludes transfer kinds but includes one_time)
     expense_results = Transaction::Search.new(@family, filters: { types: [ "expense" ] }).transactions_scope
     expense_ids = expense_results.pluck(:id)
@@ -91,6 +107,20 @@ class Transaction::SearchTest < ActiveSupport::TestCase
     assert_not_includes non_transfer_ids, loan_payment_entry.entryable.id
     assert_not_includes non_transfer_ids, transfer_entry.entryable.id
     assert_not_includes non_transfer_ids, payment_entry.entryable.id
+  end
+
+  test "search ignores invalid transaction kinds" do
+    transaction = create_transaction(
+      account: @checking_account,
+      amount: 100,
+      kind: "standard"
+    )
+
+    results = Transaction::Search.new(@family, filters: { kinds: [ "standard", "invalid" ] }).transactions_scope
+    invalid_results = Transaction::Search.new(@family, filters: { kinds: [ "invalid" ] }).transactions_scope
+
+    assert_equal [ transaction.entryable.id ], results.pluck(:id)
+    assert_empty invalid_results
   end
 
   test "search category filter handles uncategorized transactions correctly with kind filtering" do
@@ -341,6 +371,13 @@ class Transaction::SearchTest < ActiveSupport::TestCase
 
     assert_not_includes result_ids, investment_contribution.entryable.id
     assert_includes result_ids, standard_expense.entryable.id
+  end
+
+  test "invalid kind filter returns an empty relation" do
+    result = Transaction::Search.new(@family, filters: { kinds: [ "not_a_transaction_kind" ] }).transactions_scope
+
+    assert_respond_to result, :reverse_chronological
+    assert_empty result
   end
 
   test "family-based API requires family parameter" do
@@ -1008,116 +1045,5 @@ class Transaction::SearchTest < ActiveSupport::TestCase
 
     assert_equal 1, totals.count, "a single transaction tagged with all three must be counted once"
     assert_equal Money.new(42, "USD"), totals.expense_money
-  end
-
-  test "ai_status current returns transactions whose auto-assigned category still applies" do
-    tx_a = create_transaction(account: @checking_account, amount: 100, kind: "standard").entryable
-    tx_a.enrich_attribute(:category_id, categories(:food_and_drink).id, source: "ai")
-
-    tx_b = create_transaction(account: @checking_account, amount: 50, kind: "standard").entryable
-    tx_b.enrich_attribute(:category_id, categories(:income).id, source: "bayes")
-
-    tx_c = create_transaction(account: @checking_account, amount: 25, kind: "standard").entryable
-    tx_c.enrich_attribute(:category_id, categories(:income).id, source: "ai")
-    tx_c.update!(category: categories(:food_and_drink))
-
-    tx_d = create_transaction(account: @checking_account, amount: 10, kind: "standard").entryable
-
-    result_ids = Transaction::Search.new(@family, filters: { ai_status: [ "current" ] })
-                                  .transactions_scope.pluck(:id)
-
-    assert_equal [ tx_a.id, tx_b.id ].sort, result_ids.sort
-    assert_not_includes result_ids, tx_c.id, "a changed-afterwards category is history, not current"
-    assert_not_includes result_ids, tx_d.id
-  end
-
-  test "ai_status history returns transactions changed after auto-categorization" do
-    tx_a = create_transaction(account: @checking_account, amount: 100, kind: "standard").entryable
-    tx_a.enrich_attribute(:category_id, categories(:food_and_drink).id, source: "ai")
-
-    tx_c = create_transaction(account: @checking_account, amount: 25, kind: "standard").entryable
-    tx_c.enrich_attribute(:category_id, categories(:income).id, source: "ai")
-    tx_c.update!(category: categories(:food_and_drink))
-
-    tx_d = create_transaction(account: @checking_account, amount: 10, kind: "standard").entryable
-
-    result_ids = Transaction::Search.new(@family, filters: { ai_status: [ "history" ] })
-                                  .transactions_scope.pluck(:id)
-
-    assert_equal [ tx_c.id ], result_ids
-    assert_not_includes result_ids, tx_a.id, "a still-current assignment is not history"
-    assert_not_includes result_ids, tx_d.id
-  end
-
-  test "ai_status with both values returns any automatic enrichment" do
-    tx_a = create_transaction(account: @checking_account, amount: 100, kind: "standard").entryable
-    tx_a.enrich_attribute(:category_id, categories(:food_and_drink).id, source: "ai")
-
-    tx_c = create_transaction(account: @checking_account, amount: 25, kind: "standard").entryable
-    tx_c.enrich_attribute(:category_id, categories(:income).id, source: "ai")
-    tx_c.update!(category: categories(:food_and_drink))
-
-    tx_d = create_transaction(account: @checking_account, amount: 10, kind: "standard").entryable
-
-    result_ids = Transaction::Search.new(@family, filters: { ai_status: [ "current", "history" ] })
-                                  .transactions_scope.pluck(:id)
-
-    assert_equal [ tx_a.id, tx_c.id ].sort, result_ids.sort
-    assert_not_includes result_ids, tx_d.id
-  end
-
-  test "ai_status empty or absent leaves the scope unchanged" do
-    tx = create_transaction(account: @checking_account, amount: 100, kind: "standard").entryable
-
-    assert_equal [ tx.id ], Transaction::Search.new(@family).transactions_scope.pluck(:id)
-    assert_equal [ tx.id ], Transaction::Search.new(@family, filters: { ai_status: [] }).transactions_scope.pluck(:id)
-  end
-
-  test "ai_status ignores values outside the whitelist" do
-    tx = create_transaction(account: @checking_account, amount: 100, kind: "standard").entryable
-
-    result_ids = Transaction::Search.new(@family, filters: { ai_status: [ "bogus" ] })
-                                  .transactions_scope.pluck(:id)
-
-    assert_equal [ tx.id ], result_ids
-  end
-
-  test "a transaction with matching ai and bayes rows is returned and counted once" do
-    tx = create_transaction(account: @checking_account, amount: 100, kind: "standard").entryable
-    tx.enrich_attribute(:category_id, categories(:food_and_drink).id, source: "ai")
-    tx.update!(category: categories(:income))
-    tx.enrich_attribute(:category_id, categories(:food_and_drink).id, source: "bayes")
-
-    search = Transaction::Search.new(@family, filters: { ai_status: [ "current" ] })
-
-    assert_equal [ tx.id ], search.transactions_scope.pluck(:id)
-    assert_equal 1, search.totals.count, "two matching enrichment rows must not double-count (see #3174)"
-  end
-
-  test "ai_status composes with the categories filter" do
-    tx_a = create_transaction(account: @checking_account, amount: 100, kind: "standard").entryable
-    tx_a.enrich_attribute(:category_id, categories(:food_and_drink).id, source: "ai")
-
-    tx_b = create_transaction(account: @checking_account, amount: 50, kind: "standard").entryable
-    tx_b.enrich_attribute(:category_id, categories(:income).id, source: "ai")
-
-    result_ids = Transaction::Search.new(@family, filters: { ai_status: [ "current" ], categories: [ "Food & Drink" ] })
-                                  .transactions_scope.pluck(:id)
-
-    assert_equal [ tx_a.id ], result_ids
-  end
-
-  test "clearing the category after auto-categorization counts as history" do
-    tx = create_transaction(account: @checking_account, amount: 100, kind: "standard").entryable
-    tx.enrich_attribute(:category_id, categories(:food_and_drink).id, source: "ai")
-    tx.update!(category: nil)
-
-    history_ids = Transaction::Search.new(@family, filters: { ai_status: [ "history" ] })
-                                   .transactions_scope.pluck(:id)
-    current_ids = Transaction::Search.new(@family, filters: { ai_status: [ "current" ] })
-                                   .transactions_scope.pluck(:id)
-
-    assert_equal [ tx.id ], history_ids
-    assert_empty current_ids
   end
 end

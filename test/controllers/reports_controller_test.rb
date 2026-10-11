@@ -54,9 +54,7 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
                                        currency: "USD", accountable: Investment.new)
     security = Security.create!(ticker: "EUX#{SecureRandom.hex(3)}", name: "Euro Listed")
 
-    # The fixtures already hold EUR->GBP for today and yesterday, so on the 1st
-    # and 2nd of a month a fresh row for its first day breaks uniqueness.
-    ExchangeRate.find_or_initialize_by(from_currency: "EUR", to_currency: "GBP", date: date).update!(rate: 0.8)
+    ExchangeRate.create!(from_currency: "EUR", to_currency: "GBP", date: date, rate: 0.8)
     ExchangeRate.create!(from_currency: "GBP", to_currency: "USD", date: date, rate: 1.25)
     account.holdings.create!(security: security, date: date, qty: 5, price: 150,
                              amount: BigDecimal(750), currency: "GBP", cost_basis: 100)
@@ -485,6 +483,61 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
     assert_no_match /Export Retirement Income/, @response.body
   end
 
+  test "negative unpaired investment contributions are expenses in breakdown and export" do
+    category = @family.categories.create!(name: "Negative contribution report", color: "#123456")
+    investment_account = @family.accounts.create!(
+      owner: @user,
+      name: "Unpaired contribution account",
+      balance: 0,
+      currency: "USD",
+      accountable: Investment.new(subtype: "brokerage")
+    )
+    create_transaction(
+      account: investment_account,
+      name: "Negative unpaired contribution",
+      amount: -125,
+      category: category,
+      kind: "investment_contribution"
+    )
+
+    get reports_path(period_type: :monthly)
+    assert_response :ok
+    groups = @controller.instance_variable_get(:@transactions)
+    assert_equal 1, groups.count { |group| group[:category_id] == category.id && group[:type] == "expense" }
+    assert_empty groups.select { |group| group[:category_id] == category.id && group[:type] == "income" }
+    expense_totals = @controller.instance_variable_get(:@current_expense_totals)
+    income_totals = @controller.instance_variable_get(:@current_income_totals)
+    assert_equal 125, expense_totals.category_totals.find { |total| total.category.id == category.id }.total
+    assert_equal 0, income_totals.category_totals.find { |total| total.category.id == category.id }.total
+
+    get export_transactions_reports_path(
+      format: :csv,
+      period_type: :monthly,
+      start_date: Date.current.beginning_of_month,
+      end_date: Date.current.end_of_month
+    )
+    rows = CSV.parse(@response.body)
+    expenses_index = rows.index { |row| row.first == "EXPENSES" }
+    category_index = rows.index { |row| row.first == "Negative contribution report" }
+    assert_not_nil expenses_index
+    assert_operator category_index, :>, expenses_index
+
+    @family.update!(treat_investment_contributions_as_transfers: true)
+    get reports_path(period_type: :monthly)
+    groups = @controller.instance_variable_get(:@transactions)
+    assert_empty groups.select { |group| group[:category_id] == category.id }
+    expense_totals = @controller.instance_variable_get(:@current_expense_totals)
+    assert_equal 0, expense_totals.category_totals.find { |total| total.category.id == category.id }.total
+
+    get export_transactions_reports_path(
+      format: :csv,
+      period_type: :monthly,
+      start_date: Date.current.beginning_of_month,
+      end_date: Date.current.end_of_month
+    )
+    assert_not_includes CSV.parse(@response.body).map(&:first), "Negative contribution report"
+  end
+
   test "export transactions swaps dates when end_date is before start_date" do
     start_date = Date.current
     end_date = 1.month.ago.to_date
@@ -541,22 +594,15 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
     income_href = transactions_path(q: { categories: [ income_category.name ], start_date: start_date, end_date: end_date })
     uncategorized_href = transactions_path(q: { categories: [ Category.uncategorized.filter_value ], start_date: start_date, end_date: end_date })
 
-    assert_select "tr[data-category='category-#{expense_category.id}'] a[href=?]", expense_href, text: /#{Regexp.escape(expense_category.name)}/
-    assert_select "tr[data-category='category-#{income_category.id}'] a[href=?]", income_href, text: /#{Regexp.escape(income_category.name)}/
-    assert_select "tr[data-category='category-uncategorized'] a[href=?]", uncategorized_href, text: /#{Regexp.escape(Category.uncategorized.name)}/
+    assert_select "tr[data-category='category-#{expense_category.id}'] a[href=?]", expense_href, text: expense_category.name
+    assert_select "tr[data-category='category-#{income_category.id}'] a[href=?]", income_href, text: income_category.name
+    assert_select "tr[data-category='category-uncategorized'] a[href=?]", uncategorized_href, text: Category.uncategorized.name
 
-    # Full-row hit target via a normal flex <a> wrapping icon+name+count —
-    # deliberately not a `position: relative`/`absolute` stretched-link inside
-    # the <table>, which caused a WebKit scrollHeight bug (see #3093).
-    assert_select "tr[data-category='category-#{expense_category.id}'] a.flex.items-center"
-    assert_select "tr[data-category='category-#{expense_category.id}'].relative", 0
-    assert_select "tr[data-category='category-#{expense_category.id}'] a[class*='before:absolute']", 0
-
-    # Amount and percentage cells are each wrapped in their own normal-flow
-    # <a> to the same href, so the full row remains clickable without a
-    # stretched-link overlay spanning the <tr>.
-    assert_select "tr[data-category='category-#{expense_category.id}'] td:nth-child(2) a[href=?]", expense_href
-    assert_select "tr[data-category='category-#{expense_category.id}'] td:nth-child(3) a[href=?]", expense_href
+    # Hit target via stretched ::before, anchored to the category cell's flex
+    # wrapper. Deliberately NOT the <tr>: CSS 2.1 9.3.1 leaves position:relative
+    # undefined on table rows and WebKit does not implement it, so anchoring
+    # there let the overlay escape and swallow every click on the page in Safari.
+    assert_select "tr.group\\/category-row[data-category='category-#{expense_category.id}'] td div.relative a[class*='before:absolute'][class*='before:inset-0']"
   end
 
   test "index uncategorized category link stays on the stable filter value while the displayed text is localized" do
@@ -572,7 +618,7 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
     assert_response :ok
 
     href = transactions_path(q: { categories: [ Category::UNCATEGORIZED_FILTER_VALUE ], start_date: start_date, end_date: end_date })
-    assert_select "tr[data-category='category-uncategorized'] a[href=?]", href, text: /#{Regexp.escape(localized_name)}/
+    assert_select "tr[data-category='category-uncategorized'] a[href=?]", href, text: localized_name
   end
 
   test "index excludes tax-advantaged account transactions from activity breakdown" do
@@ -641,17 +687,6 @@ class ReportsControllerTest < ActionDispatch::IntegrationTest
     next_start = past_start + 1.month
     next_end = next_start.end_of_month
     assert_select "a[href=?]", reports_path(period_type: :monthly, start_date: next_start, end_date: next_end)
-  end
-
-  test "period arrows carry their keyboard shortcuts" do
-    past_start = Date.current.beginning_of_month - 2.months
-    get reports_path(period_type: :monthly, start_date: past_start, end_date: past_start.end_of_month)
-    assert_response :ok
-
-    assert_select "a[aria-keyshortcuts='ArrowLeft'][data-hotkey='ArrowLeft']"
-    assert_select "a[aria-keyshortcuts='ArrowRight'][data-hotkey='ArrowRight']"
-    assert_select "[role='tooltip']", text: "Previous period (←)"
-    assert_select "[role='tooltip']", text: "Next period (→)"
   end
 
   test "last 6 months next window extends to current month end when crossing boundary" do

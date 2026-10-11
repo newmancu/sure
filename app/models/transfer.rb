@@ -1,6 +1,6 @@
 class Transfer < ApplicationRecord
-  belongs_to :inflow_transaction, class_name: "Transaction", inverse_of: :transfer_as_inflow
-  belongs_to :outflow_transaction, class_name: "Transaction", inverse_of: :transfer_as_outflow
+  belongs_to :inflow_transaction, class_name: "Transaction"
+  belongs_to :outflow_transaction, class_name: "Transaction"
 
   has_many :fee_transactions, class_name: "Transaction", dependent: :destroy
 
@@ -17,24 +17,15 @@ class Transfer < ApplicationRecord
   validate :transfer_has_same_family
 
   class << self
-    # The outflow leg's kind for a transfer into this account. Transfer::Creator,
-    # Family::DataImporter, auto-matching, rules and manual matches all call
-    # it (the inflow leg is always funds_movement, see kind_for_leg).
-    # from_account: an investment/crypto destination only counts as a
-    # contribution when the source isn't itself an investment/crypto account,
-    # otherwise it's a plain funds movement.
-    def kind_for_account(account, from_account: nil)
-      if account.loan?
+    def kind_for_account(source_account, destination_account)
+      if destination_account.loan?
         "loan_payment"
-      elsif account.credit_card?
+      elsif destination_account.credit_card?
         "cc_payment"
-      elsif account.investment? || account.crypto?
-        if from_account && (from_account.investment? || from_account.crypto?)
-          "funds_movement"
-        else
-          "investment_contribution"
-        end
-      elsif account.liability?
+      elsif (destination_account.investment? || destination_account.crypto?) &&
+            !(source_account.investment? || source_account.crypto?)
+        "investment_contribution"
+      elsif destination_account.liability?
         "cc_payment"
       else
         "funds_movement"
@@ -101,22 +92,8 @@ class Transfer < ApplicationRecord
     "transfer"
   end
 
-  # The kind a leg carries while this transfer exists: the outflow by the
-  # destination account, the inflow always funds_movement.
-  def kind_for_leg(transaction)
-    return "funds_movement" if transaction.id == inflow_transaction_id
-
-    Transfer.kind_for_account(to_account, from_account: from_account)
-  end
-
-  # Based on the destination account rather than outflow_transaction.kind,
-  # which can be stale on rows a provider sync overwrote before
-  # Account::ProviderImportAdapter derived matched legs from their transfer
-  # (see Transaction#payment?, which has the same to_account-based reasoning).
   def categorizable?
-    return false unless to_account
-
-    !Transaction::UNCATEGORIZED_EXCLUDED_KINDS.include?(Transfer.kind_for_account(to_account, from_account: from_account))
+    to_account&.accountable_type == "Loan"
   end
 
   def reject!
