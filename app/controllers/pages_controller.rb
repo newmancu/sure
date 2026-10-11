@@ -26,11 +26,6 @@ class PagesController < ApplicationController
   # bars in the "money_flow" dashboard widget.
   MONEY_FLOW_CHART_MONTHS = 6
 
-  # Query params that shape what the dashboard shows without being saved
-  # anywhere. Customize mode carries them through its links and hide/add
-  # buttons so the widgets don't jump back to their defaults.
-  DASHBOARD_VIEW_PARAMS = [ :start_date, :end_date, :money_flow_month, :spending_month, { money_flow_account_ids: [] } ].freeze
-
   # Selectable height presets (px) for grow widgets.
   DASHBOARD_HEIGHT_PRESETS = { "compact" => 208, "auto" => 288, "tall" => 416 }.freeze
   DEFAULT_HEIGHT_PRESET = "auto"
@@ -47,11 +42,33 @@ class PagesController < ApplicationController
     @investment_statement = Current.family.investment_statement
     @accounts = Current.user.accessible_accounts.visible.with_attached_logo
 
-    @dashboard_sections, @hidden_dashboard_sections = build_dashboard_sections
-    @customizing_dashboard = params[:customize].present?
-    @dashboard_view_params = dashboard_view_params
-    @just_hidden_section = params[:hidden_section]
-    @just_shown_section = params[:shown_section]
+    family_currency = Current.family.currency
+
+    # Use IncomeStatement for all cashflow data (now includes categorized trades)
+    income_statement = Current.family.income_statement
+    income_totals = income_statement.income_totals(period: @period)
+    expense_totals = income_statement.expense_totals(period: @period)
+    net_totals = income_statement.net_category_totals(period: @period)
+
+    @cashflow_sankey_data = build_cashflow_sankey_data(net_totals, income_totals, expense_totals, family_currency, refund_totals: income_statement.refund_totals(period: @period))
+    @outflows_data = build_outflows_donut_data(net_totals)
+    # Preview-gated: skip the query outright rather than loading rows the
+    # section won't be built from.
+    @feed_insights = preview_features_enabled? ? Current.family.insights.visible.ordered.limit(Insight::FEED_LIMIT) : Insight.none
+
+    @money_flow_accounts = income_statement.eligible_accounts
+    # TransactionsController's default (account_ids absent) scopes to this
+    # broader set, not @money_flow_accounts, so the view needs it to know
+    # when the drill-down links can safely omit account_ids.
+    @money_flow_accessible_account_ids = Current.user.accessible_accounts.pluck(:id).map(&:to_s)
+    @money_flow_month = money_flow_month_param
+    @money_flow_account_ids = money_flow_account_ids_param
+    @money_flow_data = build_money_flow_data(income_statement, @money_flow_month, @money_flow_account_ids)
+
+    @spending_trend_month = spending_trend_month_param
+    @spending_trend_data = build_spending_trend_data(income_statement, @spending_trend_month)
+
+    @dashboard_sections = build_dashboard_sections
 
     @breadcrumbs = [ [ t("breadcrumbs.home"), root_path ], [ t("breadcrumbs.dashboard"), nil ] ]
   end
@@ -61,25 +78,11 @@ class PagesController < ApplicationController
   end
 
   def update_preferences
-    if Current.user.update_dashboard_preferences(preferences_params, laid_out_order: ordered_dashboard_section_keys)
+    if Current.user.update_dashboard_preferences(preferences_params)
       head :ok
     else
       head :unprocessable_entity
     end
-  end
-
-  def update_section_hidden
-    section_key = params[:section_key]
-    return head :not_found unless DASHBOARD_SECTION_LAYOUTS.key?(section_key)
-
-    hidden = ActiveModel::Type::Boolean.new.cast(params[:hidden])
-    Current.user.update_dashboard_section_hidden(section_key, hidden)
-    # Two param names rather than one, so hiding a widget and adding it back
-    # never redirect to the same URL: Turbo morphs a same-URL visit as a
-    # refresh, and a morph doesn't apply the autofocus that keeps keyboard
-    # users on the widget they just changed.
-    changed = hidden ? { hidden_section: section_key } : { shown_section: section_key }
-    redirect_to root_path(dashboard_view_params.merge(customize: true, **changed)), status: :see_other
   end
 
   def changelog
@@ -124,146 +127,7 @@ class PagesController < ApplicationController
         permitted["collapsed_sections"] = prefs[:collapsed_sections].to_unsafe_h if prefs[:collapsed_sections].respond_to?(:to_unsafe_h)
         permitted["section_order"] = prefs[:section_order] if prefs[:section_order].is_a?(Array)
         permitted["dashboard_section_layout"] = prefs[:dashboard_section_layout].to_unsafe_h if prefs[:dashboard_section_layout].respond_to?(:to_unsafe_h)
-        permitted["cashflow_sankey_group_by"] = prefs[:cashflow_sankey_group_by] if User::CASHFLOW_SANKEY_GROUPINGS.include?(prefs[:cashflow_sankey_group_by])
       end
-    end
-
-    def dashboard_view_params
-      params.permit(*DASHBOARD_VIEW_PARAMS).to_h
-    end
-
-    # Each widget builds its own data, so a hidden widget's builder is never
-    # called and its queries never run.
-    def dashboard_section_builders
-      {
-        "insights_feed" => -> { insights_feed_section },
-        "cashflow_sankey" => -> {
-          {
-            key: "cashflow_sankey",
-            title: "pages.dashboard.cashflow_sankey.title",
-            partial: "pages/dashboard/cashflow_sankey",
-            layout: section_layout("cashflow_sankey"),
-            locals: { sankey_data: cashflow_sankey_data, period: @period },
-            visible: @accounts.any?,
-            collapsible: true
-          }
-        },
-        "money_flow" => -> {
-          accounts = dashboard_income_statement.eligible_accounts
-          {
-            key: "money_flow",
-            title: "pages.dashboard.money_flow.title",
-            partial: "pages/dashboard/money_flow",
-            layout: section_layout("money_flow"),
-            locals: {
-              money_flow_data: build_money_flow_data(dashboard_income_statement, money_flow_month_param, money_flow_account_ids_param(accounts)),
-              accounts: accounts,
-              # TransactionsController's default (account_ids absent) scopes
-              # to this broader set, not `accounts`, so the view needs it to
-              # know when the drill-down links can safely omit account_ids.
-              accessible_account_ids: Current.user.accessible_accounts.pluck(:id).map(&:to_s),
-              col_span: section_layout("money_flow")[:col_span]
-            },
-            visible: @accounts.any?,
-            collapsible: true
-          }
-        },
-        "spending_trend" => -> {
-          {
-            key: "spending_trend",
-            title: "pages.dashboard.spending_trend.title",
-            partial: "pages/dashboard/spending_trend",
-            layout: section_layout("spending_trend"),
-            locals: { spending_trend_data: build_spending_trend_data(dashboard_income_statement, spending_trend_month_param) },
-            visible: @accounts.any?,
-            collapsible: true
-          }
-        },
-        "outflows_donut" => -> {
-          outflows_data = build_outflows_donut_data(dashboard_net_totals)
-          {
-            key: "outflows_donut",
-            title: "pages.dashboard.outflows_donut.title",
-            partial: "pages/dashboard/outflows_donut",
-            layout: section_layout("outflows_donut"),
-            locals: { outflows_data: outflows_data, period: @period },
-            visible: @accounts.any? && outflows_data[:categories].present?,
-            collapsible: true
-          }
-        },
-        "investment_summary" => -> {
-          {
-            key: "investment_summary",
-            title: "pages.dashboard.investment_summary.title",
-            partial: "pages/dashboard/investment_summary",
-            layout: section_layout("investment_summary"),
-            locals: { investment_statement: @investment_statement, period: @period },
-            visible: investment_summary_available?,
-            collapsible: true
-          }
-        },
-        "net_worth_chart" => -> {
-          {
-            key: "net_worth_chart",
-            title: "pages.dashboard.net_worth_chart.title",
-            partial: "pages/dashboard/net_worth_chart",
-            layout: section_layout("net_worth_chart"),
-            locals: { balance_sheet: @balance_sheet, period: @period },
-            visible: @accounts.any?,
-            collapsible: true
-          }
-        },
-        "balance_sheet" => -> {
-          {
-            key: "balance_sheet",
-            title: "pages.dashboard.balance_sheet.title",
-            partial: "pages/dashboard/balance_sheet",
-            layout: section_layout("balance_sheet"),
-            locals: { balance_sheet: @balance_sheet },
-            visible: @accounts.any?,
-            collapsible: true
-          }
-        }
-      }
-    end
-
-    # Just enough for the hidden list, without running the widget's queries.
-    # Widgets whose data depends on the period stay on offer, since another
-    # period may have something to show. Without investment accounts the
-    # investment summary never has anything to show, and without insights
-    # neither does the feed.
-    def hidden_dashboard_section(key)
-      return nil if key == "insights_feed" && !preview_features_enabled?
-
-      visible = case key
-      when "investment_summary" then investment_summary_available?
-      when "insights_feed" then Current.family.insights.visible.exists?
-      else @accounts.any?
-      end
-
-      { key: key, title: "pages.dashboard.#{key}.title", visible: visible }
-    end
-
-    def investment_summary_available?
-      @accounts.any? && @investment_statement.investment_accounts.any?
-    end
-
-    # Use IncomeStatement for all cashflow data (now includes categorized trades)
-    def dashboard_income_statement
-      @dashboard_income_statement ||= Current.family.income_statement
-    end
-
-    def dashboard_net_totals
-      @dashboard_net_totals ||= dashboard_income_statement.net_category_totals(period: @period)
-    end
-
-    def cashflow_sankey_data
-      build_cashflow_sankey_data(
-        dashboard_net_totals,
-        dashboard_income_statement.income_totals(period: @period),
-        dashboard_income_statement.expense_totals(period: @period),
-        Current.family.currency
-      )
     end
 
     # Preview-gated, and omitted from the section list entirely rather than
@@ -273,42 +137,106 @@ class PagesController < ApplicationController
     def insights_feed_section
       return nil unless preview_features_enabled?
 
-      insights = Current.family.insights.visible.ordered.limit(Insight::FEED_LIMIT)
       {
         key: "insights_feed",
         title: "pages.dashboard.insights_feed.title",
         partial: "pages/dashboard/insights_feed",
         layout: section_layout("insights_feed"),
-        locals: { insights: insights },
-        visible: insights.any?,
+        locals: { insights: @feed_insights },
+        visible: @feed_insights.any?,
         collapsible: true
       }
     end
 
     def build_dashboard_sections
-      hidden_keys = Current.user.dashboard_hidden_sections
-      builders = dashboard_section_builders
-      sections = ordered_dashboard_section_keys.filter_map do |key|
-        hidden_keys.include?(key) ? hidden_dashboard_section(key) : builders.fetch(key).call
+      all_sections = [
+        insights_feed_section,
+        {
+          key: "cashflow_sankey",
+          title: "pages.dashboard.cashflow_sankey.title",
+          partial: "pages/dashboard/cashflow_sankey",
+          layout: section_layout("cashflow_sankey"),
+          locals: { sankey_data: @cashflow_sankey_data, period: @period },
+          visible: @accounts.any?,
+          collapsible: true
+        },
+        {
+          key: "money_flow",
+          title: "pages.dashboard.money_flow.title",
+          partial: "pages/dashboard/money_flow",
+          layout: section_layout("money_flow"),
+          locals: { money_flow_data: @money_flow_data, accounts: @money_flow_accounts, accessible_account_ids: @money_flow_accessible_account_ids, col_span: section_layout("money_flow")[:col_span] },
+          visible: @accounts.any?,
+          collapsible: true
+        },
+        {
+          key: "spending_trend",
+          title: "pages.dashboard.spending_trend.title",
+          partial: "pages/dashboard/spending_trend",
+          layout: section_layout("spending_trend"),
+          locals: { spending_trend_data: @spending_trend_data },
+          visible: @accounts.any?,
+          collapsible: true
+        },
+        {
+          key: "outflows_donut",
+          title: "pages.dashboard.outflows_donut.title",
+          partial: "pages/dashboard/outflows_donut",
+          layout: section_layout("outflows_donut"),
+          locals: { outflows_data: @outflows_data, period: @period },
+          visible: @accounts.any? && @outflows_data[:categories].present?,
+          collapsible: true
+        },
+        {
+          key: "investment_summary",
+          title: "pages.dashboard.investment_summary.title",
+          partial: "pages/dashboard/investment_summary",
+          layout: section_layout("investment_summary"),
+          locals: { investment_statement: @investment_statement, period: @period },
+          visible: @accounts.any? && @investment_statement.investment_accounts.any?,
+          collapsible: true
+        },
+        {
+          key: "net_worth_chart",
+          title: "pages.dashboard.net_worth_chart.title",
+          partial: "pages/dashboard/net_worth_chart",
+          layout: section_layout("net_worth_chart"),
+          locals: { balance_sheet: @balance_sheet, period: @period },
+          visible: @accounts.any?,
+          collapsible: true
+        },
+        {
+          key: "balance_sheet",
+          title: "pages.dashboard.balance_sheet.title",
+          partial: "pages/dashboard/balance_sheet",
+          layout: section_layout("balance_sheet"),
+          locals: { balance_sheet: @balance_sheet },
+          visible: @accounts.any?,
+          collapsible: true
+        }
+      ].compact
+
+      # Order sections according to user preference
+      section_order = Current.user.dashboard_section_order
+      ordered_sections = section_order.map do |key|
+        all_sections.find { |s| s[:key] == key }
+      end.compact
+
+      # Add any new sections that aren't in the saved order (future-proofing).
+      # The insights feed leads instead of appending: it's a proactive surface,
+      # and appending would bury it below the fold for every family with a
+      # saved order. Users can still drag it back down — that choice persists.
+      all_sections.each do |section|
+        next if ordered_sections.include?(section)
+
+        if section[:key] == "insights_feed"
+          ordered_sections.unshift(section)
+        else
+          ordered_sections << section
+        end
       end
 
-      # Returns [shown, hidden]. Sections with nothing to show are dropped
-      # first, so the hidden list never offers back a widget that wouldn't
-      # appear once re-added.
-      hidden, shown = sections.select { |s| s[:visible] }.partition { |s| hidden_keys.include?(s[:key]) }
-      [ shown, hidden ]
-    end
-
-    # The order the dashboard lays its widgets out in: the user's saved order,
-    # then any widget missing from it (future-proofing). The insights feed
-    # leads instead of appending: it's a proactive surface, and appending
-    # would bury it below the fold for every family with a saved order. Users
-    # can still drag it back down — that choice persists.
-    def ordered_dashboard_section_keys
-      keys = dashboard_section_builders.keys
-      saved = Current.user.dashboard_section_order & keys
-      unsaved = keys - saved
-      (unsaved & %w[insights_feed]) + saved + (unsaved - %w[insights_feed])
+      ordered_sections
     end
 
     # Resolves a section's layout guardrails, applying the user's height preset
@@ -331,7 +259,7 @@ class PagesController < ApplicationController
       Provider::Registry.get_provider(:github)
     end
 
-    def build_cashflow_sankey_data(net_totals, income_totals, expense_totals, currency)
+    def build_cashflow_sankey_data(net_totals, income_totals, expense_totals, currency, refund_totals:)
       nodes = []
       links = []
       node_indices = {}
@@ -347,10 +275,15 @@ class PagesController < ApplicationController
       total_expense = net_totals.total_net_expense.to_f.round(2)
 
       # Central Cash Flow node
-      cash_flow_idx = add_node.call("cash_flow_node", "Cash Flow", total_income, 100.0, "var(--color-success)")
+      refund_credit = net_totals.net_expense_categories.sum { |ct| ct.total.negative? ? -ct.total : 0 }.to_f
+      cash_flow_idx = add_node.call("cash_flow_node", "Cash Flow", total_income + refund_credit, 100.0, "var(--color-success)")
 
-      # Build netted subcategory data from raw totals
-      net_subcategories_by_parent = build_net_subcategories(expense_totals, income_totals)
+      # Gross child flows can exceed a net parent or imply fictitious income
+      # when a child has a refund. Flatten only the affected parent categories.
+      refund_parent_ids = refund_totals.category_totals.filter_map do |ct|
+        ct.category.parent_id || ct.category.id if ct.total.positive?
+      end
+      net_subcategories_by_parent = build_net_subcategories(expense_totals, income_totals).except(*refund_parent_ids)
 
       # Process net income categories (flow: subcategory -> parent -> cash_flow)
       process_net_category_nodes(
@@ -367,7 +300,7 @@ class PagesController < ApplicationController
       # Process net expense categories (flow: cash_flow -> parent -> subcategory)
       process_net_category_nodes(
         categories: net_totals.net_expense_categories,
-        total: total_expense,
+        total: net_totals.net_expense_categories.sum { |ct| [ ct.total, 0 ].max }.to_f.round(2),
         prefix: "expense",
         net_subcategories_by_parent: net_subcategories_by_parent,
         add_node: add_node,
@@ -433,6 +366,13 @@ class PagesController < ApplicationController
       categories.each do |ct|
         val = ct.total.to_f.round(2)
         next if val.zero?
+
+        if val.negative?
+          color = ct.category.color.presence || Category::UNCATEGORIZED_COLOR
+          idx = add_node.call("refund_#{ct.category.id || ct.category.name}", t("refunds.category_credit", category: ct.category.name), -val, 0, color)
+          links << { source: idx, target: cash_flow_idx, value: -val, color: color, percentage: 0 }
+          next
+        end
 
         percentage = total.zero? ? 0 : (val / total * 100).round(1)
         color = ct.category.color.presence || Category::UNCATEGORIZED_COLOR
@@ -535,9 +475,9 @@ class PagesController < ApplicationController
     end
 
     # nil means "all accessible accounts" (the widget's default, unfiltered state)
-    def money_flow_account_ids_param(eligible_accounts)
+    def money_flow_account_ids_param
       ids = Array(params[:money_flow_account_ids]).reject(&:blank?)
-      eligible_ids = eligible_accounts.map { |a| a.id.to_s }
+      eligible_ids = @money_flow_accounts.map { |a| a.id.to_s }
       ids &= eligible_ids
       ids.presence
     end
