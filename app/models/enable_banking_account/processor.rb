@@ -103,8 +103,8 @@ class EnableBankingAccount::Processor
         # limit: the API-provided one, or a user-entered value when the API
         # omits it. Writing the limit back (never the reported balance) keeps
         # the field stable across syncs so a manual limit is never clobbered.
-        credit_limit = positive_credit_limit(enable_banking_account.credit_limit) ||
-                       positive_credit_limit(account.accountable&.available_credit)
+        credit_limit = enable_banking_account.credit_limit.presence ||
+                       account.accountable&.available_credit
 
         unless account.accountable.present?
           capture_debug_log("CreditCard accountable missing for account", account)
@@ -114,9 +114,7 @@ class EnableBankingAccount::Processor
           # The API returns the available credit as the current balance, so the
           # outstanding debt is derived from the credit limit.
           # Use .max(0) to prevent synthetic debt on overpaid cards.
-          outstanding_debt = CreditCard.debt_from_available_credit(
-            credit_limit: credit_limit, available_credit: reported_balance, clamp_overpayment: true
-          )
+          outstanding_debt = [ credit_limit - reported_balance, 0 ].max
 
           [ outstanding_debt, credit_limit, false ]
         else
@@ -130,23 +128,15 @@ class EnableBankingAccount::Processor
         end
       else
         # Default behavior: API returns outstanding debt
-        provider_credit_limit = positive_credit_limit(enable_banking_account.credit_limit)
-        available_credit = if provider_credit_limit
-          [ provider_credit_limit - reported_balance, 0 ].max
-        else
-          # In this mode available_credit is the actual remaining credit, not a
-          # limit, so zero is valid and must be preserved intentionally.
-          account.accountable&.available_credit
+        available_credit = if enable_banking_account.credit_limit.present?
+          [ enable_banking_account.credit_limit - reported_balance, 0 ].max
+        elsif account.accountable&.available_credit.present?
+          # No limit from API, but we have stored available_credit metadata
+          account.accountable.available_credit
         end
 
         [ reported_balance, available_credit, false ]
       end
-    end
-
-    # Credit limits must be positive. Non-positive provider or manual values
-    # mean that no usable limit is known.
-    def positive_credit_limit(value)
-      value if value&.positive?
     end
 
     def capture_debug_log(message, account)
