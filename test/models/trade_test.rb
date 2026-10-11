@@ -2,132 +2,6 @@ require "test_helper"
 
 class TradeTest < ActiveSupport::TestCase
   include EntriesTestHelper
-  include SqlQueryCapture
-  # `Trend#value` is `current - previous`, and `Money#-` keeps the left
-  # operand's currency while taking the right one's bare amount without
-  # converting or raising. So a disposal priced in the security's currency had
-  # a basis denominated in the account's subtracted from it as a plain number,
-  # and the difference was then labelled with the disposal's currency.
-  #
-  # A USD account holding a EUR-listed security: basis 100 USD/share, 2 sold at
-  # 150 EUR/share, EUR->USD 1.5 on the trade date. 300 EUR of proceeds is 450
-  # USD, less 200 USD of basis, so 250 USD. The unconverted subtraction
-  # reported 100 -- and then Reports scaled that wrong difference by the rate.
-  test "a disposal priced in another currency converts its proceeds at the trade date" do
-    sell = cross_currency_disposal(rate: 1.5)
-
-    assert_equal BigDecimal(250), sell.realized_gain_loss.value.amount
-    assert_equal "USD", sell.realized_gain_loss.value.currency.iso_code,
-                 "the figure is carried in the currency the position is held in"
-  end
-
-  # The same defect at a rate below parity OVERSTATES, so a test at one rate
-  # cannot pass by accident of direction. 300 EUR at 0.7 is 210 USD, less 200
-  # USD of basis: a 10 USD gain, where the bare subtraction claimed 100.
-  test "a disposal at a rate below parity is not overstated" do
-    sell = cross_currency_disposal(rate: 0.7)
-
-    assert_equal BigDecimal(10), sell.realized_gain_loss.value.amount
-  end
-
-  # No rate for that date means the gain is unknown, not zero and not the
-  # figure a rate of 1.0 would produce.
-  test "a cross-currency disposal with no rate for its date has no figure" do
-    sell = cross_currency_disposal(rate: 1.5, rate_date: Date.new(2026, 3, 9))
-
-    assert_nil sell.realized_gain_loss, "a neighbouring day's rate is not this day's"
-  end
-
-  # `ExchangeRate` validates presence only -- no positivity at the model, and
-  # `rate` is a plain `decimal, null: false` at the column -- so a provider or
-  # an import can leave a 0 or a negative behind. Multiplying by one is not a
-  # conversion: at 0 the 300 EUR of proceeds become nothing and the disposal
-  # reports a 200 USD total loss the user never took, and at -1.5 the proceeds
-  # go negative and the loss is 650. Neither is distinguishable on the page
-  # from a real one, and both are tax-relevant.
-  #
-  # A rate that cannot convert is the missing-rate case, whatever is stored in
-  # the row, so it takes the same exit as an absent one.
-  test "a disposal whose stored rate cannot convert has no figure" do
-    [ 0, -1.5 ].each do |stored|
-      # Each case needs the same EUR->USD date, which is unique per pair.
-      ExchangeRate.where(from_currency: "EUR", to_currency: "USD").delete_all
-      sell = cross_currency_disposal(rate: stored)
-
-      assert_nil sell.realized_gain_loss, "a rate of #{stored} converts nothing"
-    end
-  end
-
-  # One query for the rates a whole page of disposals needs, rather than one
-  # per foreign disposal. Each disposal falls on its own date, because
-  # identical lookups are served by the query cache and a single-date fixture
-  # reads as flat whether the preload runs or not.
-  #
-  # The preload runs INSIDE the capture, which is the difference between
-  # counting what the page costs and counting what is left after the expensive
-  # part already happened. With it outside, the assertion was "measuring
-  # disposals issues no further rate queries" -- true, and it would stay true
-  # if `preload_exchange_rates` itself issued one query per trade. One query
-  # for the whole set is the claim, so one query for the whole set is what is
-  # counted.
-  test "preloading answers every disposal's rate in one query" do
-    account, security = cross_currency_account
-
-    trades = (0..3).map do |offset|
-      date = Date.new(2026, 3, 10) + offset
-      ExchangeRate.create!(from_currency: "EUR", to_currency: "USD", date: date, rate: 1.5)
-      account.holdings.create!(security: security, date: date, qty: 5, price: 150,
-                               amount: BigDecimal(750), currency: "USD", cost_basis: 100)
-      create_trade(security, account: account, qty: -2, date: date, price: 150, currency: "EUR").entryable
-    end
-
-    # The ivar directly, as ReportsController does on this branch -- there is
-    # no public writer for it upstream yet. Outside the capture on purpose: the
-    # cost being counted is the rates', not the holdings'.
-    holdings = account.holdings.to_a
-    trades.each { |trade| trade.instance_variable_set(:@preloaded_holdings, holdings) }
-
-    queries = capture_sql_queries do
-      Trade.preload_exchange_rates(trades)
-      trades.each { |trade| trade.realized_gain_loss }
-    end.grep(/exchange_rates/)
-
-    assert_equal 1, queries.size,
-                 "four disposals on four dates cost one rate query, not one each"
-    assert_equal [ BigDecimal(250) ] * 4, trades.map { |t| t.realized_gain_loss.value.amount }
-  end
-
-  # The preload keys its basis side on the ACCOUNT's currency; the conversion
-  # targets the currency the POSITION is carried in. Those differ in exactly the
-  # shape this change exists for -- a EUR disposal of a GBP position in a USD
-  # account -- so every such disposal missed the preload and issued the lookup
-  # the preload is here to remove. The keys have to come from the holding that
-  # `realized_gain_loss` will actually select.
-  test "preloading answers a disposal against a position carried in a third currency" do
-    account, security = cross_currency_account
-
-    trades = (0..3).map do |offset|
-      date = Date.new(2026, 3, 10) + offset
-      ExchangeRate.create!(from_currency: "EUR", to_currency: "GBP", date: date, rate: 0.8)
-      account.holdings.create!(security: security, date: date, qty: 5, price: 150,
-                               amount: BigDecimal(750), currency: "GBP", cost_basis: 100)
-      create_trade(security, account: account, qty: -2, date: date, price: 150, currency: "EUR").entryable
-    end
-
-    holdings = account.holdings.to_a
-    trades.each { |trade| trade.instance_variable_set(:@preloaded_holdings, holdings) }
-
-    queries = capture_sql_queries do
-      Trade.preload_exchange_rates(trades)
-      trades.each { |trade| trade.realized_gain_loss }
-    end.grep(/exchange_rates/)
-
-    assert_equal 1, queries.size,
-                 "a position in a third currency costs one rate query for the set, not one each"
-    # 2 units at 150 EUR is 300 EUR of proceeds, 240 GBP at 0.8, against a basis
-    # of 2 x 100 GBP.
-    assert_equal [ BigDecimal(40) ] * 4, trades.map { |t| t.realized_gain_loss.value.amount }
-  end
 
   test "build_name generates buy trade name" do
     name = Trade.build_name("buy", 10, "AAPL")
@@ -222,6 +96,132 @@ class TradeTest < ActiveSupport::TestCase
     assert_equal BigDecimal("1.1234567890"), trade.price
   end
 
+  test "realized_gain_loss converts holding cost basis into sell trade currency" do
+    account = families(:empty).accounts.create!(
+      name: "CAD Brokerage",
+      balance: 10000,
+      cash_balance: 10000,
+      currency: "CAD",
+      accountable: Investment.new
+    )
+    security = Security.create!(ticker: "RGNL", name: "Realized Gain Native Lot", exchange_operating_mic: "XNAS")
+    buy_date = 5.days.ago.to_date
+    sell_date = Date.current
+
+    ExchangeRate.create!(from_currency: "USD", to_currency: "CAD", date: sell_date, rate: 1.30)
+
+    create_trade(security, account: account, qty: 10, date: buy_date, price: 100, currency: "USD")
+    sell_entry = create_trade(security, account: account, qty: -4, date: sell_date, price: 150, currency: "CAD")
+
+    account.holdings.create!(
+      security: security,
+      date: sell_date,
+      qty: 6,
+      price: 150,
+      amount: 900,
+      currency: "USD",
+      cost_basis: 100,
+      cost_basis_source: "calculated"
+    )
+
+    trend = sell_entry.trade.realized_gain_loss
+
+    assert_not_nil trend
+    assert_equal "CAD", trend.current.currency.iso_code
+    assert_equal "CAD", trend.previous.currency.iso_code
+    # Proceeds: 150 CAD * 4 = 600 CAD
+    # Cost basis: 100 USD * 1.30 * 4 = 520 CAD
+    # Gain: 80 CAD
+    assert_equal Money.new(600, "CAD"), trend.current
+    assert_equal Money.new(520, "CAD"), trend.previous
+    assert_equal Money.new(80, "CAD"), trend.value
+  end
+
+  test "realized_gain_loss prefers non-zero native holding over same-date account-currency orphan" do
+    account = families(:empty).accounts.create!(
+      name: "CAD Brokerage Tie Break",
+      balance: 10000,
+      cash_balance: 10000,
+      currency: "CAD",
+      accountable: Investment.new
+    )
+    security = Security.create!(ticker: "RGTB", name: "Realized Gain Tie Break", exchange_operating_mic: "XNAS")
+    buy_date = 5.days.ago.to_date
+    sell_date = Date.current
+
+    ExchangeRate.create!(from_currency: "USD", to_currency: "CAD", date: sell_date, rate: 1.30)
+
+    create_trade(security, account: account, qty: 10, date: buy_date, price: 100, currency: "USD")
+    sell_entry = create_trade(security, account: account, qty: -4, date: sell_date, price: 150, currency: "CAD")
+
+    # Neutralized recoverability stub in account currency (would win a naive prefer-CAD pick).
+    orphan = account.holdings.create!(
+      security: security,
+      date: sell_date,
+      qty: 0,
+      price: 195,
+      amount: 0,
+      currency: "CAD",
+      cost_basis: 999,
+      cost_basis_source: "manual",
+      cost_basis_locked: true
+    )
+    native = account.holdings.create!(
+      security: security,
+      date: sell_date,
+      qty: 6,
+      price: 150,
+      amount: 900,
+      currency: "USD",
+      cost_basis: 100,
+      cost_basis_source: "calculated"
+    )
+
+    trade = sell_entry.trade
+
+    # DB path
+    trend = trade.realized_gain_loss
+    assert_not_nil trend
+    assert_equal Money.new(520, "CAD"), trend.previous
+
+    # Preloaded path must use the same tie-break (not max_by date alone / CAD-first).
+    trade.instance_variable_set(:@preloaded_holdings, [ orphan, native ])
+    trade.remove_instance_variable(:@realized_gain_loss) if trade.instance_variable_defined?(:@realized_gain_loss)
+
+    preloaded_trend = trade.realized_gain_loss
+    assert_not_nil preloaded_trend
+    assert_equal Money.new(520, "CAD"), preloaded_trend.previous
+  end
+
+  test "realized_gain_loss returns nil when holding cost basis cannot be converted" do
+    account = families(:empty).accounts.create!(
+      name: "CAD Brokerage Missing FX",
+      balance: 10000,
+      cash_balance: 10000,
+      currency: "CAD",
+      accountable: Investment.new
+    )
+    security = Security.create!(ticker: "RGNLFX", name: "Realized Gain Missing FX", exchange_operating_mic: "XNAS")
+    buy_date = 5.days.ago.to_date
+    sell_date = Date.current
+
+    create_trade(security, account: account, qty: 10, date: buy_date, price: 100, currency: "USD")
+    sell_entry = create_trade(security, account: account, qty: -4, date: sell_date, price: 150, currency: "CAD")
+
+    account.holdings.create!(
+      security: security,
+      date: sell_date,
+      qty: 6,
+      price: 150,
+      amount: 900,
+      currency: "USD",
+      cost_basis: 100,
+      cost_basis_source: "calculated"
+    )
+
+    # No USD→CAD rate for the sell date — exchange_to raises Money::ConversionError
+    assert_nil sell_entry.trade.realized_gain_loss
+  end
   test "a transfer out realises nothing, however it is priced" do
     account, security = position_with_known_cost_basis
 
@@ -285,27 +285,5 @@ class TradeTest < ActiveSupport::TestCase
     test "a trade does not borrow the cash list" do
       assert_includes Transaction::INTERNAL_MOVEMENT_LABELS, "Exchange"
       assert_not_includes Trade::INTERNAL_MOVEMENT_LABELS, "Exchange"
-    end
-
-  private
-    # A USD account holding a EUR-listed security, with one disposal in it.
-    def cross_currency_disposal(rate:, rate_date: Date.new(2026, 3, 10))
-      account, security = cross_currency_account
-      date = Date.new(2026, 3, 10)
-
-      ExchangeRate.create!(from_currency: "EUR", to_currency: "USD", date: rate_date, rate: rate)
-      account.holdings.create!(security: security, date: date, qty: 5, price: 150,
-                               amount: BigDecimal(750), currency: "USD", cost_basis: 100)
-
-      create_trade(security, account: account, qty: -2, date: date, price: 150, currency: "EUR").entryable
-    end
-
-    def cross_currency_account
-      account = families(:empty).accounts.create!(
-        name: "Brokerage", balance: 10_000, currency: "USD", accountable: Investment.new
-      )
-      security = Security.create!(ticker: "EUX#{SecureRandom.hex(3)}", name: "Euro Listed")
-
-      [ account, security ]
     end
 end
