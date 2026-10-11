@@ -40,6 +40,8 @@ ca:
           member: Membre
           super_admin: Super administrador
         section_title: Famílies / Grups
+        summary:
+          trials_expiring_7_days: Proves que caduquen en els pròxims 7 dies
         table:
           family_accounts: Comptes familiars
           family_transactions: Transaccions familiars
