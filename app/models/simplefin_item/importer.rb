@@ -133,7 +133,7 @@ class SimplefinItem::Importer
         # Normalize balances for SimpleFIN liabilities so immediate UI is correct after discovery
         bal   = to_decimal(account_data[:balance])
         avail = to_decimal(account_data[:"available-balance"])
-        observed = account_data[:balance].nil? ? avail : bal
+        observed = bal.nonzero? ? bal : avail
 
         is_linked_liability = [ "CreditCard", "Loan" ].include?(acct.accountable_type)
         inferred = begin
@@ -149,21 +149,10 @@ class SimplefinItem::Importer
           nil
         end
         is_mapper_liability = inferred && [ "CreditCard", "Loan" ].include?(inferred.accountable_type)
-        is_liability =
-          if acct.accountable_type.present?
-            is_linked_liability
-          else
-            is_mapper_liability
-          end
+        is_liability = is_linked_liability || is_mapper_liability
 
         normalized = observed
-        if acct.accountable_type == "Loan"
-          normalized = observed.abs
-        elsif is_liability && sfa.balance_sign_override == "credit"
-          normalized = -observed.abs
-        elsif is_liability && sfa.balance_sign_override == "debt"
-          normalized = observed.abs
-        elsif is_liability
+        if is_liability
           # Try the overpayment analyzer first (feature-flagged)
           begin
             result = SimplefinAccount::Liabilities::OverpaymentAnalyzer
@@ -223,8 +212,8 @@ class SimplefinItem::Importer
         end
 
         adapter.update_balance(
-          balance: normalized,
-          cash_balance: is_liability ? normalized : account_data[:"available-balance"],
+          balance: account_data[:balance],
+          cash_balance: account_data[:"available-balance"],
           source: "simplefin"
         )
       end
@@ -942,7 +931,8 @@ class SimplefinItem::Importer
           unless @reconciled_account_ids.include?(acct.id)
             @reconciled_account_ids << acct.id
             reconcile_and_track_pending_duplicates(acct)
-            review_and_exclude_stale_pending(acct)
+            exclude_and_track_stale_pending(acct)
+            track_stale_unmatched_pending(acct)
           end
 
           # Refresh credit attributes when available-balance present
@@ -1307,19 +1297,6 @@ class SimplefinItem::Importer
       record_reconciliation_error("pending_reconciliation", account, e)
     end
 
-    # Stale pending entries are reported for review first, then excluded.
-    #
-    # The order matters and is the reason these two steps have one caller:
-    # both steps decide "pending" with Transaction.pending_sql, and the
-    # tracker counts only entries that are still `excluded: false`. Exclude
-    # first and the tracker can never see anything -- the exclusion has just
-    # marked every row it would have counted. Sync stats reported 0 under
-    # "needs manual review" for that reason, whatever the account held.
-    def review_and_exclude_stale_pending(account)
-      track_stale_unmatched_pending(account)
-      exclude_and_track_stale_pending(account)
-    end
-
     # Auto-exclude stale pending transactions (>8 days old with no matching posted version)
     # Prevents orphaned pending transactions from affecting budgets indefinitely
     def exclude_and_track_stale_pending(account)
@@ -1340,16 +1317,16 @@ class SimplefinItem::Importer
     end
 
     # Track stale pending transactions that couldn't be matched (for user awareness)
-    # These are >8 days old, still pending, and have no duplicate suggestion.
-    # Pending under any provider, as exclude_and_track_stale_pending decides it,
-    # which is why it must run before that exclusion (see
-    # review_and_exclude_stale_pending).
+    # These are >8 days old, still pending, and have no duplicate suggestion
     def track_stale_unmatched_pending(account)
       stale_unmatched = account.entries
         .joins("INNER JOIN transactions ON transactions.id = entries.entryable_id AND entries.entryable_type = 'Transaction'")
         .where(excluded: false)
         .where("entries.date < ?", 8.days.ago.to_date)
-        .where(Transaction.pending_sql)
+        .where(<<~SQL.squish)
+          (transactions.extra -> 'simplefin' ->> 'pending')::boolean = true
+          OR (transactions.extra -> 'plaid' ->> 'pending')::boolean = true
+        SQL
         .where(<<~SQL.squish)
           transactions.extra -> 'potential_posted_match' IS NULL
         SQL
