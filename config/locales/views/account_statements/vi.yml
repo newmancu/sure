@@ -14,11 +14,11 @@ vi:
     coverage:
       status:
         ambiguous: Không rõ ràng
-        covered: Đã phủ
+        covered: Đã bao phủ
         duplicate: Trùng lặp
         mismatched: Không khớp
         missing: Thiếu
-        not_expected: Không mong đợi
+        not_expected: Không yêu cầu
     create:
       duplicates:
         one: 1 sao kê trùng lặp đã bị bỏ qua.
@@ -36,7 +36,6 @@ vi:
       files_hint: PDF, CSV hoặc XLSX. Tối đa %{max_size}MB mỗi tệp.
       files_label: Tệp sao kê
       inbox_upload: Tải lên
-      period_hint: "Sure đọc kỳ sao kê từ tệp PDF nếu tệp có ghi kỳ, hoặc từ ngày trong tên tệp (ví dụ 2026-04). Bạn cũng có thể đặt kỳ trên sao kê."
     index:
       account_label: Tài khoản
       confidence: "Khớp %{confidence}"
@@ -101,7 +100,7 @@ vi:
       unmatched: Chưa khớp
     table:
       account: Tài khoản
-      actions: Hành động
+      actions: Thao tác
       download: Tải xuống
       edit: Chỉnh sửa
       file: Tệp
