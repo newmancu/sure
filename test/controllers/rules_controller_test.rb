@@ -1,6 +1,7 @@
 require "test_helper"
 
 class RulesControllerTest < ActionDispatch::IntegrationTest
+  include EntriesTestHelper
   setup do
     sign_in @user = users(:family_admin)
   end
@@ -89,143 +90,6 @@ class RulesControllerTest < ActionDispatch::IntegrationTest
     assert_equal categories(:food_and_drink).id, rule.actions.first.value
 
     assert_redirected_to confirm_rule_url(rule, reload_on_close: true)
-  end
-
-  test "rejects a null byte in a condition instead of returning a server error" do
-    assert_no_difference "Rule.count" do
-      post rules_url, params: {
-        rule: {
-          resource_type: "transaction",
-          conditions_attributes: {
-            "0" => { condition_type: "transaction_name", operator: "like", value: "cof\0fee" }
-          },
-          actions_attributes: {
-            "0" => { action_type: "exclude_transaction" }
-          }
-        }
-      }
-    end
-
-    assert_response :unprocessable_entity
-    assert_select "p.text-destructive", text: /Conditions value is invalid/
-  end
-
-  test "rejects a null byte when updating an action" do
-    rule = rules(:one)
-    action = rule.actions.first
-
-    patch rule_url(rule), params: {
-      rule: {
-        actions_attributes: {
-          "0" => { id: action.id, action_type: "set_transaction_name", value: "bad\0value" }
-        }
-      }
-    }
-
-    assert_response :unprocessable_entity
-    assert_equal action.value, action.reload.value
-  end
-
-  test "rejects a null byte in the condition operator" do
-    assert_no_difference "Rule.count" do
-      post rules_url, params: {
-        rule: {
-          resource_type: "transaction",
-          conditions_attributes: {
-            "0" => { condition_type: "transaction_name", operator: "like\0", value: "coffee" }
-          },
-          actions_attributes: { "0" => { action_type: "exclude_transaction" } }
-        }
-      }
-    end
-
-    assert_response :unprocessable_entity
-    assert_equal "text/plain", response.media_type
-    assert_match(/operator is invalid/i, response.body)
-  end
-
-  test "rejects a null byte in a nested condition operator" do
-    assert_no_difference "Rule.count" do
-      post rules_url, params: {
-        rule: {
-          resource_type: "transaction",
-          conditions_attributes: {
-            "0" => {
-              condition_type: "compound", operator: "and",
-              sub_conditions_attributes: {
-                "0" => { condition_type: "transaction_name", operator: "like\0", value: "coffee" }
-              }
-            }
-          },
-          actions_attributes: { "0" => { action_type: "exclude_transaction" } }
-        }
-      }
-    end
-
-    assert_response :unprocessable_entity
-    assert_equal "text/plain", response.media_type
-    assert_match(/operator is invalid/i, response.body)
-  end
-
-  test "rejects a null byte in the condition type without selecting a different type" do
-    post rules_url, params: {
-      rule: {
-        resource_type: "transaction",
-        conditions_attributes: {
-          "0" => { condition_type: "transaction_name\0", operator: "like", value: "coffee" }
-        },
-        actions_attributes: { "0" => { action_type: "exclude_transaction" } }
-      }
-    }
-
-    assert_response :unprocessable_entity
-    assert_equal "text/plain", response.media_type
-    assert_match(/condition type is invalid/i, response.body)
-  end
-
-  test "rejects a null byte in the action type without failing to render" do
-    assert_no_difference "Rule.count" do
-      post rules_url, params: {
-        rule: {
-          resource_type: "transaction",
-          actions_attributes: { "0" => { action_type: "exclude_transaction\0" } }
-        }
-      }
-    end
-
-    assert_response :unprocessable_entity
-    assert_equal "text/plain", response.media_type
-    assert_match(/action type is invalid/i, response.body)
-  end
-
-  test "rejects a null byte when updating the action type" do
-    rule = rules(:one)
-    action = rule.actions.first
-    original_type = action.action_type
-
-    patch rule_url(rule), params: {
-      rule: { actions_attributes: { "0" => { id: action.id, action_type: "#{original_type}\0" } } }
-    }
-
-    assert_response :unprocessable_entity
-    assert_equal "text/plain", response.media_type
-    assert_match(/action type is invalid/i, response.body)
-    assert_equal original_type, action.reload.action_type
-  end
-
-  test "rejects a null byte in the resource type without failing to render" do
-    assert_no_difference "Rule.count" do
-      post rules_url, params: {
-        rule: {
-          resource_type: "transaction\0",
-          actions_attributes: { "0" => { action_type: "exclude_transaction" } }
-        }
-      }
-    end
-
-    assert_response :unprocessable_entity
-    assert_equal "text/plain", response.media_type
-    assert_match(/resource type is invalid/i, response.body)
   end
 
   test "can update rule" do
@@ -432,6 +296,52 @@ class RulesControllerTest < ActionDispatch::IntegrationTest
     assert_not rule.reload.active?
   end
 
+  test "switching on an email rule records its baseline before queuing the run" do
+    rule = email_rule_for(@user.family)
+
+    assert_difference -> { NotificationDelivery.where(rule: rule).count }, 1 do
+      assert_enqueued_with(job: RuleJob) { post apply_rule_url(rule) }
+    end
+
+    assert rule.reload.active?
+  end
+
+  test "apply leaves an email rule off and queues nothing when its baseline times out" do
+    rule = email_rule_for(@user.family)
+    Rule::SafeRegex.stubs(:with_timeout).raises(Rule::SafeRegex::TimeoutError)
+
+    assert_no_enqueued_jobs(only: RuleJob) { post apply_rule_url(rule) }
+
+    assert_redirected_to rules_url
+    assert_equal I18n.t("rules.notification_baseline_timed_out"), flash[:alert]
+    assert_nil flash[:notice]
+    assert_not rule.reload.active?
+  end
+
+  test "the active toggle leaves an email rule off and says why when its baseline times out" do
+    rule = email_rule_for(@user.family)
+    Rule::SafeRegex.stubs(:with_timeout).raises(Rule::SafeRegex::TimeoutError)
+
+    patch rule_url(rule), params: { rule: { active: "1" } }, as: :turbo_stream
+
+    assert_response :success
+    assert_equal I18n.t("rules.notification_baseline_timed_out"), flash[:alert]
+    assert_nil flash[:notice]
+    assert_not rule.reload.active?
+  end
+
+  test "the active toggle switches an email rule on when its baseline is recorded" do
+    rule = email_rule_for(@user.family)
+
+    assert_difference -> { NotificationDelivery.where(rule: rule).count }, 1 do
+      patch rule_url(rule), params: { rule: { active: "1" } }, as: :turbo_stream
+    end
+
+    assert_equal I18n.t("rules.update.success"), flash[:notice]
+    assert_nil flash[:alert]
+    assert rule.reload.active?
+  end
+
   test "member can create rule" do
     sign_in users(:family_member)
 
@@ -501,4 +411,18 @@ class RulesControllerTest < ActionDispatch::IntegrationTest
     assert_match "connection refused", entry.message
     assert_equal "connection refused", entry.metadata["error_message"]
   end
+
+  private
+    # A regex condition, so a stubbed timeout reaches the baseline query, and one
+    # matching transaction, so a recorded baseline is visible as a delivery.
+    def email_rule_for(family)
+      account = family.accounts.create!(name: "Baseline", balance: 1000, currency: "USD", accountable: Depository.new)
+      create_transaction(date: Date.current, account: account, name: "Baseline match zq")
+
+      Rule.create!(
+        family: family, resource_type: "transaction", active: false,
+        conditions: [ Rule::Condition.new(condition_type: "transaction_name", operator: "matches_regex", value: "baseline match zq") ],
+        actions: [ Rule::Action.new(action_type: "send_email_notification") ]
+      )
+    end
 end

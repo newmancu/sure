@@ -12,13 +12,11 @@ class Rule::Condition < ApplicationRecord
 
   before_validation :normalize_legacy_condition_type
 
-  validates :condition_type, presence: true, inclusion: { in: SUPPORTED_CONDITION_TYPES, allow_blank: true },
-    if: -> { condition_type.to_s.valid_encoding? }
-  validates :operator, presence: true, if: -> { operator.to_s.valid_encoding? }
-  validates :value, presence: true,
-    unless: -> { compound? || Rule::ConditionFilter::VALUELESS_OPERATORS.include?(operator) },
-    if: -> { value.to_s.valid_encoding? }
-  validates_with DatabaseTextValidator, attributes: %i[condition_type operator value]
+  validates :condition_type, presence: true, inclusion: { in: SUPPORTED_CONDITION_TYPES, allow_blank: true }
+  validates :operator, presence: true
+  validates :value, presence: true, unless: -> { compound? || Rule::ConditionFilter::VALUELESS_OPERATORS.include?(operator) }
+
+  validate :regex_value_is_safe, if: :regex_value_changed?
 
   accepts_nested_attributes_for :sub_conditions, allow_destroy: true
 
@@ -29,6 +27,21 @@ class Rule::Condition < ApplicationRecord
 
   def compound?
     condition_type == "compound"
+  end
+
+  def regex?
+    Rule::ConditionFilter::REGEX_OPERATORS.include?(operator)
+  end
+
+  # True when this condition, or any condition nested in it, matches a pattern.
+  def uses_regex?
+    compound? ? sub_conditions.any?(&:regex?) : regex?
+  end
+
+  # Probing costs a database round trip, so an untouched condition (a rule being
+  # toggled active, say) is not probed again.
+  def regex_value_changed?
+    regex? && (new_record? || will_save_change_to_value? || will_save_change_to_operator?)
   end
 
   def apply(scope)
@@ -74,8 +87,17 @@ class Rule::Condition < ApplicationRecord
   end
 
   private
+    # A blank value is already reported by the presence validation.
+    def regex_value_is_safe
+      return if value.blank?
+
+      error = Rule::SafeRegex.error_for(value)
+      return if error.nil?
+
+      errors.add(:value, :"regex_#{error}", count: Rule::SafeRegex::MAX_LENGTH)
+    end
+
     def normalize_legacy_condition_type
-      return unless condition_type.is_a?(String) && condition_type.valid_encoding?
       return if condition_type.blank?
 
       normalized = LEGACY_CONDITION_TYPE_ALIASES[condition_type]

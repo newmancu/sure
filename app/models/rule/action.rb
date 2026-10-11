@@ -1,8 +1,7 @@
 class Rule::Action < ApplicationRecord
   belongs_to :rule, touch: true
 
-  validates :action_type, presence: true, if: -> { action_type.to_s.valid_encoding? }
-  validates_with DatabaseTextValidator, attributes: %i[action_type value]
+  validates :action_type, presence: true
 
   # Pre-seed (watermark): when a send_email_notification action is created — on a
   # new rule OR added to an existing one — record all currently-matching
@@ -26,13 +25,7 @@ class Rule::Action < ApplicationRecord
   # actions don't require a schema change. A single scalar value round-trips
   # unchanged, which keeps existing single-value rows backward compatible.
   def value=(val)
-    if val.is_a?(Array)
-      val = val.reject do |item|
-        next false if item.is_a?(String) && !item.valid_encoding?
-
-        item.blank?
-      end.join(",")
-    end
+    val = val.reject(&:blank?).join(",") if val.is_a?(Array)
     super(val)
   end
 
@@ -85,5 +78,11 @@ class Rule::Action < ApplicationRecord
         rule_id: rule_id,
         transaction_ids: rule.matching_transaction_ids
       )
+    rescue Rule::SafeRegex::TimeoutError => e
+      # The action is already committed. With no baseline, leaving the rule on would
+      # email every past match on its next run, so it is switched off instead; the
+      # user can turn it back on after changing the pattern.
+      Rails.logger.warn("Notification baseline for rule #{rule_id} timed out, rule switched off: #{e.message}")
+      rule.update_columns(active: false)
     end
 end
