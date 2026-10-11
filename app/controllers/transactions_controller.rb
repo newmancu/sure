@@ -33,9 +33,8 @@ class TransactionsController < ApplicationController
                          # - outflow rows need inflow_transaction (to_account) for both
                          #   counterpart display and Transfer#categorizable?/#payment?
                          # - inflow rows need outflow_transaction (from_account) for
-                         #   counterpart display, inflow_transaction (to_account)
-                         #   for the category menu on the same row, and the
-                         #   outflow's category, which the inflow row shows
+                         #   counterpart display, and inflow_transaction (to_account)
+                         #   for the category menu on the same row
                          {
                            transfer_as_outflow: {
                              inflow_transaction: { entry: :account }
@@ -44,7 +43,7 @@ class TransactionsController < ApplicationController
                          {
                            transfer_as_inflow: {
                              inflow_transaction: { entry: :account },
-                             outflow_transaction: [ :category, { entry: :account } ]
+                             outflow_transaction: { entry: :account }
                            }
                          }
                        )
@@ -137,6 +136,7 @@ class TransactionsController < ApplicationController
     if account.nil?
       @entry = Current.family.entries.new(entry_params)
       @entry.valid?
+      clear_stale_auto_generated_name!(@entry)
       set_new_transaction_form_options
       render :new, status: :unprocessable_entity
       return
@@ -166,6 +166,7 @@ class TransactionsController < ApplicationController
 
       respond_with_created_entry(@entry)
     else
+      clear_stale_auto_generated_name!(@entry)
       set_new_transaction_form_options
       render :new, status: :unprocessable_entity
     end
@@ -690,6 +691,16 @@ class TransactionsController < ApplicationController
       set_entry
     end
 
+    # Entry#set_default_name may have already filled in a category/merchant
+    # -derived name during this failed validation attempt. A blank
+    # submission must still render blank -- otherwise the generated text
+    # becomes the field's literal value, and if the user then changes the
+    # category/merchant and resubmits, that stale generated name (no longer
+    # blank) skips the callback entirely and gets saved as-is.
+    def clear_stale_auto_generated_name!(entry)
+      entry.name = "" if entry_params[:name].blank?
+    end
+
     def set_new_transaction_form_options
       accessible_accounts_scope = accessible_accounts
 
@@ -703,13 +714,49 @@ class TransactionsController < ApplicationController
       @categories = Current.family.categories.alphabetically_by_hierarchy.to_a
       @merchants = Current.family.available_merchants_for(Current.user).alphabetically.to_a
       @tags = Current.family.tags.alphabetically.to_a
+      @recent_transaction_names = recent_transaction_names
+    end
+
+    # Autocomplete suggestions for the name field, only queried when the
+    # auto-generate setting is on: lets a user reuse an actual previous name
+    # instead of leaving the field blank (which would produce a generic
+    # fallback), the same way it curbs bulk-identical generated names.
+    def recent_transaction_names
+      return [] unless Current.family.auto_generate_transaction_names?
+
+      # Current.accessible_entries (not Entry.family_scope), so a non-admin
+      # family member never sees names from accounts that weren't shared
+      # with them -- family-wide settings still respect per-account sharing.
+      # Its underlying Account.accessible_by scope is itself a `.distinct`
+      # query, so ORDER BY created_at must stay in the pluck'd column list
+      # (a plain "pluck(:name)" here would hit Postgres's "SELECT DISTINCT
+      # ... ORDER BY expressions must appear in select list"); dedup by name
+      # happens in Ruby afterward instead.
+      #
+      # Checked across every supported locale (like Entry#generic_name?'s
+      # unknown-name check), not just the current one -- otherwise an old
+      # entry named under a different locale's fallback (e.g. "Unbekannte
+      # Transaktion") would still surface as a "recent name" suggestion. A
+      # full generic_name? reuse isn't practical here since it also needs a
+      # loaded entryable.category, which isn't available cheaply from a pluck.
+      unknown_names = LanguagesHelper::SUPPORTED_LOCALES.map { |locale| I18n.t("transactions.unknown_name", locale: locale) }
+
+      Current.accessible_entries
+        .where(entryable_type: "Transaction")
+        .where.not(name: unknown_names)
+        .order(created_at: :desc)
+        .limit(200)
+        .pluck(:name, :created_at)
+        .map(&:first)
+        .uniq
+        .first(20)
     end
 
     # Filters entry_params based on the user's permission on the account.
     # read_write users can only annotate (category, tags, notes, merchant).
     # read_only users cannot update anything.
     def permitted_entry_params
-      permitted = case entry_permission
+      case entry_permission
       when :owner, :full_control
         entry_params
       when :read_write
@@ -722,14 +769,6 @@ class TransactionsController < ApplicationController
       else
         {} # read_only — no edits allowed
       end
-
-      # A matched transfer's category lives on its outflow leg; a category
-      # sent for the inflow leg would look saved but never reach a budget.
-      if permitted[:entryable_attributes]&.key?(:category_id) && @entry.transaction.category_set_on_transfer_outflow?
-        permitted[:entryable_attributes] = permitted[:entryable_attributes].except(:category_id)
-      end
-
-      permitted
     end
 
     def search_params
