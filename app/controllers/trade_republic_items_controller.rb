@@ -320,10 +320,6 @@ class TradeRepublicItemsController < ApplicationController
 
   def sync
     @trade_republic_item.sync_later unless @trade_republic_item.syncing?
-    if provider_panel_form? && turbo_panel_request?
-      # Only this card, as the login steps do, so the other cards keep their state.
-      return render_login_panel(notice: t("settings.providers.sync_provider_in_progress"))
-    end
 
     respond_to do |format|
       format.html { redirect_back_or_to accounts_path }
@@ -352,7 +348,7 @@ class TradeRepublicItemsController < ApplicationController
       .active
       .includes(trade_republic_accounts: { account_provider: :account })
       .flat_map(&:trade_republic_accounts)
-      .select { |tr_account| tr_account.account_provider.nil? && tr_account.linkable_to?(@account) }
+      .select { |tr_account| tr_account.account_provider.nil? }
       .sort_by { |tr_account| tr_account.updated_at || tr_account.created_at }
       .reverse
 
@@ -371,7 +367,7 @@ class TradeRepublicItemsController < ApplicationController
       return
     end
 
-    unless tr_account.linkable_to?(account) &&
+    unless account.accountable_type.in?(%w[Investment Depository]) &&
         account.account_providers.none? &&
         account.plaid_account_id.blank? &&
         account.simplefin_account_id.blank?
@@ -438,17 +434,12 @@ class TradeRepublicItemsController < ApplicationController
       @trade_republic_item.sync_later
     end
 
-    linkable_accounts = Current.family.accounts
+    @linkable_accounts = Current.family.accounts
       .visible
-      .where(accountable_type: %w[Investment Depository Crypto])
+      .where(accountable_type: %w[Investment Depository])
       .left_joins(:account_providers)
       .where(account_providers: { id: nil })
-      .includes(:accountable)
       .order(:name)
-      .to_a
-    @linkable_accounts_by_tr_account = @unlinked_accounts.index_with do |tr_account|
-      linkable_accounts.select { |linkable| tr_account.linkable_to?(linkable) }
-    end
 
     @syncing = @trade_republic_item.syncing?
     @waiting_for_sync = no_accounts && @syncing
@@ -647,11 +638,28 @@ class TradeRepublicItemsController < ApplicationController
       @trade_republic_item.destroy_later if @trade_republic_item.trade_republic_accounts.none?
     end
 
-    # Only the add-connection form's own unsaved item should replace its blank
-    # default; an existing item failing update/login keeps the add form blank.
+    def turbo_panel_request?
+      turbo_frame_request? || request.format.turbo_stream?
+    end
+
     def render_panel_error(message)
-      render_provider_panel("trade_republic", alert: message, fallback_path: settings_providers_path(anchor: "trade-republic"),
-                            new_item: (@trade_republic_item if @trade_republic_item&.new_record?))
+      @error_message = message
+
+      if turbo_panel_request?
+        render turbo_stream: turbo_stream.replace(
+          "trade-republic-providers-panel",
+          partial: "settings/providers/trade_republic_panel",
+          locals: {
+            error_message: @error_message,
+            # Only the add-connection form's own unsaved item should replace
+            # its blank default; an existing item failing update/login keeps
+            # the add form blank.
+            new_item: (@trade_republic_item if @trade_republic_item&.new_record?)
+          }
+        ), status: :unprocessable_entity
+      else
+        redirect_to settings_providers_path(anchor: "trade-republic"), alert: @error_message, status: :see_other
+      end
     end
 
     def render_qr_login_error(error, pending: nil, status: :unprocessable_entity, retryable: false)
