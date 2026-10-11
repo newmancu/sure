@@ -58,6 +58,8 @@ tr:
           altında gruplandırılmış olarak gösterin. Kapalıyken bölünen alt işlemler
           ayrı satırlar olarak görünür.
         split_grouped_title: Bölünmüş işlemleri grupla
+        auto_generate_transaction_names_title: "İşlem adlarını otomatik oluştur"
+        auto_generate_transaction_names_description: "Elle girilen bir işlemin adı boş bırakılırsa, seçilen kategori ve satıcıdan doldurulur (ör. \"Eğlence - Netflix\"). İkisi de seçilmezse ad yine zorunludur. Tüm hane için geçerlidir ve yalnızca yeni işlemleri etkiler."
         theme_dark: Koyu
         theme_light: Açık
         theme_subtitle: Uygulama için tercih edilen temayı seçin
@@ -377,7 +379,6 @@ tr:
         application_id_placeholder_update: Güncellemek için yeni ID girin
         callback_url_instruction: Geri çağırma URL'si için %{callback_url} kullanın.
         client_certificate_label: İstemci Sertifikası (Özel Anahtar ile)
-        keep_client_certificate_hint: "Mevcut sertifikayı korumak için boş bırakın"
         config_locked_message: Bu kimlik bilgilerini değiştirmeden önce bağlı tüm
           bankaların bağlantısını kesin.
         config_locked_title: Yapılandırma kilitli
@@ -616,7 +617,7 @@ tr:
         monobank: Ukrayna Monobank kartlarını ve kumbaralarını kişisel bir API token ile senkronize edin.
         fio: Bir Fio banka hesabını salt okunur bir API token ile senkronize edin.
         coinspot: CoinSpot bakiyelerini, AUD değerlerini, transferleri, para yatırma, para çekme ve emir geçmişini salt okunur bir API anahtarıyla senkronize edin.
-        onchain_wallet: Gözetimsiz Bitcoin, EVM, Solana, Cosmos ve Polkadot cüzdanlarını herkese açık adresleri üzerinden takip edin.
+        onchain_wallet: Gözetimsiz Bitcoin, EVM ve Solana cüzdanlarını herkese açık adresleri üzerinden takip edin.
         trading212: Trading 212 yatırım portföyünüzü salt okunur bir API anahtarıyla senkronize edin.
         trade_republic: Trade Republic yatırım hesabınızı güvenli, salt okunur web girişiyle senkronize edin.
       up_panel:

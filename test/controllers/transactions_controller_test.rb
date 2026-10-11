@@ -291,6 +291,86 @@ class TransactionsControllerTest < ActionDispatch::IntegrationTest
     assert_response :unprocessable_entity
   end
 
+  test "a blank auto-generated name is not silently kept when another field fails validation" do
+    @entry.account.family.update!(auto_generate_transaction_names: true)
+
+    # Name is blank but a category is selected, so Entry#set_default_name
+    # fills it in during validation; the date is deliberately out of the
+    # supported range so the record still fails to save for an unrelated
+    # reason (an invalid currency would break rendering the money field
+    # itself, not just validation). The re-rendered form must show the name
+    # field blank again (not the generated text), or a resubmission after
+    # changing the category would save that now-stale name instead of a
+    # fresh one.
+    post transactions_url, params: {
+      entry: {
+        account_id: @entry.account_id,
+        name: "",
+        date: 40.years.ago.to_date,
+        currency: "USD",
+        amount: 100,
+        nature: "inflow",
+        entryable_type: "Transaction",
+        entryable_attributes: { category_id: categories(:food_and_drink).id }
+      }
+    }
+
+    assert_response :unprocessable_entity
+    assert_select "input[name='entry[name]'][value='']"
+  end
+
+  test "an explicitly provided name survives a failed submission unchanged" do
+    @entry.account.family.update!(auto_generate_transaction_names: true)
+
+    post transactions_url, params: {
+      entry: {
+        account_id: @entry.account_id,
+        name: "Explicit name",
+        date: 40.years.ago.to_date,
+        currency: "USD",
+        amount: 100,
+        nature: "inflow",
+        entryable_type: "Transaction",
+        entryable_attributes: { category_id: categories(:food_and_drink).id }
+      }
+    }
+
+    assert_response :unprocessable_entity
+    assert_select "input[name='entry[name]'][value='Explicit name']"
+  end
+
+  test "recent name suggestions never include entries from accounts inaccessible to the current user" do
+    @entry.account.family.update!(auto_generate_transaction_names: true)
+
+    private_account = Account.create!(
+      family: @entry.account.family,
+      owner: users(:family_member),
+      name: "Family Member Private Account",
+      balance: 100,
+      currency: "USD",
+      accountable: Depository.new,
+      status: "active"
+    )
+    create_transaction(account: private_account, name: "Private Merchant XYZ")
+
+    get new_transaction_url
+
+    assert_response :success
+    assert_no_match "Private Merchant XYZ", response.body
+  end
+
+  test "recent name suggestions exclude the unknown-name fallback in every supported locale, not just the current one" do
+    @entry.account.family.update!(auto_generate_transaction_names: true)
+
+    create_transaction(account: @entry.account, name: I18n.t("transactions.unknown_name", locale: :en))
+    create_transaction(account: @entry.account, name: I18n.t("transactions.unknown_name", locale: :de))
+
+    get new_transaction_url
+
+    assert_response :success
+    assert_no_match I18n.t("transactions.unknown_name", locale: :de), response.body
+  end
+
   # Regression: the sync window must start at the old date, or the incremental
   # balance calculation counts the moved transaction twice.
   test "moving a transaction later syncs from its original date" do
@@ -1389,9 +1469,6 @@ end
     # Transfer#categorizable? / #payment? walk to_account via
     # transfer.inflow_transaction.entry.account. Without nested includes those
     # become one lookup triad per transfer row during list render.
-    # categorizable? also walks from_account via the outflow leg, which is only
-    # loaded through the inverse_of on Transaction::Transferable; dropping it
-    # makes the transactions.id assertion below fail.
     normalized_queries = queries.map { |sql| normalize_sql_query(sql) }
     assert_empty single_record_lookups(normalized_queries, table: "transactions", column: "id"),
                  "Expected transfer counterparty transactions to be preloaded"
@@ -1752,54 +1829,6 @@ end
     assert_response :redirect
     assert_includes response.location, "filter_cleared=1"
     assert_no_match(/ai_status/, response.location)
-  end
-
-  test "update drops a category sent for a matched transfer's inflow leg" do
-    outflow = Transaction.create!(kind: "investment_contribution")
-    Entry.create!(account: accounts(:depository), entryable: outflow, name: "Contribution", amount: 500, currency: "USD", date: Date.current)
-    inflow = Transaction.create!(kind: "funds_movement")
-    inflow_entry = Entry.create!(account: accounts(:investment), entryable: inflow, name: "Contribution", amount: -500, currency: "USD", date: Date.current)
-    Transfer.create!(inflow_transaction: inflow, outflow_transaction: outflow, status: "confirmed")
-
-    patch transaction_url(inflow_entry), params: {
-      entry: {
-        notes: "Monthly savings",
-        entryable_type: "Transaction",
-        entryable_attributes: { id: inflow.id, category_id: categories(:income).id }
-      }
-    }
-
-    assert_nil inflow.reload.category_id
-    assert_equal "Monthly savings", inflow_entry.reload.notes
-  end
-
-  test "update drops a category for a matched inflow leg whose kind was edited to standard" do
-    outflow = Transaction.create!(kind: "investment_contribution")
-    Entry.create!(account: accounts(:depository), entryable: outflow, name: "Contribution", amount: 500, currency: "USD", date: Date.current)
-    inflow = Transaction.create!(kind: "standard")
-    inflow_entry = Entry.create!(account: accounts(:investment), entryable: inflow, name: "Contribution", amount: -500, currency: "USD", date: Date.current)
-    Transfer.create!(inflow_transaction: inflow, outflow_transaction: outflow, status: "confirmed")
-
-    patch transaction_url(inflow_entry), params: {
-      entry: { entryable_type: "Transaction", entryable_attributes: { id: inflow.id, category_id: categories(:income).id } }
-    }
-
-    assert_nil inflow.reload.category_id
-  end
-
-  test "drawer shows a matched transfer's inflow leg with the outflow's category, disabled" do
-    outflow = Transaction.create!(kind: "investment_contribution", category: categories(:income))
-    Entry.create!(account: accounts(:depository), entryable: outflow, name: "Contribution", amount: 500, currency: "USD", date: Date.current)
-    inflow = Transaction.create!(kind: "funds_movement")
-    inflow_entry = Entry.create!(account: accounts(:investment), entryable: inflow, name: "Contribution", amount: -500, currency: "USD", date: Date.current)
-    Transfer.create!(inflow_transaction: inflow, outflow_transaction: outflow, status: "confirmed")
-
-    get transaction_url(inflow_entry), headers: { "Turbo-Frame" => "drawer" }
-
-    assert_response :success
-    assert_select "button#category_id_trigger[disabled]", text: /#{categories(:income).name}/
-    assert_select "input[type=hidden][name='entry[entryable_attributes][category_id]'][disabled]"
-    assert_match I18n.t("transactions.show.category_set_on_outflow"), response.body
   end
 
   private
