@@ -8,13 +8,13 @@ class InviteCodesController < ApplicationController
 
   def create
     InviteCode.generate!
-    redirect_back_or_to invite_codes_path, notice: t(".success")
+    redirect_back_or_to invite_codes_path, notice: "Code generated"
   end
 
   def destroy
     code = InviteCode.find(params[:id])
     code.destroy
-    redirect_back_or_to invite_codes_path, notice: t(".success")
+    redirect_back_or_to invite_codes_path, notice: "Code deleted"
   end
 
   private

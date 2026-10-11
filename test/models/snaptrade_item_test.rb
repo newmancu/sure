@@ -1,64 +1,78 @@
 require "test_helper"
 
 class SnaptradeItemTest < ActiveSupport::TestCase
-  include ActiveJob::TestHelper
-
   setup do
     @family = families(:dylan_family)
   end
 
   test "validates presence of name" do
-    item = SnaptradeItem.new(family: @family)
+    item = SnaptradeItem.new(family: @family, client_id: "test", consumer_key: "test")
     assert_not item.valid?
     assert_includes item.errors[:name], "can't be blank"
   end
 
-  test "allows oauth-only items without api credentials" do
-    item = SnaptradeItem.new(family: @family, name: "Test")
-    assert item.valid?
+  test "validates presence of client_id on create" do
+    item = SnaptradeItem.new(family: @family, name: "Test", consumer_key: "test")
+    assert_not item.valid?
+    assert_includes item.errors[:client_id], "can't be blank"
   end
 
-  test "snaptrade_provider returns nil when oauth token not present" do
+  test "validates presence of consumer_key on create" do
+    item = SnaptradeItem.new(family: @family, name: "Test", client_id: "test")
+    assert_not item.valid?
+    assert_includes item.errors[:consumer_key], "can't be blank"
+  end
+
+  test "credentials_configured? returns true when credentials are set" do
+    item = SnaptradeItem.new(
+      family: @family,
+      name: "Test",
+      client_id: "test_client_id",
+      consumer_key: "test_consumer_key"
+    )
+    assert item.credentials_configured?
+  end
+
+  test "credentials_configured? returns false when credentials are missing" do
+    item = SnaptradeItem.new(family: @family, name: "Test")
+    assert_not item.credentials_configured?
+  end
+
+  test "user_registered? returns false when user_id and secret are blank" do
+    item = SnaptradeItem.new(
+      family: @family,
+      name: "Test",
+      client_id: "test",
+      consumer_key: "test"
+    )
+    assert_not item.user_registered?
+  end
+
+  test "user_registered? returns true when user_id and secret are present" do
+    item = SnaptradeItem.new(
+      family: @family,
+      name: "Test",
+      client_id: "test",
+      consumer_key: "test",
+      snaptrade_user_id: "user_123",
+      snaptrade_user_secret: "secret_abc"
+    )
+    assert item.user_registered?
+  end
+
+  test "snaptrade_provider returns nil when credentials not configured" do
     item = SnaptradeItem.new(family: @family, name: "Test")
     assert_nil item.snaptrade_provider
   end
 
-  test "snaptrade_provider returns provider instance when oauth token present" do
+  test "snaptrade_provider returns provider instance when configured" do
     item = SnaptradeItem.new(
       family: @family,
       name: "Test",
-      oauth_access_token: "test-access-token"
+      client_id: "test_client_id",
+      consumer_key: "test_consumer_key"
     )
     provider = item.snaptrade_provider
     assert_instance_of Provider::Snaptrade, provider
-  end
-
-  test "credentials_configured? mirrors oauth_configured?" do
-    item = SnaptradeItem.new(family: @family, name: "Test")
-    assert_equal item.oauth_configured?, item.credentials_configured?
-    assert_not item.credentials_configured?
-
-    item.oauth_access_token = "test-access-token"
-    assert_equal item.oauth_configured?, item.credentials_configured?
-    assert item.credentials_configured?
-  end
-
-  test "an unlinked account awaiting activities does not keep the item syncing" do
-    item = snaptrade_items(:configured_item)
-    account = snaptrade_accounts(:fidelity_401k)
-    account.update!(activities_fetch_pending: true)
-
-    assert_nil account.current_account
-    assert_not item.syncing?
-  end
-
-  test "sync_later_with_follow_up queues a follow-up after an active sync" do
-    item = snaptrade_items(:configured_item)
-    active_sync = item.syncs.create!
-    active_sync.start!
-
-    assert_enqueued_with job: SnaptradeFollowUpSyncJob do
-      item.sync_later_with_follow_up
-    end
   end
 end

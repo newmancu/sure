@@ -17,7 +17,7 @@ class CategoryImport < Import
         parent = ensure_placeholder_category(row.category_parent)
 
         if parent && parent == category
-          errors.add(:base, :own_parent, name: category.name)
+          errors.add(:base, "Category '#{category.name}' cannot be its own parent")
           raise ActiveRecord::RecordInvalid.new(self)
         end
 
@@ -26,12 +26,6 @@ class CategoryImport < Import
         category.update!(parent: parent)
       end
     end
-  end
-
-  # Categories hang off the family, not the import — see
-  # Import#committed_by_named_records?.
-  def data_committed?
-    committed_by_named_records?(family.categories)
   end
 
   def column_keys
@@ -71,9 +65,8 @@ class CategoryImport < Import
     parent_header = header_for("parent_category", "parent category")
     icon_header = header_for("lucide_icon", "lucide icon", "icon")
 
-    csv_rows.each.with_index(1) do |row, index|
+    csv_rows.each do |row|
       rows.create!(
-        source_row_number: index,
         name: row[name_header].to_s.strip,
         category_color: row[color_header].to_s.strip,
         category_parent: row[parent_header].to_s.strip,
@@ -88,7 +81,7 @@ class CategoryImport < Import
       missing_headers = required_column_keys.map(&:to_s).reject { |key| header_for(key).present? }
       return if missing_headers.empty?
 
-      errors.add(:base, :missing_columns, columns: missing_headers.join(", "))
+      errors.add(:base, "Missing required columns: #{missing_headers.join(', ')}")
       raise ActiveRecord::RecordInvalid.new(self)
     end
 

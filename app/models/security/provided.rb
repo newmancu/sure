@@ -209,8 +209,9 @@ module Security::Provided
     Security::Price.find_or_create_by!(
       security_id: self.id,
       date: price.date,
+      price: price.price,
       currency: price.currency
-    ) { |record| record.price = price.price } if cache
+    ) if cache
     price
   end
 
@@ -220,80 +221,30 @@ module Security::Provided
       return
     end
 
-    # Price-provider metadata (name/website/logo). Skip the refetch only when we
-    # already have a name plus a logo or website. This gate must be evaluated
-    # before any brand-logo enrichment, otherwise setting logo_url first would
-    # trip it and skip website_url backfill from providers that return links.
-    unless self.name.present? && (self.logo_url.present? || self.website_url.present?) && !clear_cache
-      response = price_data_provider.fetch_security_info(
-        symbol: ticker,
-        exchange_operating_mic: exchange_operating_mic
-      )
-
-      if response.success?
-        # Only overwrite fields the provider actually returned, so providers that
-        # don't support metadata (e.g. Alpha Vantage) won't blank existing values.
-        attrs = {}
-        attrs[:name]        = response.data.name    if response.data.name.present?
-        attrs[:logo_url]    = response.data.logo_url if response.data.logo_url.present?
-        attrs[:website_url] = response.data.links   if response.data.links.present?
-        update(attrs) if attrs.any?
-      else
-        Rails.logger.warn("Failed to fetch security info for #{ticker} from #{price_data_provider.class.name}: #{response.error.message}")
-        DebugLogEntry.capture(
-          category: "security_metadata_fetch",
-          level: "warn",
-          message: "Failed to get security info",
-          source: self.class.name,
-          provider: price_data_provider,
-          metadata: {
-            security_id: self.id,
-            ticker: ticker,
-            provider_error: response.error.message
-          }
-        )
-      end
+    if self.name.present? && (self.logo_url.present? || self.website_url.present?) && !clear_cache
+      return
     end
 
-    # Brand logo, sourced independently of the price provider, so a security
-    # priced by a logo-less provider (e.g. MOEX/ISS) still gets a real logo.
-    # Runs after metadata so it never short-circuits website_url backfill.
-    import_brand_logo(clear_cache: clear_cache)
-  end
-
-  # Enriches the security with a brand logo from a dedicated logo provider
-  # (T-Invest), independent of which provider supplies prices. No-op when the
-  # logo is already set, for crypto (own logo path), or when no logo provider /
-  # token is configured. Runs every details import while the logo is missing.
-  def import_brand_logo(clear_cache: false)
-    return if crypto?
-    return if logo_url.present? && !clear_cache
-
-    provider = brand_logo_provider
-    return unless provider
-
-    response = provider.fetch_security_info(symbol: ticker, exchange_operating_mic: exchange_operating_mic)
-    return unless response.success? && response.data.logo_url.present?
-
-    update(logo_url: response.data.logo_url)
-  rescue => e
-    DebugLogEntry.capture(
-      category: "security_metadata_fetch",
-      level: "warn",
-      message: "Brand logo fetch failed",
-      source: self.class.name,
-      provider: brand_logo_provider,
-      metadata: { security_id: self.id, ticker: ticker, provider_error: e.message }
+    response = price_data_provider.fetch_security_info(
+      symbol: ticker,
+      exchange_operating_mic: exchange_operating_mic
     )
-  end
 
-  # The provider consulted for brand logos regardless of price provider. Returns
-  # nil unless a T-Invest token is configured. Uses the class-level lookup so it
-  # doesn't depend on (or interfere with) per-instance Registry expectations.
-  def brand_logo_provider
-    Provider::Registry.get_provider(:tinkoff_invest)
-  rescue Provider::Registry::Error
-    nil
+    if response.success?
+      # Only overwrite fields the provider actually returned, so providers that
+      # don't support metadata (e.g. Alpha Vantage) won't blank existing values.
+      attrs = {}
+      attrs[:name]        = response.data.name    if response.data.name.present?
+      attrs[:logo_url]    = response.data.logo_url if response.data.logo_url.present?
+      attrs[:website_url] = response.data.links   if response.data.links.present?
+      update(attrs) if attrs.any?
+    else
+      Rails.logger.warn("Failed to fetch security info for #{ticker} from #{price_data_provider.class.name}: #{response.error.message}")
+      Sentry.capture_exception(SecurityInfoMissingError.new("Failed to get security info"), level: :warning) do |scope|
+        scope.set_tags(security_id: self.id)
+        scope.set_context("security", { id: self.id, provider_error: response.error.message })
+      end
+    end
   end
 
   def import_provider_prices(start_date:, end_date:, clear_cache: false)

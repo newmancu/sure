@@ -17,21 +17,6 @@ class SplitsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
   end
 
-  test "new groups subcategories immediately after their parent in the category selector" do
-    get new_transaction_split_path(@entry)
-    assert_response :success
-
-    doc = Nokogiri::HTML::Document.parse(response.body)
-    category_values = doc.css(".category-select-container [data-value]").map { |node| node["data-value"] }
-
-    parent_index = category_values.index(categories(:food_and_drink).id)
-    child_index = category_values.index(categories(:subcategory).id)
-
-    assert_not_nil parent_index
-    assert_not_nil child_index
-    assert_equal parent_index + 1, child_index
-  end
-
   test "create with valid params splits transaction" do
     assert_difference "Entry.count", 2 do
       post transaction_split_path(@entry), params: {
@@ -135,26 +120,6 @@ class SplitsControllerTest < ActionDispatch::IntegrationTest
     assert_response :success
   end
 
-  test "create with excluded parameter sets child as excluded" do
-    assert_difference "Entry.count", 2 do
-      post transaction_split_path(@entry), params: {
-        split: {
-          splits: [
-            { name: "Groceries", amount: "-70", category_id: categories(:food_and_drink).id, excluded: "true" },
-            { name: "Household", amount: "-30", category_id: "", excluded: "false" }
-          ]
-        }
-      }
-    end
-
-    assert_redirected_to transactions_url
-    children = @entry.child_entries.order(:amount)
-    # Household has amount 30 (smaller), Groceries has amount 70 (larger)
-    # Household is NOT excluded, Groceries IS excluded
-    refute children.first.excluded?
-    assert children.last.excluded?
-  end
-
   # Edit action tests
   test "edit renders with existing children pre-filled" do
     @entry.split!([
@@ -226,27 +191,6 @@ class SplitsControllerTest < ActionDispatch::IntegrationTest
     assert flash[:alert].present?
     # Original splits should remain intact
     assert_equal 2, @entry.reload.child_entries.count
-  end
-
-  test "update with excluded parameter sets child as excluded" do
-    @entry.split!([
-      { name: "Groceries", amount: 70, category_id: nil },
-      { name: "Household", amount: 30, category_id: nil }
-    ])
-
-    patch transaction_split_path(@entry), params: {
-      split: {
-        splits: [
-          { name: "Groceries", amount: "-70", category_id: "", excluded: "true" },
-          { name: "Household", amount: "-30", category_id: "", excluded: "false" }
-        ]
-      }
-    }
-
-    assert_redirected_to transactions_url
-    children = @entry.child_entries.order(:amount)
-    refute children.first.excluded?
-    assert children.last.excluded?
   end
 
   # Destroy from child tests

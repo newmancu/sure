@@ -16,10 +16,7 @@ module Sure
 
     private
       def semver
-        stripped_content = Rails.root.join(".sure-version").read.strip
-        stripped_content.presence || "n/a: #{commit_sha}"
-      rescue Errno::ENOENT
-        "n/a: #{commit_sha || 'unknown'}"
+        "0.7.0-alpha.6"
       end
   end
 end

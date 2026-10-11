@@ -1,10 +1,10 @@
 <div id="<%= dom_id(budget, :confirm_button) %>">
   <%= render DS::Button.new(
-    text: t(".confirm"),
+    text: "Confirm",
     variant: "primary",
     full_width: true,
-    href: budget_path(budget, **budget_owner_query),
+    href: budget_path(budget),
     method: :get,
-    disabled: !budget.initialized? || budget.available_to_allocate.negative?
+    disabled: !budget.allocations_valid?
   ) %>
 </div>

@@ -6,9 +6,7 @@ import '../models/chat.dart';
 import '../providers/auth_provider.dart';
 import '../providers/chat_provider.dart';
 import '../models/message.dart';
-import '../constants/suggested_questions.dart';
 import '../widgets/typing_indicator.dart';
-import '../l10n/app_localizations.dart';
 
 class _SendMessageIntent extends Intent {
   const _SendMessageIntent();
@@ -88,14 +86,6 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
     }
   }
 
-  Future<void> _sendSuggestedQuestion(String question) async {
-    if (!mounted) return;
-    final chatProvider = Provider.of<ChatProvider>(context, listen: false);
-    if (chatProvider.isSendingMessage || chatProvider.isWaitingForResponse) return;
-    _messageController.text = question;
-    await _sendMessage();
-  }
-
   Future<void> _loadChat({bool forceRefresh = false}) async {
     if (_chatId == null) return;
 
@@ -136,8 +126,6 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
     if (content.isEmpty) return;
     setState(() => _isSendInFlight = true);
 
-    final l = AppLocalizations.of(context);
-
     try {
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     final chatProvider = Provider.of<ChatProvider>(context, listen: false);
@@ -163,7 +151,7 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
         _messageController.text = content;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(chatProvider.errorMessage ?? l.chatConversationStartFailed),
+            content: Text(chatProvider.errorMessage ?? 'Failed to start conversation. Please try again.'),
             backgroundColor: Colors.red,
           ),
         );
@@ -210,26 +198,25 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
     final newTitle = await showDialog<String>(
       context: context,
       builder: (context) {
-        final dl = AppLocalizations.of(context);
         final controller = TextEditingController(text: currentTitle);
         return AlertDialog(
-          title: Text(dl.chatConversationEditTitle),
+          title: const Text('Edit Title'),
           content: TextField(
             controller: controller,
-            decoration: InputDecoration(
-              labelText: dl.chatConversationTitleLabel,
-              border: const OutlineInputBorder(),
+            decoration: const InputDecoration(
+              labelText: 'Chat Title',
+              border: OutlineInputBorder(),
             ),
             autofocus: true,
           ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: Text(dl.commonCancel),
+              child: const Text('Cancel'),
             ),
             TextButton(
               onPressed: () => Navigator.pop(context, controller.text.trim()),
-              child: Text(dl.commonSave),
+              child: const Text('Save'),
             ),
           ],
         );
@@ -254,22 +241,20 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
   }
 
   String _formatTime(DateTime dateTime) {
-    final local = dateTime.toLocal();
-    final hour = local.hour.toString().padLeft(2, '0');
-    final minute = local.minute.toString().padLeft(2, '0');
+    final hour = dateTime.hour.toString().padLeft(2, '0');
+    final minute = dateTime.minute.toString().padLeft(2, '0');
     return '$hour:$minute';
   }
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final l = AppLocalizations.of(context);
 
     return Scaffold(
       appBar: AppBar(
         title: Consumer<ChatProvider>(
           builder: (context, chatProvider, _) {
-            final title = chatProvider.currentChat?.title ?? AppLocalizations.of(context).chatConversationNewTitle;
+            final title = chatProvider.currentChat?.title ?? 'New Conversation';
             return GestureDetector(
               onTap: _chatId != null ? _editTitle : null,
               child: Row(
@@ -295,7 +280,7 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
             IconButton(
               icon: const Icon(Icons.refresh),
               onPressed: () => _loadChat(forceRefresh: true),
-              tooltip: l.chatConversationRefreshTooltip,
+              tooltip: 'Refresh',
             ),
         ],
       ),
@@ -317,7 +302,7 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
                     Icon(Icons.error_outline,
                         size: 64, color: colorScheme.error),
                     const SizedBox(height: 16),
-                    Text(l.chatConversationLoadError,
+                    Text('Failed to load chat',
                         style: Theme.of(context).textTheme.titleLarge),
                     const SizedBox(height: 8),
                     Text(
@@ -329,7 +314,7 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
                     ElevatedButton.icon(
                       onPressed: _loadChat,
                       icon: const Icon(Icons.refresh),
-                      label: Text(l.commonTryAgain),
+                      label: const Text('Try Again'),
                     ),
                   ],
                 ),
@@ -337,55 +322,31 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
             );
           }
 
-          final allMessages = chatProvider.currentChat?.messages ?? [];
-          // While waiting for the AI response, hide the last (partial/streaming)
-          // assistant message so the typing indicator shows instead of partial content.
-          // The full response is revealed once polling detects stable content.
-          final messages = chatProvider.isWaitingForResponse
-              ? allMessages.where((m) {
-                  return !(m.isAssistant && m == allMessages.lastOrNull);
-                }).toList()
-              : allMessages;
-          final firstName =
-              Provider.of<AuthProvider>(context, listen: true).user?.firstName;
+          final messages = chatProvider.currentChat?.messages ?? [];
 
           return Column(
             children: [
               Expanded(
-                child: messages.isEmpty &&
-                        !chatProvider.isLoading &&
-                        !chatProvider.isSendingMessage &&
-                        !chatProvider.isWaitingForResponse
-                    ? _EmptyState(
-                        firstName: firstName,
-                        isSending: false,
-                        onQuestionTap: _sendSuggestedQuestion,
-                      )
-                    : ListView.builder(
-                        controller: _scrollController,
-                        padding: const EdgeInsets.all(16),
-                        itemCount: messages.length +
-                            (chatProvider.isWaitingForResponse ? 1 : 0),
-                        itemBuilder: (context, index) {
-                          if (index == messages.length) {
-                            return const _TypingIndicatorBubble();
-                          }
-                          return _MessageBubble(
-                            message: messages[index],
-                            formatTime: _formatTime,
-                          );
-                        },
-                      ),
+                child: ListView.builder(
+                  controller: _scrollController,
+                  padding: const EdgeInsets.all(16),
+                  itemCount: messages.length +
+                      (chatProvider.isWaitingForResponse ? 1 : 0),
+                  itemBuilder: (context, index) {
+                    if (index == messages.length) {
+                      return const _TypingIndicatorBubble();
+                    }
+                    return _MessageBubble(
+                      message: messages[index],
+                      formatTime: _formatTime,
+                    );
+                  },
+                ),
               ),
 
               // Message input
               Container(
-                padding: EdgeInsets.fromLTRB(
-                  16,
-                  16,
-                  16,
-                  16 + MediaQuery.paddingOf(context).bottom,
-                ),
+                padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
                   color: colorScheme.surface,
                   boxShadow: [
@@ -416,7 +377,7 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
                           child: TextField(
                             controller: _messageController,
                             decoration: InputDecoration(
-                              hintText: l.chatConversationMessageHint,
+                              hintText: 'Type a message...',
                               border: OutlineInputBorder(
                                 borderRadius: BorderRadius.circular(24),
                               ),
@@ -586,59 +547,6 @@ class _MessageBubble extends StatelessWidget {
             ),
         ],
       ),
-    );
-  }
-}
-
-class _EmptyState extends StatelessWidget {
-  final String? firstName;
-  final bool isSending;
-  final void Function(String) onQuestionTap;
-
-  const _EmptyState({
-    required this.firstName,
-    required this.isSending,
-    required this.onQuestionTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final l = AppLocalizations.of(context);
-    final name = (firstName ?? '').trim();
-    final greeting = name.isNotEmpty ? l.chatConversationGreetingWithName(name) : l.chatConversationGreetingNoName;
-
-    return ListView(
-      padding: const EdgeInsets.all(24),
-      children: [
-        const SizedBox(height: 32),
-        Text(
-          greeting,
-          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.bold,
-              ),
-          textAlign: TextAlign.center,
-        ),
-        const SizedBox(height: 32),
-        ...suggestedQuestions(context).map(
-          (q) => Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: OutlinedButton.icon(
-              onPressed: isSending ? null : () => onQuestionTap(q.text),
-              icon: Icon(q.icon, size: 20),
-              label: Text(q.text, textAlign: TextAlign.left),
-              style: OutlinedButton.styleFrom(
-                alignment: Alignment.centerLeft,
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                foregroundColor: colorScheme.onSurface,
-              ),
-            ),
-          ),
-        ),
-      ],
     );
   }
 }

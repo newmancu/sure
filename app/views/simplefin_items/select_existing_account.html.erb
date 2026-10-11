@@ -1,7 +1,7 @@
 <%# Modal: Link an existing manual account to a SimpleFIN account %>
 <%= turbo_frame_tag "modal" do %>
   <%= render DS::Dialog.new do |dialog| %>
-    <% dialog.with_header(title: t(".title", account_name: @account.name)) %>
+    <% dialog.with_header(title: "Link SimpleFIN account") %>
 
     <% dialog.with_body do %>
       <% if @available_simplefin_accounts.blank? %>
@@ -17,7 +17,7 @@
           <%= hidden_field_tag :account_id, @account.id %>
           <div class="space-y-2 max-h-64 overflow-auto">
             <% @available_simplefin_accounts.each do |sfa| %>
-              <label class="flex items-center gap-3 p-2 rounded border border-secondary hover:border-primary cursor-pointer">
+              <label class="flex items-center gap-3 p-2 rounded border border-surface-inset/50 hover:border-primary cursor-pointer">
                 <%= radio_button_tag :simplefin_account_id, sfa.id, false %>
                 <div class="flex flex-col">
                   <span class="text-sm text-primary font-medium"><%= sfa.name.presence || sfa.account_id %></span>
@@ -33,8 +33,8 @@
           </div>
 
           <div class="flex items-center justify-end gap-2">
-            <%= render DS::Button.new(text: t(".link_account"), variant: :primary, icon: "link-2", type: :submit) %>
-            <%= render DS::Link.new(text: t(".cancel"), variant: :secondary, href: accounts_path, data: { turbo_frame: "_top" }) %>
+            <%= render DS::Button.new(text: "Link", variant: :primary, icon: "link-2", type: :submit) %>
+            <%= render DS::Link.new(text: "Cancel", variant: :secondary, href: accounts_path, data: { turbo_frame: "_top" }) %>
           </div>
         <% end %>
       <% end %>

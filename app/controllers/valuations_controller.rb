@@ -7,12 +7,6 @@ class ValuationsController < ApplicationController
 
     @entry = @account.entries.build(entry_params.merge(currency: @account.currency))
 
-    if entry_params[:amount].blank?
-      @error_message = t("valuations.errors.amount_required")
-      render :new, status: :unprocessable_entity
-      return
-    end
-
     @reconciliation_dry_run = @entry.account.create_reconciliation(
       balance: entry_params[:amount],
       date: entry_params[:date],
@@ -27,13 +21,6 @@ class ValuationsController < ApplicationController
     return unless require_account_permission!(@entry.account)
 
     @account = @entry.account
-
-    if entry_params[:amount].blank?
-      @error_message = t("valuations.errors.amount_required")
-      render :show, status: :unprocessable_entity
-      return
-    end
-
     @entry.assign_attributes(entry_params.merge(currency: @account.currency))
 
     @reconciliation_dry_run = @entry.account.update_reconciliation(
@@ -57,8 +44,8 @@ class ValuationsController < ApplicationController
 
     if result.success?
       respond_to do |format|
-        format.html { redirect_back_or_to account_path(account), notice: t(".account_updated") }
-        format.turbo_stream { stream_redirect_back_or_to(account_path(account), notice: t(".account_updated")) }
+        format.html { redirect_back_or_to account_path(account), notice: "Account updated" }
+        format.turbo_stream { stream_redirect_back_or_to(account_path(account), notice: "Account updated") }
       end
     else
       @error_message = result.error_message
@@ -84,7 +71,7 @@ class ValuationsController < ApplicationController
       @entry.reload
 
       respond_to do |format|
-        format.html { redirect_back_or_to account_path(@entry.account), notice: t(".entry_updated") }
+        format.html { redirect_back_or_to account_path(@entry.account), notice: "Entry updated" }
         format.turbo_stream do
           render turbo_stream: [
             turbo_stream.replace(

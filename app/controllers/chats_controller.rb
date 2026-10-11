@@ -1,10 +1,7 @@
 class ChatsController < ApplicationController
   include ActionView::RecordIdentifier
-  include RequiresAiConsent
 
-  before_action :set_chat, only: [ :show, :edit, :update, :destroy, :retry ]
-  before_action :guard_create_ai_enabled, only: :create
-  before_action :guard_retry_ai_enabled, only: :retry
+  before_action :set_chat, only: [ :show, :edit, :update, :destroy ]
 
   def index
     @chat = nil # override application_controller default behavior of setting @chat to last viewed chat
@@ -16,9 +13,7 @@ class ChatsController < ApplicationController
   end
 
   def new
-    @chat = Current.user.chats.new(
-      title: t(".default_title", timestamp: Time.current.strftime("%Y-%m-%d %H:%M"))
-    )
+    @chat = Current.user.chats.new(title: "New chat #{Time.current.strftime("%Y-%m-%d %H:%M")}")
   end
 
   def create
@@ -34,7 +29,7 @@ class ChatsController < ApplicationController
     @chat.update!(chat_params)
 
     respond_to do |format|
-      format.html { redirect_back_or_to chat_path(@chat), notice: t(".success") }
+      format.html { redirect_back_or_to chat_path(@chat), notice: "Chat updated" }
       format.turbo_stream { render turbo_stream: turbo_stream.replace(dom_id(@chat, :title), partial: "chats/chat_title", locals: { chat: @chat }) }
     end
   end
@@ -43,12 +38,12 @@ class ChatsController < ApplicationController
     @chat.destroy
     clear_last_viewed_chat
 
-    redirect_to chats_path, notice: t(".notice")
+    redirect_to chats_path, notice: "Chat was successfully deleted"
   end
 
   def retry
     @chat.retry_last_message!
-    redirect_to chat_path(@chat)
+    redirect_to chat_path(@chat, thinking: true)
   end
 
   private
@@ -66,13 +61,5 @@ class ChatsController < ApplicationController
 
     def chat_params
       params.require(:chat).permit(:title, :content, :ai_model)
-    end
-
-    def guard_create_ai_enabled
-      redirect_unless_ai_enabled(chats_path)
-    end
-
-    def guard_retry_ai_enabled
-      redirect_unless_ai_enabled(chat_path(@chat))
     end
 end

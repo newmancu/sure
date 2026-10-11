@@ -15,7 +15,7 @@ on:
         type: string
   push:
     tags:
-      - 'v*'
+      - 'ios-v*'
 
 permissions:
   contents: read
@@ -23,14 +23,12 @@ permissions:
 jobs:
   build-and-upload:
     name: Build signed IPA and upload to TestFlight
-    runs-on: macos-26
+    runs-on: macos-latest
     timeout-minutes: 120
 
     steps:
       - name: Checkout
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-        with:
-          persist-credentials: false
+        uses: actions/checkout@v4
 
       - name: Check TestFlight credentials
         id: check_prereqs
@@ -84,16 +82,8 @@ jobs:
         run: |
           echo "Skipping TestFlight upload because required credentials are not configured."
 
-      - name: Select Xcode 26
-        if: ${{ steps.check_prereqs.outputs.enabled == 'true' }}
-        run: |
-          set -euo pipefail
-          sudo xcode-select -s /Applications/Xcode_26.4.app/Contents/Developer
-          xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version
-
       - name: Set up Flutter
-        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        uses: subosito/flutter-action@v2
         if: ${{ steps.check_prereqs.outputs.enabled == 'true' }}
         with:
           flutter-version: '3.32.4'
@@ -104,6 +94,10 @@ jobs:
         working-directory: mobile
         if: ${{ steps.check_prereqs.outputs.enabled == 'true' }}
         run: flutter pub get
+
+      - name: Copy app icon source
+        if: ${{ steps.check_prereqs.outputs.enabled == 'true' }}
+        run: cp public/android-chrome-512x512.png mobile/assets/icon/app_icon.png
 
       - name: Generate app icons
         working-directory: mobile
@@ -153,53 +147,14 @@ jobs:
         working-directory: mobile
         if: ${{ steps.check_prereqs.outputs.enabled == 'true' }}
         env:
-          APP_BUNDLE_ID: ${{ vars.IOS_APP_BUNDLE_ID || 'am.sure.mobile' }}
+          APP_BUNDLE_ID: am.sure.mobile
           IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
           PROFILE_NAME: ${{ secrets.IOS_PROVISIONING_PROFILE_NAME }}
           IOS_DISTRIBUTION_CERT_NAME: ${{ secrets.IOS_DISTRIBUTION_CERT_NAME }}
         run: |
           set -euo pipefail
 
-          IOS_VERSION="$(tr -d '[:space:]' < ../.sure-version | sed 's/-.*$//')"
-          IOS_BUILD_NUMBER="$(date -u +%Y%m%d%H%M)"
-          ARCHIVE_PATH="$RUNNER_TEMP/Runner.xcarchive"
-          EXPORT_PATH="$PWD/build/ios/ipa"
           EXPORT_PLIST="$RUNNER_TEMP/ExportOptions.plist"
-          python3 <<'PY'
-          import os
-          import re
-          from pathlib import Path
-
-          path = Path("ios/Runner.xcodeproj/project.pbxproj")
-          text = path.read_text()
-
-          app_bundle_id = os.environ["APP_BUNDLE_ID"]
-          team = os.environ["IOS_TEAM_ID"]
-          profile = os.environ["PROFILE_NAME"]
-          identity = os.environ["IOS_DISTRIBUTION_CERT_NAME"]
-
-          def patch_block(match):
-              block = match.group(0)
-              if "PRODUCT_BUNDLE_IDENTIFIER =" not in block:
-                  return block
-              block = re.sub(r'PRODUCT_BUNDLE_IDENTIFIER = .*?;', f'PRODUCT_BUNDLE_IDENTIFIER = {app_bundle_id};', block)
-              if "CODE_SIGN_STYLE = Manual;" not in block:
-                  block = block.replace("CURRENT_PROJECT_VERSION = \"$(FLUTTER_BUILD_NUMBER)\";", "CURRENT_PROJECT_VERSION = \"$(FLUTTER_BUILD_NUMBER)\";\n\t\t\t\tCODE_SIGN_STYLE = Manual;")
-              if '"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "Apple Distribution";' not in block:
-                  block = re.sub(r'DEVELOPMENT_TEAM = .*?;', f'"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "{identity}";\n\t\t\t\tDEVELOPMENT_TEAM = {team};', block, count=1)
-              else:
-                  block = re.sub(r'"CODE_SIGN_IDENTITY\[sdk=iphoneos\*\]" = ".*?";', f'"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "{identity}";', block)
-                  block = re.sub(r'DEVELOPMENT_TEAM = .*?;', f'DEVELOPMENT_TEAM = {team};', block)
-              if "PROVISIONING_PROFILE_SPECIFIER = " in block:
-                  block = re.sub(r'PROVISIONING_PROFILE_SPECIFIER = .*?;', f'PROVISIONING_PROFILE_SPECIFIER = "{profile}";', block)
-              else:
-                  block = block.replace(f'DEVELOPMENT_TEAM = {team};', f'DEVELOPMENT_TEAM = {team};\n\t\t\t\tPROVISIONING_PROFILE_SPECIFIER = "{profile}";')
-              return block
-
-          text = re.sub(r'isa = XCBuildConfiguration;\n\s+baseConfigurationReference = .*?;\n\s+buildSettings = \{.*?\n\s+name = (?:Debug|Release|Profile);\n\s+\};', patch_block, text, flags=re.S)
-          path.write_text(text)
-          PY
-
           cat > "$EXPORT_PLIST" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -226,37 +181,11 @@ jobs:
           </plist>
           EOF
 
-          if [ -z "$IOS_VERSION" ]; then
-            echo "::error::.sure-version is empty or unreadable"
-            exit 1
-          fi
-
-          echo "Using iOS version: $IOS_VERSION"
-          echo "Using iOS build number: $IOS_BUILD_NUMBER"
-
-          flutter build ios \
-            --release \
-            --no-codesign \
-            --build-name="$IOS_VERSION" \
-            --build-number="$IOS_BUILD_NUMBER"
-
-          xcodebuild \
-            -workspace ios/Runner.xcworkspace \
-            -scheme Runner \
-            -configuration Release \
-            -archivePath "$ARCHIVE_PATH" \
-            -destination 'generic/platform=iOS' \
-            MARKETING_VERSION="$IOS_VERSION" \
-            CURRENT_PROJECT_VERSION="$IOS_BUILD_NUMBER" \
-            archive
-
-          mkdir -p "$EXPORT_PATH"
-
-          xcodebuild \
-            -exportArchive \
-            -archivePath "$ARCHIVE_PATH" \
-            -exportPath "$EXPORT_PATH" \
-            -exportOptionsPlist "$EXPORT_PLIST"
+          CODE_SIGN_IDENTITY="${IOS_DISTRIBUTION_CERT_NAME}" \
+          CODE_SIGN_STYLE=Manual \
+          DEVELOPMENT_TEAM="${IOS_TEAM_ID}" \
+          PROVISIONING_PROFILE_SPECIFIER="${PROFILE_NAME}" \
+          flutter build ipa --release --export-options-plist="$EXPORT_PLIST"
 
       - name: Prepare TestFlight auth key
         id: testflight_key
@@ -266,11 +195,8 @@ jobs:
           APP_STORE_CONNECT_API_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
         run: |
           set -euo pipefail
-          KEY_DIR="$HOME/.appstoreconnect/private_keys"
-          mkdir -p "$KEY_DIR"
-          KEY_FILE="$KEY_DIR/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
+          KEY_FILE="$RUNNER_TEMP/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
           echo "$APP_STORE_CONNECT_API_KEY_BASE64" | base64 --decode > "$KEY_FILE"
-          chmod 600 "$KEY_FILE"
           echo "key-file=$KEY_FILE" >> "$GITHUB_OUTPUT"
 
       - name: Upload IPA to TestFlight
@@ -293,11 +219,12 @@ jobs:
             --file "$IPA_PATH" \
             --type ios \
             --apiKey "$APP_STORE_CONNECT_API_KEY_ID" \
-            --apiIssuer "$APP_STORE_CONNECT_API_ISSUER_ID"
+            --apiIssuer "$APP_STORE_CONNECT_API_ISSUER_ID" \
+            --apiPrivateKey "$APP_STORE_CONNECT_API_KEY_FILE"
 
       - name: Upload build artifact
         if: ${{ steps.check_prereqs.outputs.enabled == 'true' }}
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        uses: actions/upload-artifact@v4
         with:
           name: ios-ipa-testflight
           path: mobile/build/ios/ipa/*.ipa
@@ -305,14 +232,9 @@ jobs:
 
       - name: Cleanup signing keychain
         if: ${{ always() && steps.check_prereqs.outputs.enabled == 'true' }}
-        env:
-          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
         run: |
           set -euo pipefail
           KEYCHAIN_PATH="${{ steps.signing.outputs.keychain-path }}"
           if [ -n "$KEYCHAIN_PATH" ] && [ -f "$KEYCHAIN_PATH" ]; then
             security delete-keychain "$KEYCHAIN_PATH"
           fi
-
-          KEY_FILE="$HOME/.appstoreconnect/private_keys/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
-          rm -f "$KEY_FILE"

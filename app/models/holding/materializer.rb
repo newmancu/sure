@@ -1,11 +1,6 @@
 # "Materializes" holdings (similar to a DB materialized view, but done at the app level)
 # into a series of records we can easily query and join with other data.
 class Holding::Materializer
-  # Chunk upserts so the intermediate attribute-hash arrays
-  # (holdings_to_upsert_with_cost / _without_cost) don't sit in memory
-  # alongside the full @holdings collection. Reduces peak RSS during sync.
-  PERSIST_BATCH_SIZE = 2_000
-
   def initialize(account, strategy:, security_ids: nil)
     @account = account
     @strategy = strategy
@@ -27,17 +22,15 @@ class Holding::Materializer
     # securities are still needed to derive sane balance charts between sync snapshots.
     cleanup_shadowed_calculated_holdings
 
-    # Also remove non-provider rows on the provider's latest snapshot date for securities
-    # that appear in the provider snapshot. The provider snapshot is authoritative for
-    # those securities on that day, even when it is denominated in a different currency
-    # than the account or the reverse-calculated holdings.
+    # Also remove calculated rows on the provider's latest snapshot date when those
+    # securities are no longer present in the provider payload. This keeps "current"
+    # holdings/balance composition aligned with the provider snapshot while preserving
+    # older calculated history.
     cleanup_stale_calculated_rows_on_latest_provider_snapshot
 
-    # Clear the holdings association cache (without eagerly reloading) so subsequent
-    # Balance calculations rebuild from the freshly-persisted rows on demand. Using
-    # `reset` instead of `reload` avoids materializing the entire collection here when
-    # the next consumer (Balance::SyncCache) will iterate it anyway.
-    account.holdings.reset
+    # Reload holdings association to clear any cached stale data
+    # This ensures subsequent Balance calculations see the fresh holdings
+    account.holdings.reload
 
     @holdings
   end
@@ -57,16 +50,9 @@ class Holding::Materializer
       # Load existing holdings to check locked status and source priority
       existing_holdings_map = load_existing_holdings_map
 
-      # Separate holdings into categories based on cost_basis reconciliation.
-      # Use two buffers that flush at PERSIST_BATCH_SIZE so peak memory is bounded
-      # rather than accumulating the full upsert payload before writing.
-      holdings_buffer_to_upsert_with_cost = []
-      holdings_buffer_to_upsert_without_cost = []
-
-      flush = ->(buf) do
-        account.holdings.upsert_all(buf, unique_by: %i[account_id security_id date currency])
-        buf.clear
-      end
+      # Separate holdings into categories based on cost_basis reconciliation
+      holdings_to_upsert_with_cost = []
+      holdings_to_upsert_without_cost = []
 
       @holdings.each do |holding|
         key = holding_key(holding)
@@ -88,80 +74,40 @@ class Holding::Materializer
           incoming_source: "calculated"
         )
 
-        base_attrs = {
-          "date" => holding.date,
-          "currency" => holding.currency,
-          "qty" => holding.qty,
-          "price" => holding.price,
-          "amount" => holding.amount,
-          "security_id" => holding.security_id,
-          "account_id" => account.id,
-          "updated_at" => current_time
-        }
+        base_attrs = holding.attributes
+          .slice("date", "currency", "qty", "price", "amount", "security_id")
+          .merge("account_id" => account.id, "updated_at" => current_time)
 
         if existing&.cost_basis_locked?
           # For locked holdings, preserve ALL cost_basis fields
-          holdings_buffer_to_upsert_without_cost << base_attrs
-          flush.call(holdings_buffer_to_upsert_without_cost) if holdings_buffer_to_upsert_without_cost.size >= PERSIST_BATCH_SIZE
-        elsif holding.cost_basis_unknown && clearable_calculated_basis?(existing)
-          # The position took in a transfer, so it has no cost basis this app
-          # can know. A nil from the calculator alone would leave the previous
-          # calculated figure standing — which is the stale number reporting a
-          # transferred coin as if it had been bought on arrival. Cleared, so
-          # the read path falls through and answers "unknown" rather than
-          # confidently wrong. A manual or provider figure is somebody's
-          # assertion about what the position cost, and stays.
-          holdings_buffer_to_upsert_with_cost << base_attrs.merge(
-            "cost_basis" => nil,
-            "cost_basis_source" => nil
-          )
-          flush.call(holdings_buffer_to_upsert_with_cost) if holdings_buffer_to_upsert_with_cost.size >= PERSIST_BATCH_SIZE
+          holdings_to_upsert_without_cost << base_attrs
         elsif reconciled[:should_update] && reconciled[:cost_basis].present?
           # Update with new cost_basis and source
-          holdings_buffer_to_upsert_with_cost << base_attrs.merge(
+          holdings_to_upsert_with_cost << base_attrs.merge(
             "cost_basis" => reconciled[:cost_basis],
             "cost_basis_source" => reconciled[:cost_basis_source]
           )
-          flush.call(holdings_buffer_to_upsert_with_cost) if holdings_buffer_to_upsert_with_cost.size >= PERSIST_BATCH_SIZE
         else
-          # No new calculated value — fall back to the most recent provider
-          # cost_basis for this security on or before the holding date.
-          # Calculated/manual values outrank a provider carry-forward.
-          existing_source = existing&.cost_basis_source
-          preserve_existing = existing&.cost_basis.present? && %w[calculated manual].include?(existing_source)
-
-          if preserve_existing
-            holdings_buffer_to_upsert_without_cost << base_attrs
-            flush.call(holdings_buffer_to_upsert_without_cost) if holdings_buffer_to_upsert_without_cost.size >= PERSIST_BATCH_SIZE
-          else
-            carried = carry_forward_provider_cost_basis(holding)
-
-            if carried && (existing&.cost_basis != carried || existing_source != "provider")
-              holdings_buffer_to_upsert_with_cost << base_attrs.merge(
-                "cost_basis" => carried,
-                "cost_basis_source" => "provider"
-              )
-              flush.call(holdings_buffer_to_upsert_with_cost) if holdings_buffer_to_upsert_with_cost.size >= PERSIST_BATCH_SIZE
-            else
-              # No cost_basis to set, or existing is better - don't touch cost_basis fields
-              holdings_buffer_to_upsert_without_cost << base_attrs
-              flush.call(holdings_buffer_to_upsert_without_cost) if holdings_buffer_to_upsert_without_cost.size >= PERSIST_BATCH_SIZE
-            end
-          end
+          # No cost_basis to set, or existing is better - don't touch cost_basis fields
+          holdings_to_upsert_without_cost << base_attrs
         end
       end
 
-      # Flush remaining items in each buffer
-      flush.call(holdings_buffer_to_upsert_with_cost) unless holdings_buffer_to_upsert_with_cost.empty?
-      flush.call(holdings_buffer_to_upsert_without_cost) unless holdings_buffer_to_upsert_without_cost.empty?
-    end
+      # Upsert with cost_basis updates
+      if holdings_to_upsert_with_cost.any?
+        account.holdings.upsert_all(
+          holdings_to_upsert_with_cost,
+          unique_by: %i[account_id security_id date currency]
+        )
+      end
 
-    # Nothing to clear, or a figure somebody asserted rather than one this app
-    # worked out.
-    def clearable_calculated_basis?(existing)
-      return false if existing.nil? || existing.cost_basis.blank?
-
-      existing.cost_basis_source.nil? || existing.cost_basis_source == "calculated"
+      # Upsert without cost_basis (preserves existing)
+      if holdings_to_upsert_without_cost.any?
+        account.holdings.upsert_all(
+          holdings_to_upsert_without_cost,
+          unique_by: %i[account_id security_id date currency]
+        )
+      end
     end
 
     def load_existing_holdings_map
@@ -169,15 +115,10 @@ class Holding::Materializer
       # - Locked holdings (must preserve their cost_basis)
       # - Holdings with a source (need to check priority)
       # - Provider-sourced holdings (must not be overwritten)
-      # - Anything carrying a cost_basis at all, source or not. A row with a
-      #   figure and no source was invisible here, so the transfer clearing
-      #   below saw `existing` as nil and left the stale basis standing —
-      #   exactly the rows least able to justify the number they hold.
       account.holdings
         .where(cost_basis_locked: true)
         .or(account.holdings.where.not(cost_basis_source: nil))
         .or(account.holdings.where.not(account_provider_id: nil))
-        .or(account.holdings.where.not(cost_basis: nil))
         .index_by { |h| holding_key(h) }
     end
 
@@ -211,12 +152,17 @@ class Holding::Materializer
         .where(date: provider_snapshot_date)
         .distinct
         .pluck(:security_id)
-      return if provider_security_ids.empty?
 
-      deleted_count = account.holdings
-        .where(account_provider_id: nil, date: provider_snapshot_date, security_id: provider_security_ids)
-        .delete_all
+      scope = account.holdings
+        .where(account_provider_id: nil, date: provider_snapshot_date)
 
+      scope = if provider_security_ids.any?
+        scope.where.not(security_id: provider_security_ids)
+      else
+        scope
+      end
+
+      deleted_count = scope.delete_all
       Rails.logger.info("Cleaned up #{deleted_count} stale calculated holdings on latest provider snapshot date") if deleted_count > 0
     end
 
@@ -224,86 +170,8 @@ class Holding::Materializer
       [ holding.account_id || account.id, holding.security_id, holding.date, holding.currency ]
     end
 
-    # Returns the most recent provider-supplied cost_basis for the given holding's
-    # security on or before its date, converted to the holding's currency.
-    # Used to backfill calculated rows past the provider's last snapshot so
-    # reports keep showing trend data.
-    #
-    # Provider and calculated rows can be denominated in different currencies
-    # (e.g., IBKR reports USD holdings while the reverse calculator converts to
-    # the account's base currency). When they differ, the cost_basis is converted
-    # at the snapshot date — the same convention ReverseCalculator uses for trade
-    # prices — so the result is consistent with trade-derived cost_basis values.
-    def carry_forward_provider_cost_basis(holding)
-      snapshots = provider_cost_basis_snapshots[holding.security_id]
-      return nil if snapshots.blank?
-
-      result = nil
-      snapshots.each do |snap_date, cost_basis, snap_currency|
-        break if snap_date > holding.date
-        result = [ cost_basis, snap_currency, snap_date ]
-      end
-      return nil unless result
-
-      cost_basis, snap_currency, snap_date = result
-      cost_basis = split_adjusted_cost_basis(cost_basis, holding.security_id, snap_date, holding.date)
-      return cost_basis if snap_currency == holding.currency
-
-      Money.new(cost_basis, snap_currency).exchange_to(holding.currency, date: snap_date).amount
-    rescue Money::ConversionError
-      nil
-    end
-
-    # The snapshot's per-share cost, restated for the share count the holding
-    # is on.
-    #
-    # The figure carried forward is per share, and a split changes how many
-    # shares the same money bought: a $100 basis across a 2-for-1 split is $50
-    # a share afterwards, on twice as many shares, for the same $1,000 total.
-    # Carried across unchanged it doubled every position's recorded cost, and
-    # every gain and return computed from it, without anything looking wrong.
-    def split_adjusted_cost_basis(cost_basis, security_id, snap_date, holding_date)
-      factor = cumulative_split_factor(security_id, snap_date, holding_date)
-      return cost_basis if factor == 1
-
-      Security::Split.unscale(cost_basis, factor)
-    end
-
-    def cumulative_split_factor(security_id, from, to)
-      return Rational(1) if from.nil? || to.nil? || from >= to
-
-      splits_by_security[security_id].reduce(Rational(1)) do |factor, split|
-        next factor unless split.ex_date > from && split.ex_date <= to
-
-        factor * split.ratio
-      end
-    end
-
-    def splits_by_security
-      @splits_by_security ||= Security::Split
-        .where(security_id: @holdings.map(&:security_id).uniq)
-        .order(:ex_date)
-        .group_by(&:security_id)
-        .tap { |grouped| grouped.default = [] }
-    end
-
-    def provider_cost_basis_snapshots
-      @provider_cost_basis_snapshots ||= begin
-        ids = @holdings.map(&:security_id).uniq
-        account.holdings
-          .where.not(account_provider_id: nil)
-          .where.not(cost_basis: nil)
-          .where(security_id: ids)
-          .order(:date) # ascending required: carry_forward_provider_cost_basis scans and breaks on snap_date > holding.date
-          .pluck(:security_id, :currency, :date, :cost_basis)
-          .each_with_object(Hash.new { |h, k| h[k] = [] }) do |(security_id, currency, date, cost_basis), memo|
-            memo[security_id] << [ date, cost_basis, currency ]
-          end
-      end
-    end
-
     def purge_stale_holdings
-      portfolio_security_ids = account.trades.distinct.pluck(:security_id)
+      portfolio_security_ids = account.entries.trades.map { |entry| entry.entryable.security_id }.uniq
 
       # Never delete provider-sourced holdings - they're authoritative from the provider
       # If there are no securities in the portfolio, only delete non-provider holdings

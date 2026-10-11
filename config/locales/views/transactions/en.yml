@@ -1,43 +1,16 @@
 ---
 en:
   transactions:
-    bulk_updates:
-      new:
-        cancel: Cancel
-        category_label: Category
-        category_prompt: Select a category
-        date_label: Date
-        header_title: Edit transactions
-        merchant_label: Merchant
-        merchant_prompt: Select a merchant
-        name_label: Name
-        name_placeholder: Enter a name that will be applied to selected transactions
-        none: "(none)"
-        notes_label: Notes
-        notes_placeholder: Enter a note that will be applied to selected transactions
-        overview: Overview
-        save: Save
-        tags_label: Tags
-        transactions_section: Transactions
     unknown_name: Unknown transaction
     selection_bar:
       duplicate: Duplicate
       edit: Edit
-      selected: selected
     form:
-      details: Details
       account: Account
       account_prompt: Select an Account
       amount: Amount
       category: Category
-      category_label: Category
       category_prompt: Select a Category
-      category_search_placeholder: Search categories
-      create_category: 'Create "%{name}"'
-      create_category_error: Could not create category
-      create_as_subcategory: Add as a subcategory…
-      choose_parent: 'Create "%{name}" under:'
-      back_to_categories: Back
       date: Date
       description: Description
       description_placeholder: Describe transaction
@@ -47,38 +20,12 @@ en:
       none: (none)
       note_label: Notes
       note_placeholder: Enter a note
-      create_tag: Create
-      create_merchant: Create
-      create_merchant_error: Could not create merchant
-      merchant_search_placeholder: Search or create merchant
       submit: Add transaction
-      tag_search_placeholder: Search or create tag
       tags_label: Tags
       transfer: Transfer
-    create:
-      created: Transaction created
-    update:
-      updated: Transaction updated
     new:
       new_transaction: New transaction
-    transaction_category:
-      set_on_outflow: "The category belongs to the outgoing side of this transfer and can only be changed there"
     show:
-      category_set_on_hidden_outflow: "This is the incoming side of a transfer. Its category belongs to the outgoing side, on an account you cannot access, and can only be changed there."
-      category_set_on_outflow: "This is the incoming side of a transfer. Its category belongs to the outgoing side and can only be changed there, so budgets count it once."
-      keep_both: No, keep both
-      loan_payment: Loan Payment
-      mark_recurring: Mark as Recurring
-      create_bill: Create a bill
-      mark_recurring_subtitle: Track this as a recurring transaction. Amount variance is automatically calculated from past 6 months of similar transactions.
-      mark_recurring_title: Recurring Transaction
-      applied_to_title: Bills this paid
-      applied_to_detail: "%{amount} toward the bill due %{date}"
-      applied_to_unreviewed: Needs review
-      merge_duplicate: Yes, merge them
-      potential_duplicate_description: This pending transaction may be the same as the posted transaction below. If so, merge them to avoid double-counting.
-      potential_duplicate_title: Possible duplicate detected
-      transfer: Transfer
       account_label: Account
       amount: Amount
       category_label: Category
@@ -114,35 +61,6 @@ en:
       tab_transactions: Transactions
       tab_upcoming: Upcoming
       uncategorized: "(uncategorized)"
-      additional_details: "Additional details"
-      payee: "Payee"
-      description: "Description"
-      memo: "Memo"
-      original_description: "Original description"
-      payment_channel: "Payment channel"
-      transaction_code: "Transaction code"
-      provider_extras: "Provider extras"
-      plaid_payment_meta_label: "Payment meta · %{name}"
-      plaid_counterparty_label: "Counterparty %{index}"
-      # Provider field names. The set is open-ended — anything not listed falls
-      # back to a humanized form of the provider's own identifier.
-      provider_extra_fields:
-        by_order_of: "By order of"
-        confidence_level: "Confidence level"
-        entity_id: "Entity ID"
-        logo_url: "Logo URL"
-        name: "Name"
-        payee: "Payee"
-        payer: "Payer"
-        phone_number: "Phone number"
-        ppd_id: "PPD ID"
-        reason: "Reason"
-        reference_number: "Reference number"
-        type: "Type"
-        website: "Website"
-      transfer_or_debt_payment: "Transfer or Debt Payment?"
-      open_matcher: "Open matcher"
-      convert: "Convert"
     activity_labels:
       buy: Buy
       sell: Sell
@@ -162,16 +80,10 @@ en:
     mark_recurring_title: Recurring Transaction
     potential_duplicate_title: Possible duplicate detected
     potential_duplicate_description: This pending transaction may be the same as the posted transaction below. If so, merge them to avoid double-counting.
+    merge_duplicate: Yes, merge them
     keep_both: No, keep both
     split_parent_row:
       split_label: "Split"
-    transfer_match:
-      auto_matched: Auto-matched
-      auto_matched_short: A/M
-      confirm_match: Confirm match
-      payment_confirmed: Payment is confirmed
-      reject_match: Reject match
-      transfer_confirmed: Transfer is confirmed
     transaction:
       pending: Pending
       pending_tooltip: Pending transaction — may change when posted
@@ -210,17 +122,9 @@ en:
       edit_tags: Edit tags
       import: Import
     index:
-      title: "Transactions"
       transaction: transaction
       transactions: transactions
       import: Import
-      new_rule: "New rule"
-      edit_rules: "Edit rules"
-      edit_categories: "Edit categories"
-      edit_tags: "Edit tags"
-      edit_merchants: "Edit merchants"
-      edit_imports: "Edit imports"
-      new_transaction: "New transaction"
       categorize_button:
         one: "Categorize (1)"
         other: "Categorize (%{count})"
@@ -273,7 +177,6 @@ en:
         category: Category
         tag: Tag
         merchant: Merchant
-        ai: AI
     convert_to_trade:
       title: Convert to Security Trade
       description: Convert this transaction into a trade with security details
@@ -318,17 +221,6 @@ en:
         unexpected_error: "Unexpected error during conversion: %{error}"
     searches:
       filters:
-        account_filter:
-          filter_accounts: Filter accounts
-        category_filter:
-          filter_category: Filter category
-        date_filter:
-          start_date: "Start date"
-          end_date: "End date"
-        merchant_filter:
-          filter_merchants: Filter merchants
-        tag_filter:
-          filter_tags: Filter tags
         amount_filter:
           equal_to: Equal to
           greater_than: Greater than
@@ -342,13 +234,6 @@ en:
           transfer: Transfer
           confirmed: Confirmed
           pending: Pending
-          ai_current: AI
-          ai_history: AI history
-        ai_filter:
-          current: AI
-          current_description: Category is still the one assigned automatically (AI or Bayes).
-          history: AI history
-          history_description: Was auto-categorized, but the category has been changed since.
         type_filter:
           expense: Expense
           income: Income
@@ -374,8 +259,6 @@ en:
         less_than: less than
       form:
         toggle_selection_checkboxes: Toggle all checkboxes
-        search_placeholder: "Search transactions ..."
-        filter: "Filter"
     attachments:
       cannot_exceed: "Cannot exceed %{count} attachments per transaction"
       uploaded_one: "Attachment uploaded successfully"

@@ -17,10 +17,6 @@ class Provider::PlaidAdapter < Provider::Base
   # Register this adapter with the factory for ALL PlaidAccount instances
   Provider::Factory.register("PlaidAccount", self)
 
-  def self.connection_item_class
-    PlaidItem
-  end
-
   # Define which account types this provider supports (US region)
   def self.supported_account_types
     %w[Depository CreditCard Loan Investment]
@@ -38,7 +34,6 @@ class Provider::PlaidAdapter < Provider::Base
         name: "Plaid",
         description: "Connect to your US bank via Plaid",
         can_connect: true,
-        member_connectable: member_connectable?,
         new_account_path: ->(accountable_type, return_to) {
           Rails.application.routes.url_helpers.new_plaid_item_path(
             region: "us",
@@ -61,7 +56,6 @@ class Provider::PlaidAdapter < Provider::Base
         name: "Plaid (EU)",
         description: "Connect to your EU bank via Plaid",
         can_connect: true,
-        member_connectable: member_connectable?,
         new_account_path: ->(accountable_type, return_to) {
           Rails.application.routes.url_helpers.new_plaid_item_path(
             region: "eu",
@@ -86,6 +80,13 @@ class Provider::PlaidAdapter < Provider::Base
 
   # Configuration for Plaid US
   configure do
+    description <<~DESC
+      Setup instructions:
+      1. Visit the [Plaid Dashboard](https://dashboard.plaid.com/team/keys) to get your API credentials
+      2. Your Client ID and Secret Key are required to enable Plaid bank sync for US/CA banks
+      3. For production use, set environment to 'production', for testing use 'sandbox'
+    DESC
+
     field :client_id,
           label: "Client ID",
           required: false,

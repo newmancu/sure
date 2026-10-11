@@ -1,18 +1,17 @@
 name: Chart CI
 
 on:
-  workflow_dispatch:
   pull_request:
     paths:
       - 'charts/**'
-      - '.sure-version'
+      - 'config/initializers/version.rb'
       - '.github/workflows/chart-ci.yml'
   push:
     branches:
       - main
     paths:
       - 'charts/**'
-      - '.sure-version'
+      - 'config/initializers/version.rb'
       - '.github/workflows/chart-ci.yml'
 
 jobs:
@@ -21,24 +20,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-        with:
-          persist-credentials: false
+        uses: actions/checkout@v4
 
       - name: Check version alignment
         shell: bash
         run: |
           set -euo pipefail
 
-          RAILS_VERSION=$(cat .sure-version | tr -d '[:space:]')
+          RAILS_VERSION=$(grep -oP '"\K[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?' config/initializers/version.rb | head -n 1 || true)
           if [ -z "$RAILS_VERSION" ]; then
-            echo "::error::Could not read version from .sure-version"
+            echo "::error::Could not extract a version string from config/initializers/version.rb — ensure it contains a quoted semver like VERSION = \"1.2.3\""
             exit 1
           fi
           CHART_VERSION=$(sed -n 's/^version: //p' charts/sure/Chart.yaml | head -n 1)
           APP_VERSION=$(sed -n 's/^appVersion: "\{0,1\}\([^"]*\)"\{0,1\}/\1/p' charts/sure/Chart.yaml | head -n 1)
 
-          echo "App version (.sure-version):     $RAILS_VERSION"
+          echo "Rails version (version.rb):     $RAILS_VERSION"
           echo "Helm chart version (Chart.yaml): $CHART_VERSION"
           echo "Helm appVersion (Chart.yaml):    $APP_VERSION"
 
@@ -56,7 +53,7 @@ jobs:
 
           if [ "$ERRORS" -gt 0 ]; then
             echo ""
-            echo "To fix: ensure version in .sure-version matches"
+            echo "To fix: ensure version in config/initializers/version.rb matches"
             echo "both 'version' and 'appVersion' in charts/sure/Chart.yaml"
             exit 1
           fi
@@ -67,12 +64,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
-        with:
-          persist-credentials: false
+        uses: actions/checkout@v4
 
       - name: Install Helm
-        uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+        uses: azure/setup-helm@v4.3.1
 
       - name: Add chart dependencies repositories
         run: |

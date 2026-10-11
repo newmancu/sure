@@ -2,8 +2,6 @@ require "zip"
 require "csv"
 
 class Family::DataExporter
-  EXPORT_VERSION = 2
-
   def initialize(family)
     @family = family
   end
@@ -11,10 +9,6 @@ class Family::DataExporter
   def generate_export
     # Create a StringIO to hold the zip data in memory
     zip_data = Zip::OutputStream.write_buffer do |zipfile|
-      # Add export version marker for downstream tooling
-      zipfile.put_next_entry("version.txt")
-      zipfile.write generate_version_txt
-
       # Add accounts.csv
       zipfile.put_next_entry("accounts.csv")
       zipfile.write generate_accounts_csv
@@ -31,17 +25,9 @@ class Family::DataExporter
       zipfile.put_next_entry("categories.csv")
       zipfile.write generate_categories_csv
 
-      # Add merchants.csv
-      zipfile.put_next_entry("merchants.csv")
-      zipfile.write generate_merchants_csv
-
       # Add rules.csv
       zipfile.put_next_entry("rules.csv")
       zipfile.write generate_rules_csv
-
-      # Add attachment manifest metadata. Binary file payloads are not included.
-      zipfile.put_next_entry("attachments.json")
-      zipfile.write generate_attachments_manifest
 
       # Add all.ndjson
       zipfile.put_next_entry("all.ndjson")
@@ -54,11 +40,6 @@ class Family::DataExporter
   end
 
   private
-    def generate_version_txt
-      <<~TEXT
-        export_version: #{EXPORT_VERSION}
-      TEXT
-    end
 
     def generate_accounts_csv
       CSV.generate do |csv|
@@ -85,25 +66,22 @@ class Family::DataExporter
 
         # Only export transactions from accounts belonging to this family
         # Exclude split parents (export children instead)
-        exportable_transactions
+        @family.transactions
           .includes(:category, :tags, entry: :account)
+          .merge(Entry.excluding_split_parents)
           .find_each do |transaction|
             csv << [
-              transaction.entry.date&.iso8601,
+              transaction.entry.date.iso8601,
               transaction.entry.account.name,
               transaction.entry.amount.to_s,
               transaction.entry.name,
               transaction.category&.name,
-              transaction.tags.map { |tag| escape_legacy_tag_name(tag.name) }.join(","),
+              transaction.tags.pluck(:name).join(","),
               transaction.entry.notes,
               transaction.entry.currency
             ]
           end
       end
-    end
-
-    def escape_legacy_tag_name(name)
-      name.to_s.gsub(/[\\,|]/) { |char| "\\#{char}" }
     end
 
     def generate_trades_csv
@@ -115,7 +93,7 @@ class Family::DataExporter
           .includes(:security, entry: :account)
           .find_each do |trade|
             csv << [
-              trade.entry.date&.iso8601,
+              trade.entry.date.iso8601,
               trade.entry.account.name,
               trade.security.ticker,
               trade.qty.to_s,
@@ -143,22 +121,6 @@ class Family::DataExporter
       end
     end
 
-    def generate_merchants_csv
-      CSV.generate do |csv|
-        # Headers match MerchantImport's expected columns so the export round-trips
-        csv << [ "name", "color", "website_url" ]
-
-        # Only export family merchants belonging to this family
-        @family.merchants.find_each do |merchant|
-          csv << [
-            merchant.name,
-            merchant.color,
-            merchant.website_url
-          ]
-        end
-      end
-    end
-
     def generate_rules_csv
       CSV.generate do |csv|
         csv << [ "name", "resource_type", "active", "effective_date", "conditions", "actions" ]
@@ -177,69 +139,6 @@ class Family::DataExporter
       end
     end
 
-    def generate_attachments_manifest
-      {
-        version: 1,
-        binary_included: false,
-        attachments: attachment_manifest_items
-      }.to_json
-    end
-
-    def attachment_manifest_items
-      (transaction_attachment_manifest_items + family_document_attachment_manifest_items)
-        .sort_by { |item| [ item[:record_type], item[:record_id].to_s, item[:filename].to_s, item[:id].to_s ] }
-    end
-
-    def transaction_attachment_manifest_items
-      @family.transactions
-        .with_attached_attachments
-        .includes(:attachments_attachments, entry: :account)
-        .flat_map do |transaction|
-          transaction.attachments.map do |attachment|
-            attachment_manifest_item(
-              attachment,
-              record_type: "Transaction",
-              record_id: transaction.id,
-              extra: {
-                entry_id: transaction.entry.id,
-                account_id: transaction.entry.account_id
-              }
-            )
-          end
-        end
-    end
-
-    def family_document_attachment_manifest_items
-      @family.family_documents.with_attached_file.filter_map do |document|
-        next unless document.file.attached?
-
-        attachment_manifest_item(
-          document.file.attachment,
-          record_type: "FamilyDocument",
-          record_id: document.id,
-          extra: {
-            status: document.status
-          }
-        )
-      end
-    end
-
-    def attachment_manifest_item(attachment, record_type:, record_id:, extra: {})
-      blob = attachment.blob
-      {
-        id: attachment.id,
-        record_type: record_type,
-        record_id: record_id,
-        name: attachment.name,
-        filename: blob.filename.to_s,
-        content_type: blob.content_type,
-        byte_size: blob.byte_size,
-        checksum: blob.checksum,
-        binary_included: false,
-        created_at: attachment.created_at
-      }.merge(extra)
-    end
-
     def generate_ndjson
       lines = []
 
@@ -252,39 +151,6 @@ class Family::DataExporter
               accountable: {}
             }
           )
-        }.to_json
-      end
-
-      Balance.joins(:account)
-        .where(accounts: { family_id: @family.id })
-        .chronological
-        .each do |balance|
-        lines << {
-          type: "Balance",
-          data: {
-            id: balance.id,
-            account_id: balance.account_id,
-            date: balance.date,
-            balance: balance.balance,
-            currency: balance.currency,
-            cash_balance: balance.cash_balance,
-            start_cash_balance: balance.start_cash_balance,
-            start_non_cash_balance: balance.start_non_cash_balance,
-            cash_inflows: balance.cash_inflows,
-            cash_outflows: balance.cash_outflows,
-            non_cash_inflows: balance.non_cash_inflows,
-            non_cash_outflows: balance.non_cash_outflows,
-            net_market_flows: balance.net_market_flows,
-            cash_adjustments: balance.cash_adjustments,
-            non_cash_adjustments: balance.non_cash_adjustments,
-            flows_factor: balance.flows_factor,
-            start_balance: balance.start_balance,
-            end_cash_balance: balance.end_cash_balance,
-            end_non_cash_balance: balance.end_non_cash_balance,
-            end_balance: balance.end_balance,
-            created_at: balance.created_at,
-            updated_at: balance.updated_at
-          }
         }.to_json
       end
 
@@ -312,141 +178,26 @@ class Family::DataExporter
         }.to_json
       end
 
-      # Export provider-assigned merchants (auto-detected by bank sync/AI enrichment)
-      # referenced by this family's transactions and recurring transactions. These
-      # are shared across every family on the instance, so only the ones actually
-      # in use here are included -- see #3113. ProviderMerchant does not support
-      # color, so none is exported for it.
-      referenced_provider_merchants.each do |merchant|
-        lines << {
-          type: "ProviderMerchant",
-          data: {
-            id: merchant.id,
-            name: merchant.name,
-            source: merchant.source,
-            provider_merchant_id: merchant.provider_merchant_id,
-            logo_url: merchant.logo_url,
-            website_url: merchant.website_url,
-            created_at: merchant.created_at,
-            updated_at: merchant.updated_at
-          }
-        }.to_json
-      end
-
-      # Export recurring transactions after accounts and merchants so import can remap dependencies.
-      @family.recurring_transactions.includes(:account, :merchant).find_each do |recurring_transaction|
-        lines << {
-          type: "RecurringTransaction",
-          data: serialize_recurring_transaction_for_export(recurring_transaction)
-        }.to_json
-      end
-
-      # The Bills subsystem hangs off those series. Rules and occurrences need
-      # only the series; allocations, price changes and rejections also point
-      # at transactions, so the importer replays them after transactions land.
-      RecurrenceRule.joins(:recurring_transaction)
-                    .where(recurring_transactions: { family_id: @family.id })
-                    .find_each do |rule|
-        lines << { type: "RecurrenceRule", data: serialize_recurrence_rule_for_export(rule) }.to_json
-      end
-
-      @family.recurring_occurrences.find_each do |occurrence|
-        lines << {
-          type: "RecurringOccurrence",
-          data: serialize_recurring_occurrence_for_export(occurrence)
-        }.to_json
-      end
-
-      RecurringAllocation.joins(:recurring_occurrence)
-                         .where(recurring_occurrences: { family_id: @family.id })
-                         .includes(:entry)
-                         .find_each do |allocation|
-        lines << {
-          type: "RecurringAllocation",
-          data: serialize_recurring_allocation_for_export(allocation)
-        }.to_json
-      end
-
-      RecurringPriceChange.joins(:recurring_transaction)
-                          .where(recurring_transactions: { family_id: @family.id })
-                          .includes(:entry)
-                          .find_each do |change|
-        lines << {
-          type: "RecurringPriceChange",
-          data: serialize_recurring_price_change_for_export(change)
-        }.to_json
-      end
-
-      RecurringMatchRejection.joins(:recurring_transaction)
-                             .where(recurring_transactions: { family_id: @family.id })
-                             .includes(:entry)
-                             .find_each do |rejection|
-        lines << {
-          type: "RecurringMatchRejection",
-          data: serialize_recurring_match_rejection_for_export(rejection)
-        }.to_json
-      end
-
-      ndjson_exportable_transactions.includes(
-        :category,
-        :merchant,
-        :tags,
-        entry: [
-          :account,
-          { child_entries: { entryable: :tags } }
-        ]
-      ).find_each do |transaction|
-        transaction_data = {
-          id: transaction.id,
-          entry_id: transaction.entry.id,
-          account_id: transaction.entry.account_id,
-          date: transaction.entry.date,
-          amount: transaction.entry.amount,
-          currency: transaction.entry.currency,
-          name: transaction.entry.name,
-          notes: transaction.entry.notes,
-          excluded: transaction.entry.excluded,
-          category_id: transaction.category_id,
-          merchant_id: transaction.merchant_id,
-          tag_ids: transaction.tag_ids,
-          kind: transaction.kind,
-          created_at: transaction.created_at,
-          updated_at: transaction.updated_at
-        }
-        split_lines = serialize_split_lines_for_export(transaction.entry)
-        transaction_data[:split_lines] = split_lines if split_lines.any?
-
+      # Export transactions with full data (exclude split parents, export children instead)
+      @family.transactions.includes(:category, :merchant, :tags, entry: :account).merge(Entry.excluding_split_parents).find_each do |transaction|
         lines << {
           type: "Transaction",
-          data: transaction_data
-        }.to_json
-      end
-
-      # Export transfer decisions after transactions so import can remap both sides.
-      family_transfers.find_each do |transfer|
-        lines << {
-          type: "Transfer",
           data: {
-            id: transfer.id,
-            inflow_transaction_id: transfer.inflow_transaction_id,
-            outflow_transaction_id: transfer.outflow_transaction_id,
-            status: transfer.status,
-            notes: transfer.notes,
-            created_at: transfer.created_at,
-            updated_at: transfer.updated_at
-          }
-        }.to_json
-      end
-
-      family_rejected_transfers.find_each do |rejected_transfer|
-        lines << {
-          type: "RejectedTransfer",
-          data: {
-            id: rejected_transfer.id,
-            inflow_transaction_id: rejected_transfer.inflow_transaction_id,
-            outflow_transaction_id: rejected_transfer.outflow_transaction_id,
-            created_at: rejected_transfer.created_at,
-            updated_at: rejected_transfer.updated_at
+            id: transaction.id,
+            entry_id: transaction.entry.id,
+            account_id: transaction.entry.account_id,
+            date: transaction.entry.date,
+            amount: transaction.entry.amount,
+            currency: transaction.entry.currency,
+            name: transaction.entry.name,
+            notes: transaction.entry.notes,
+            excluded: transaction.entry.excluded,
+            category_id: transaction.category_id,
+            merchant_id: transaction.merchant_id,
+            tag_ids: transaction.tag_ids,
+            kind: transaction.kind,
+            created_at: transaction.created_at,
+            updated_at: transaction.updated_at
           }
         }.to_json
       end
@@ -461,8 +212,6 @@ class Family::DataExporter
             account_id: trade.entry.account_id,
             security_id: trade.security_id,
             ticker: trade.security.ticker,
-            security_name: trade.security.name,
-            exchange_operating_mic: trade.security.exchange_operating_mic,
             date: trade.entry.date,
             qty: trade.qty,
             price: trade.price,
@@ -470,35 +219,6 @@ class Family::DataExporter
             currency: trade.currency,
             created_at: trade.created_at,
             updated_at: trade.updated_at
-          }
-        }.to_json
-      end
-
-      # Export holding snapshots for backup and portfolio verification.
-      @family.holdings.includes(:account, :security).find_each do |holding|
-        lines << {
-          type: "Holding",
-          data: {
-            id: holding.id,
-            account_id: holding.account_id,
-            security_id: holding.security_id,
-            ticker: holding.security.ticker,
-            security_name: holding.security.name,
-            exchange_operating_mic: holding.security.exchange_operating_mic,
-            exchange_mic: holding.security.exchange_mic,
-            exchange_acronym: holding.security.exchange_acronym,
-            country_code: holding.security.country_code,
-            kind: holding.security.kind,
-            website_url: holding.security.website_url,
-            date: holding.date,
-            qty: holding.qty,
-            price: holding.price,
-            amount: holding.amount,
-            currency: holding.currency,
-            cost_basis: holding.cost_basis,
-            cost_basis_source: holding.cost_basis_source,
-            cost_basis_locked: holding.cost_basis_locked,
-            security_locked: holding.security_locked
           }
         }.to_json
       end
@@ -515,7 +235,6 @@ class Family::DataExporter
             amount: entry.amount,
             currency: entry.currency,
             name: entry.name,
-            kind: entry.entryable.kind,
             created_at: entry.created_at,
             updated_at: entry.updated_at
           }
@@ -550,205 +269,8 @@ class Family::DataExporter
       lines.join("\n")
     end
 
-    def exportable_transactions
-      @family.transactions.merge(Entry.excluding_split_parents)
-    end
-
-    def ndjson_exportable_transactions
-      @family.transactions.joins(:entry).where(entries: { parent_entry_id: nil })
-    end
-
-    def serialize_split_lines_for_export(parent_entry)
-      child_entries = split_child_entries_for_export(parent_entry)
-      return [] if child_entries.empty?
-
-      child_entries.map do |child_entry|
-        transaction = child_entry.entryable
-        {
-          id: transaction.id,
-          entry_id: child_entry.id,
-          amount: child_entry.amount,
-          currency: child_entry.currency,
-          name: child_entry.name,
-          notes: child_entry.notes,
-          excluded: child_entry.excluded,
-          category_id: transaction.category_id,
-          merchant_id: transaction.merchant_id,
-          tag_ids: transaction.tag_ids,
-          kind: transaction.kind,
-          created_at: transaction.created_at,
-          updated_at: transaction.updated_at
-        }
-      end
-    end
-
-    def split_child_entries_for_export(parent_entry)
-      if parent_entry.association(:child_entries).loaded?
-        parent_entry.child_entries.sort_by { |entry| [ entry.created_at, entry.id ] }
-      else
-        parent_entry.child_entries.order(:created_at, :id).to_a
-      end
-    end
-
-    def referenced_provider_merchants
-      @referenced_provider_merchants ||= ProviderMerchant.where(id: referenced_merchant_ids).to_a
-    end
-
-    def referenced_merchant_ids
-      transaction_ids = @family.transactions.where.not(merchant_id: nil).distinct.pluck(:merchant_id)
-      recurring_ids = @family.recurring_transactions.where.not(merchant_id: nil).distinct.pluck(:merchant_id)
-      (transaction_ids + recurring_ids).uniq
-    end
-
-    def family_transaction_ids
-      @family_transaction_ids ||= exportable_transactions.select(:id)
-    end
-
-    def family_transfers
-      Transfer.where(
-        inflow_transaction_id: family_transaction_ids,
-        outflow_transaction_id: family_transaction_ids
-      )
-    end
-
-    def family_rejected_transfers
-      RejectedTransfer.where(
-        inflow_transaction_id: family_transaction_ids,
-        outflow_transaction_id: family_transaction_ids
-      )
-    end
-
-    def serialize_recurring_transaction_for_export(recurring_transaction)
-      {
-        id: recurring_transaction.id,
-        account_id: recurring_transaction.account_id,
-        merchant_id: recurring_transaction.merchant_id,
-        amount: recurring_transaction.amount,
-        currency: recurring_transaction.currency,
-        expected_day_of_month: recurring_transaction.expected_day_of_month,
-        last_occurrence_date: recurring_transaction.last_occurrence_date,
-        next_expected_date: recurring_transaction.next_expected_date,
-        status: recurring_transaction.status,
-        occurrence_count: recurring_transaction.occurrence_count,
-        name: recurring_transaction.name,
-        manual: recurring_transaction.manual,
-        payment_url: recurring_transaction.payment_url,
-        autopay: recurring_transaction.autopay,
-        notes: recurring_transaction.notes,
-        expected_amount_min: recurring_transaction.expected_amount_min,
-        expected_amount_max: recurring_transaction.expected_amount_max,
-        expected_amount_avg: recurring_transaction.expected_amount_avg,
-        # Bills subsystem. Without these a restored bill keeps its name and
-        # amount but loses what kind of obligation it is, what it costs to
-        # match, and every schedule detail beyond the day of the month.
-        bill_type: recurring_transaction.bill_type,
-        category_id: recurring_transaction.category_id,
-        amount_strategy: recurring_transaction.amount_strategy,
-        amount_tolerance_pct: recurring_transaction.amount_tolerance_pct,
-        notify_days_before: recurring_transaction.notify_days_before,
-        upcoming_window_days: recurring_transaction.upcoming_window_days,
-        overdue_grace_days: recurring_transaction.overdue_grace_days,
-        match_days_early: recurring_transaction.match_days_early,
-        match_days_late: recurring_transaction.match_days_late,
-        renews_on: recurring_transaction.renews_on,
-        trial_ends_on: recurring_transaction.trial_ends_on,
-        cancelled_on: recurring_transaction.cancelled_on,
-        anchor_date: recurring_transaction.anchor_date,
-        end_mode: recurring_transaction.end_mode,
-        end_on: recurring_transaction.end_on,
-        end_after_count: recurring_transaction.end_after_count,
-        weekend_adjust: recurring_transaction.weekend_adjust,
-        holiday_calendar: recurring_transaction.holiday_calendar,
-        matcher_hints: recurring_transaction.matcher_hints,
-        dedup_scope: recurring_transaction.dedup_scope,
-        replaced_by_id: recurring_transaction.replaced_by_id,
-        created_at: recurring_transaction.created_at,
-        updated_at: recurring_transaction.updated_at
-      }
-    end
-
-    def serialize_recurrence_rule_for_export(rule)
-      {
-        id: rule.id,
-        recurring_transaction_id: rule.recurring_transaction_id,
-        frequency: rule.frequency,
-        interval: rule.interval,
-        day_of_month: rule.day_of_month,
-        weekday: rule.weekday,
-        weekday_ordinal: rule.weekday_ordinal,
-        month_of_year: rule.month_of_year,
-        position: rule.position
-      }
-    end
-
-    def serialize_recurring_occurrence_for_export(occurrence)
-      {
-        id: occurrence.id,
-        recurring_transaction_id: occurrence.recurring_transaction_id,
-        original_due_on: occurrence.original_due_on,
-        due_on: occurrence.due_on,
-        currency: occurrence.currency,
-        expected_amount: occurrence.expected_amount,
-        status: occurrence.status,
-        snoozed_until: occurrence.snoozed_until,
-        closed_at: occurrence.closed_at,
-        closed_source: occurrence.closed_source,
-        notes: occurrence.notes
-      }
-    end
-
-    # Allocations point at an Entry, but the importer only carries a
-    # Transaction id map, so the link travels as the transaction that owns the
-    # entry. An allocation whose entry cannot be resolved still imports: its
-    # amount is the payment record, and a null entry is a shape the model
-    # supports by design.
-    def serialize_recurring_allocation_for_export(allocation)
-      entry = allocation.entry
-
-      {
-        id: allocation.id,
-        recurring_occurrence_id: allocation.recurring_occurrence_id,
-        transaction_id: entry&.entryable_type == "Transaction" ? entry.entryable_id : nil,
-        allocated_amount: allocation.allocated_amount,
-        currency: allocation.currency,
-        source_amount: allocation.source_amount,
-        source_currency: allocation.source_currency,
-        state: allocation.state,
-        source: allocation.source,
-        match_confidence: allocation.match_confidence,
-        match_signals: allocation.match_signals,
-        paid_on: allocation.paid_on
-      }
-    end
-
-    def serialize_recurring_price_change_for_export(change)
-      entry = change.entry
-
-      {
-        id: change.id,
-        recurring_transaction_id: change.recurring_transaction_id,
-        effective_on: change.effective_on,
-        previous_amount: change.previous_amount,
-        new_amount: change.new_amount,
-        currency: change.currency,
-        source: change.source,
-        transaction_id: entry&.entryable_type == "Transaction" ? entry.entryable_id : nil
-      }
-    end
-
-    def serialize_recurring_match_rejection_for_export(rejection)
-      entry = rejection.entry
-
-      {
-        id: rejection.id,
-        recurring_transaction_id: rejection.recurring_transaction_id,
-        transaction_id: entry&.entryable_type == "Transaction" ? entry.entryable_id : nil
-      }
-    end
-
     def serialize_rule_for_export(rule)
       {
-        id: rule.id,
         name: rule.name,
         resource_type: rule.resource_type,
         active: rule.active,
@@ -759,14 +281,11 @@ class Family::DataExporter
     end
 
     def serialize_condition(condition)
-      operand = resolve_condition_operand(condition)
       data = {
         condition_type: condition.condition_type,
         operator: condition.operator,
-        value: operand[:value]
+        value: resolve_condition_value(condition)
       }
-      value_ref = operand[:value_ref]
-      data[:value_ref] = value_ref if value_ref.present?
 
       if condition.compound? && condition.sub_conditions.any?
         data[:sub_conditions] = condition.sub_conditions.map { |sub| serialize_condition(sub) }
@@ -776,122 +295,52 @@ class Family::DataExporter
     end
 
     def serialize_action(action)
-      operand = resolve_action_operand(action)
-      data = {
+      {
         action_type: action.action_type,
-        value: operand[:value]
+        value: resolve_action_value(action)
       }
-      value_ref = operand[:value_ref]
-      data[:value_ref] = value_ref if value_ref.present?
-
-      data
     end
 
-    def resolve_condition_operand(condition)
-      return rule_operand(condition.value) unless condition.value.present?
+    def resolve_condition_value(condition)
+      return condition.value unless condition.value.present?
 
       # Map category UUIDs to names for portability
-      if condition.condition_type == "transaction_category"
-        return rule_operand(condition.value, type: "Category", relation: :categories)
+      if condition.condition_type == "transaction_category" && condition.value.present?
+        category = @family.categories.find_by(id: condition.value)
+        return category&.name || condition.value
       end
 
       # Map merchant UUIDs to names for portability
-      if condition.condition_type == "transaction_merchant"
-        return rule_operand(condition.value, type: "Merchant", relation: :merchants)
+      if condition.condition_type == "transaction_merchant" && condition.value.present?
+        merchant = @family.merchants.find_by(id: condition.value)
+        return merchant&.name || condition.value
+      end
+
+      condition.value
+    end
+
+    def resolve_action_value(action)
+      return action.value unless action.value.present?
+
+      # Map category UUIDs to names for portability
+      if action.action_type == "set_transaction_category" && action.value.present?
+        category = @family.categories.find_by(id: action.value) || @family.categories.find_by(name: action.value)
+        return category&.name || action.value
+      end
+
+      # Map merchant UUIDs to names for portability
+      if action.action_type == "set_transaction_merchant" && action.value.present?
+        merchant = @family.merchants.find_by(id: action.value) || @family.merchants.find_by(name: action.value)
+        return merchant&.name || action.value
       end
 
       # Map tag UUIDs to names for portability
-      if condition.condition_type == "transaction_tag"
-        return rule_operand(condition.value, type: "Tag", relation: :tags)
+      if action.action_type == "set_transaction_tags" && action.value.present?
+        tag = @family.tags.find_by(id: action.value) || @family.tags.find_by(name: action.value)
+        return tag&.name || action.value
       end
 
-      rule_operand(condition.value)
-    end
-
-    def resolve_action_operand(action)
-      return rule_operand(action.value) unless action.value.present?
-
-      # Map category UUIDs to names for portability
-      if action.action_type == "set_transaction_category"
-        return rule_operand(action.value, type: "Category", relation: :categories, fallback_to_name: true)
-      end
-
-      # Map merchant UUIDs to names for portability
-      if action.action_type == "set_transaction_merchant"
-        return rule_operand(action.value, type: "Merchant", relation: :merchants, fallback_to_name: true)
-      end
-
-      # Map tag UUIDs to names for portability. Stored as a comma-separated
-      # list of tag ids (see Rule::Action#value=), so each id is resolved
-      # independently rather than treating the whole string as one operand.
-      if action.action_type == "set_transaction_tags"
-        return resolve_multi_tag_operand(action.value)
-      end
-
-      rule_operand(action.value)
-    end
-
-    def resolve_multi_tag_operand(value)
-      ids = value.to_s.split(",")
-      records = ids.map { |id| resolve_rule_operand_record(:tags, id, fallback_to_name: true) }
-      names = records.each_with_index.map { |record, i| record&.name || ids[i] }
-      refs = records.compact.map { |record| rule_value_ref("Tag", record) }
-
-      {
-        value: Rule::Action.encode_multi_value_names(names),
-        # A single tag keeps the pre-existing scalar value_ref shape for
-        # backward compatibility with older exports; only genuinely
-        # multi-tag actions use an array. Keyed off `ids.size` (not
-        # `refs.size`) so a partially-orphaned multi-tag action (one tag
-        # since deleted) still round-trips as an array instead of silently
-        # dropping the surviving tag's name on import.
-        value_ref: ids.size <= 1 ? refs.first : refs
-      }
-    end
-
-    def rule_operand(value, type: nil, relation: nil, fallback_to_name: false)
-      record = relation && resolve_rule_operand_record(relation, value, fallback_to_name: fallback_to_name)
-
-      {
-        value: record&.name || value,
-        value_ref: record ? rule_value_ref(type, record) : nil
-      }
-    end
-
-    def resolve_rule_operand_record(relation_key, value, fallback_to_name:)
-      return operand_records_by_id(relation_key)[value.to_s.downcase] if uuid_like?(value)
-
-      operand_records_by_name(relation_key)[value] if fallback_to_name
-    end
-
-    def operand_records(relation_key)
-      @operand_records ||= {}
-      # `.reload` bypasses any pre-existing in-memory association cache on
-      # `@family` (e.g. a prior `create!` through the same association) so
-      # destroyed records aren't served stale from that cache.
-      @operand_records[relation_key] ||= @family.public_send(relation_key).reload.to_a
-    end
-
-    def operand_records_by_id(relation_key)
-      @operand_records_by_id ||= {}
-      @operand_records_by_id[relation_key] ||= operand_records(relation_key).index_by(&:id)
-    end
-
-    def operand_records_by_name(relation_key)
-      @operand_records_by_name ||= {}
-      @operand_records_by_name[relation_key] ||= operand_records(relation_key).index_by(&:name)
-    end
-
-    def rule_value_ref(type, record)
-      {
-        type: type,
-        id: record.id,
-        name: record.name
-      }
-    end
-
-    def uuid_like?(value)
-      UuidFormat.valid?(value)
+      action.value
     end
 
     def serialize_conditions_for_csv(conditions)

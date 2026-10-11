@@ -4,15 +4,10 @@ class TransactionCategoriesController < ApplicationController
   def update
     @entry = Current.accessible_entries.transactions.find(params[:transaction_id])
     return unless require_account_permission!(@entry.account, :annotate, redirect_path: transaction_path(@entry))
-    # The inflow leg of a matched transfer shows its outflow's category
-    # read-only (Transaction#category_set_on_transfer_outflow?).
-    return head(:unprocessable_entity) if @entry.transaction.category_set_on_transfer_outflow?
 
     @entry.update!(entry_params)
 
     transaction = @entry.transaction
-
-    transaction.record_category_usage!
 
     if needs_rule_notification?(transaction)
       flash[:cta] = {
@@ -26,7 +21,6 @@ class TransactionCategoriesController < ApplicationController
     transaction.lock_saved_attributes!
     @entry.lock_saved_attributes!
 
-    in_split_group = helpers.in_split_group?(@entry, params[:grouped])
     respond_to do |format|
       format.html { redirect_back_or_to transaction_path(@entry) }
       format.turbo_stream do
@@ -34,12 +28,12 @@ class TransactionCategoriesController < ApplicationController
           turbo_stream.replace(
             dom_id(transaction, "category_menu_mobile"),
             partial: "transactions/transaction_category",
-            locals: { transaction: transaction, variant: "mobile", in_split_group: in_split_group }
+            locals: { transaction: transaction, variant: "mobile" }
           ),
           turbo_stream.replace(
             dom_id(transaction, "category_menu_desktop"),
             partial: "transactions/transaction_category",
-            locals: { transaction: transaction, variant: "desktop", in_split_group: in_split_group }
+            locals: { transaction: transaction, variant: "desktop" }
           ),
           turbo_stream.replace(
             "category_name_mobile_#{transaction.id}",
@@ -59,7 +53,6 @@ class TransactionCategoriesController < ApplicationController
 
     def needs_rule_notification?(transaction)
       return false if Current.user.rule_prompts_disabled
-      return false if transaction.category_id.blank?
 
       if Current.user.rule_prompt_dismissed_at.present?
         time_since_last_rule_prompt = Time.current - Current.user.rule_prompt_dismissed_at

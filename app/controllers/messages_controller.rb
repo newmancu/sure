@@ -1,47 +1,16 @@
 class MessagesController < ApplicationController
-  include RequiresAiConsent
-  include FeatureGuardable
+  guard_feature unless: -> { Current.user.ai_enabled? }
 
   before_action :set_chat
-  before_action :guard_ai_enabled, only: :create
-  # report_timeout is polled by the watchdog JS, which expects a plain status
-  # code rather than an HTML redirect, so it keeps the old 403 guard instead
-  # of the consent-redirect used by :create.
-  guard_feature unless: -> { Current.user.ai_enabled? }, only: :report_timeout
 
   def create
-    @message = UserMessage.new(
+    @message = UserMessage.create!(
       chat: @chat,
       content: message_params[:content],
       ai_model: message_params[:ai_model].presence || Chat.default_model
     )
 
-    if @message.save
-      redirect_to chat_path(@chat, thinking: true)
-    else
-      redirect_to chat_path(@chat), alert: @message.errors.full_messages.to_sentence
-    end
-  rescue ActiveRecord::InvalidForeignKey
-    redirect_to chats_path, alert: t(".chat_not_found")
-  end
-
-  # Called by the chat watchdog when an assistant "Thinking…" bubble has waited
-  # too long for a response that never arrived. Idempotent and scoped to the
-  # current user's chat.
-  def report_timeout
-    message = @chat.messages.find(params[:id])
-
-    if @chat.handle_undelivered_response!(message)
-      head :ok
-    else
-      # Declined — the message has not waited past the server's own floor yet,
-      # which usually means the client's clock runs ahead of ours and it reported
-      # early. This must not be a 2xx: the watchdog only stops retrying a URL once
-      # it sees one, so answering OK here would strand the bubble spinning forever.
-      head :conflict
-    end
-  rescue ActiveRecord::RecordNotFound
-    head :not_found
+    redirect_to chat_path(@chat, thinking: true)
   end
 
   private
@@ -51,9 +20,5 @@ class MessagesController < ApplicationController
 
     def message_params
       params.require(:message).permit(:content, :ai_model)
-    end
-
-    def guard_ai_enabled
-      redirect_unless_ai_enabled(chat_path(@chat))
     end
 end

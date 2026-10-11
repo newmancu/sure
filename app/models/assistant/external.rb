@@ -1,5 +1,5 @@
 class Assistant::External < Assistant::Base
-  Config = Struct.new(:url, :token, :model, :agent_id, :session_key, keyword_init: true)
+  Config = Struct.new(:url, :token, :agent_id, :session_key, keyword_init: true)
   MAX_CONVERSATION_MESSAGES = 20
 
   class << self
@@ -8,7 +8,7 @@ class Assistant::External < Assistant::Base
     end
 
     def configured?
-      config.url.present? && config.token.present? && config.model.present?
+      config.url.present? && config.token.present?
     end
 
     def available_for?(user)
@@ -27,46 +27,14 @@ class Assistant::External < Assistant::Base
       Config.new(
         url: ENV["EXTERNAL_ASSISTANT_URL"].presence || Setting.external_assistant_url.presence,
         token: ENV["EXTERNAL_ASSISTANT_TOKEN"].presence || Setting.external_assistant_token.presence,
-        model: selected_model || legacy_model,
-        agent_id: routing_agent_id,
+        agent_id: ENV["EXTERNAL_ASSISTANT_AGENT_ID"].presence || Setting.external_assistant_agent_id.presence || "main",
         session_key: ENV.fetch("EXTERNAL_ASSISTANT_SESSION_KEY", "agent:main:main")
       )
     end
-
-    private
-      # Explicitly selected model (env or Settings), or nil when only legacy config exists.
-      def selected_model
-        ENV["EXTERNAL_ASSISTANT_MODEL"].presence || Setting.external_assistant_model.presence
-      end
-
-      # Pre-discovery installs routed with X-Agent-Id and defaulted to "main"
-      # when nothing was set. Keep that default so URL + token installs keep working.
-      def legacy_model
-        legacy = ENV["EXTERNAL_ASSISTANT_AGENT_ID"].presence || Setting.external_assistant_agent_id.presence || "main"
-        return legacy if legacy.start_with?("openclaw")
-
-        "openclaw/#{legacy}"
-      end
-
-      # The routing header always follows the model that is sent. A legacy
-      # EXTERNAL_ASSISTANT_AGENT_ID only applies while no model is selected.
-      def routing_agent_id
-        model = selected_model
-        return ENV["EXTERNAL_ASSISTANT_AGENT_ID"].presence || agent_id_for(legacy_model) if model.blank?
-
-        agent_id_for(model)
-      end
-
-      def agent_id_for(model)
-        return "main" if model.blank? || model.in?([ "openclaw", "openclaw/default" ])
-
-        model.delete_prefix("openclaw/").presence || "main"
-      end
   end
 
-  def respond_to(message, assistant_message: nil)
+  def respond_to(message)
     response_completed = false
-    assistant_message ||= AssistantMessage.new(chat: chat, content: "", ai_model: "external-agent")
 
     unless self.class.configured?
       raise Assistant::Error,
@@ -77,6 +45,12 @@ class Assistant::External < Assistant::Base
       raise Assistant::Error, "Your account is not authorized to use the external assistant."
     end
 
+    assistant_message = AssistantMessage.new(
+      chat: chat,
+      content: "",
+      ai_model: "external-agent"
+    )
+
     client = build_client
     messages = build_conversation_messages
 
@@ -84,10 +58,17 @@ class Assistant::External < Assistant::Base
       messages: messages,
       user: "sure-family-#{chat.user.family_id}"
     ) do |text|
-      assistant_message.append_text!(text)
+      if assistant_message.content.blank?
+        stop_thinking
+        assistant_message.content = text
+        assistant_message.save!
+      else
+        assistant_message.append_text!(text)
+      end
     end
 
-    if assistant_message.content.blank?
+    if assistant_message.new_record?
+      stop_thinking
       raise Assistant::Error, "External assistant returned an empty response."
     end
 
@@ -95,10 +76,12 @@ class Assistant::External < Assistant::Base
     assistant_message.update!(ai_model: model) if model.present?
   rescue Assistant::Error, ActiveRecord::ActiveRecordError => e
     cleanup_partial_response(assistant_message) unless response_completed
+    stop_thinking
     chat.add_error(e)
   rescue => e
     Rails.logger.error("[Assistant::External] Unexpected error: #{e.class} - #{e.message}")
     cleanup_partial_response(assistant_message) unless response_completed
+    stop_thinking
     chat.add_error(Assistant::Error.new("Something went wrong with the external assistant. Check server logs for details."))
   end
 
@@ -114,14 +97,13 @@ class Assistant::External < Assistant::Base
       Assistant::External::Client.new(
         url: self.class.config.url,
         token: self.class.config.token,
-        model: self.class.config.model,
         agent_id: self.class.config.agent_id,
         session_key: self.class.config.session_key
       )
     end
 
     def build_conversation_messages
-      chat.conversation_messages.where(status: "complete").ordered.last(MAX_CONVERSATION_MESSAGES).map do |msg|
+      chat.conversation_messages.ordered.last(MAX_CONVERSATION_MESSAGES).map do |msg|
         { role: msg.role, content: msg.content }
       end
     end

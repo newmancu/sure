@@ -2,7 +2,7 @@
 
 <%= settings_section title: t(".subscription_title"), subtitle: t(".subscription_subtitle") do %>
   <div class="space-y-4">
-    <div class="p-4 bg-container-inset rounded-lg flex justify-between items-center">
+    <div class="p-3 shadow-border-xs bg-container rounded-lg flex justify-between items-center">
       <div class="flex items-center gap-3">
         <%= render DS::FilledIcon.new(
           icon: "gem",
@@ -13,7 +13,7 @@
         <div class="text-sm space-y-1">
           <% if @family.has_active_subscription? %>
             <p class="text-primary">
-              <span><%= t(".currently_on_plan") %> <span class="font-medium"><%= @family.subscription.name %></span>.</span> <br>
+              <span>Currently on the <span class="font-medium"><%= @family.subscription.name %></span>.</span> <br>
 
               <% if @family.next_payment_date %>
                 <% if @family.subscription_pending_cancellation? %>
@@ -25,21 +25,21 @@
             </p>
           <% elsif @family.trialing? %>
             <p class="text-primary">
-              <%= t(".trialing", product_name: product_name) %> <br>
+              Currently using the open demo of <%= product_name %> <br>
               <span class="text-secondary">
-                (<%= t(".trial_days_left", count: @family.days_left_in_trial) %>)
+                (Data will be deleted in <%= @family.days_left_in_trial %> days)
               </span>
             </p>
           <% else %>
-            <p class="text-primary"><%= t(".not_contributing_prefix") %> <span class="font-medium"><%= t(".not_contributing_emphasis") %></span></p>
-            <p class="text-secondary"><%= t(".contributions_note", product_name: product_name) %></p>
+            <p class="text-primary">You are currently <span class="font-medium">not contributing</span></p>
+            <p class="text-secondary">Contributions to <%= product_name %> will show here.</p>
           <% end %>
         </div>
       </div>
 
       <% if @family.has_active_subscription? %>
         <%= render DS::Link.new(
-          text: t(".manage"),
+          text: "Manage",
           icon: "external-link",
           variant: "primary",
           icon_position: "right",
@@ -48,7 +48,7 @@
         ) %>
       <% else %>
         <%= render DS::Link.new(
-          text: t(".choose_level"),
+          text: "Choose level",
           variant: "primary",
           icon: "plus",
           icon_position: "right",
@@ -59,7 +59,7 @@
 
     <div class="flex items-center gap-2">
       <%= image_tag "stripe-logo.svg", class: "w-5 h-5 shrink-0" %>
-      <p class="text-secondary text-sm"><%= t(".payment_via_stripe") %></p>
+      <p class="text-secondary text-sm">Payment via Stripe</p>
     </div>
   </div>
 <% end %>

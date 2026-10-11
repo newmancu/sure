@@ -124,10 +124,7 @@ class Period
     def current_month_for(family)
       return from_key("current_month") unless family&.uses_custom_month_start?
 
-      # Keep the semantic key so callers (e.g. the period picker) can identify
-      # this as "current month" even though the date range is custom.
-      custom_period = family.current_custom_month_period
-      new(key: "current_month", start_date: custom_period.start_date, end_date: custom_period.end_date)
+      family.current_custom_month_period
     end
 
     def last_month_for(family)
@@ -137,7 +134,7 @@ class Period
       last_month_date = current_start - 1.day
       start_date = family.custom_month_start_for(last_month_date)
       end_date = family.custom_month_end_for(last_month_date)
-      new(key: "last_month", start_date: start_date, end_date: end_date)
+      custom(start_date: start_date, end_date: end_date)
     end
   end
 
@@ -147,12 +144,11 @@ class Period
     end
   end
 
-  # NOTE: dates are rendered through `I18n.l`, so there is no `date_format:`
-  # knob — the format follows the active locale, not the caller.
-  def initialize(start_date: nil, end_date: nil, key: nil)
+  def initialize(start_date: nil, end_date: nil, key: nil, date_format: "%b %d, %Y")
     @key = key
     @start_date = start_date
     @end_date = end_date
+    @date_format = date_format
     validate!
   end
 
@@ -173,9 +169,9 @@ class Period
   end
 
   def interval
-    if end_date > start_date.advance(years: 5)   # more than 5 calendar years → monthly
+    if days > 1825 # 5 years
       "1 month"
-    elsif end_date > start_date.advance(years: 1) # more than 1 calendar year → weekly
+    elsif days > 366
       "1 week"
     else
       "1 day"
@@ -183,72 +179,32 @@ class Period
   end
 
   def label
-    if key
-      I18n.t("period.#{key}.label", default: key_metadata&.fetch(:label) || "Custom Period")
+    if key_metadata
+      key_metadata.fetch(:label)
     else
-      I18n.t("period.custom.label", default: "Custom Period")
+      "Custom Period"
     end
   end
 
   def label_short
-    if key
-      I18n.t("period.#{key}.label_short", default: key_metadata&.fetch(:label_short) || "Custom")
+    if key_metadata
+      key_metadata.fetch(:label_short)
     else
-      I18n.t("period.custom.label_short", default: "Custom")
+      "Custom"
     end
   end
 
   def comparison_label
-    if key
-      I18n.t("period.#{key}.comparison_label", default: key_metadata&.fetch(:comparison_label) || custom_comparison_label)
+    if key_metadata
+      key_metadata.fetch(:comparison_label)
     else
-      custom_comparison_label
+      "#{start_date.strftime(@date_format)} to #{end_date.strftime(@date_format)}"
     end
-  end
-
-  # Compact rendering of the actual dates, sized for a control that has to show
-  # its own value (the period picker trigger). `label_short` answers "which
-  # option is this" and degrades to a bare "Custom" for a keyless range, which
-  # tells the reader nothing; `comparison_label` is the long form shown beside
-  # trend values and is too wide for a button.
-  #
-  # The year is dropped while the whole range sits inside the current year — it
-  # adds width without disambiguating anything.
-  def label_range
-    return label_short if start_date.nil? || end_date.nil?
-
-    # `:short_with_year` matches `comparison_label`'s format so the trigger and
-    # the range printed above the chart read as the same range.
-    format = within_current_year? ? :short : :short_with_year
-
-    I18n.t(
-      "period.range",
-      start_date: I18n.l(start_date, format: format),
-      end_date: I18n.l(end_date, format: format),
-      default: "%{start_date} – %{end_date}"
-    )
   end
 
   private
     def key_metadata
       @key_metadata ||= PERIODS[key]
-    end
-
-    # The year is dropped while the whole range sits inside the current year — it
-    # adds width without disambiguating anything.
-    def within_current_year?
-      start_date.year == end_date.year && end_date.year == Date.current.year
-    end
-
-    # Both the separator and the date order are translatable: `to` is a word, and
-    # locales disagree on where the day, month and year go. `I18n.l` resolves the
-    # month name against the active locale, which `strftime` cannot do.
-    def custom_comparison_label
-      I18n.t(
-        "period.custom.comparison_label",
-        start_date: I18n.l(start_date, format: :short_with_year),
-        end_date: I18n.l(end_date, format: :short_with_year)
-      )
     end
 
     def must_be_valid_date_range
