@@ -33,9 +33,8 @@ class TransactionsController < ApplicationController
                          # - outflow rows need inflow_transaction (to_account) for both
                          #   counterpart display and Transfer#categorizable?/#payment?
                          # - inflow rows need outflow_transaction (from_account) for
-                         #   counterpart display, inflow_transaction (to_account)
-                         #   for the category menu on the same row, and the
-                         #   outflow's category, which the inflow row shows
+                         #   counterpart display, and inflow_transaction (to_account)
+                         #   for the category menu on the same row
                          {
                            transfer_as_outflow: {
                              inflow_transaction: { entry: :account }
@@ -44,7 +43,7 @@ class TransactionsController < ApplicationController
                          {
                            transfer_as_inflow: {
                              inflow_transaction: { entry: :account },
-                             outflow_transaction: [ :category, { entry: :account } ]
+                             outflow_transaction: { entry: :account }
                            }
                          }
                        )
@@ -406,6 +405,7 @@ class TransactionsController < ApplicationController
       new_entry = @entry.account.entries.create!(
         name: params[:trade_name] || Trade.build_name(is_sell ? "sell" : "buy", qty, security.ticker),
         date: @entry.date,
+        time: @entry.time,
         amount: signed_amount,
         currency: @entry.currency,
         notes: conversion_note,
@@ -621,7 +621,7 @@ class TransactionsController < ApplicationController
 
     def entry_params
       entry_params = params.require(:entry).permit(
-        :name, :date, :amount, :currency, :excluded, :notes, :nature, :entryable_type,
+        :name, :date, :time, :amount, :currency, :excluded, :notes, :nature, :entryable_type,
         entryable_attributes: [ :id, :category_id, :merchant_id, :kind, :investment_activity_label, :exchange_rate, { tag_ids: [] } ]
       )
 
@@ -709,7 +709,7 @@ class TransactionsController < ApplicationController
     # read_write users can only annotate (category, tags, notes, merchant).
     # read_only users cannot update anything.
     def permitted_entry_params
-      permitted = case entry_permission
+      case entry_permission
       when :owner, :full_control
         entry_params
       when :read_write
@@ -722,14 +722,6 @@ class TransactionsController < ApplicationController
       else
         {} # read_only — no edits allowed
       end
-
-      # A matched transfer's category lives on its outflow leg; a category
-      # sent for the inflow leg would look saved but never reach a budget.
-      if permitted[:entryable_attributes]&.key?(:category_id) && @entry.transaction.category_set_on_transfer_outflow?
-        permitted[:entryable_attributes] = permitted[:entryable_attributes].except(:category_id)
-      end
-
-      permitted
     end
 
     def search_params
