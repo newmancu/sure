@@ -14,9 +14,32 @@ class RedbarkItemsController < ApplicationController
       # Trigger the initial sync so accounts appear without a manual refresh
       @redbark_item.sync_later
 
-      redirect_to settings_providers_path, notice: t(".success"), status: :see_other
+      if turbo_frame_request?
+        flash.now[:notice] = t(".success")
+        @redbark_items = Current.family.redbark_items.ordered
+        render turbo_stream: [
+          turbo_stream.replace(
+            "redbark-providers-panel",
+            partial: "settings/providers/redbark_panel",
+            locals: { redbark_items: @redbark_items }
+          ),
+          *flash_notification_stream_items
+        ]
+      else
+        redirect_to settings_providers_path, notice: t(".success"), status: :see_other
+      end
     else
-      render_provider_panel("redbark", alert: @redbark_item.errors.full_messages.join(", "))
+      @error_message = @redbark_item.errors.full_messages.join(", ")
+
+      if turbo_frame_request?
+        render turbo_stream: turbo_stream.replace(
+          "redbark-providers-panel",
+          partial: "settings/providers/redbark_panel",
+          locals: { error_message: @error_message }
+        ), status: :unprocessable_entity
+      else
+        redirect_to settings_providers_path, alert: @error_message, status: :see_other
+      end
     end
   end
 
@@ -29,9 +52,32 @@ class RedbarkItemsController < ApplicationController
       # Rotated credentials should be exercised right away
       @redbark_item.sync_later if update_params[:api_key].present? && !@redbark_item.syncing?
 
-      render_provider_panel("redbark", notice: t(".success"))
+      if turbo_frame_request?
+        flash.now[:notice] = t(".success")
+        @redbark_items = Current.family.redbark_items.ordered
+        render turbo_stream: [
+          turbo_stream.replace(
+            "redbark-providers-panel",
+            partial: "settings/providers/redbark_panel",
+            locals: { redbark_items: @redbark_items }
+          ),
+          *flash_notification_stream_items
+        ]
+      else
+        redirect_to settings_providers_path, notice: t(".success"), status: :see_other
+      end
     else
-      render_provider_panel("redbark", alert: @redbark_item.errors.full_messages.join(", "))
+      @error_message = @redbark_item.errors.full_messages.join(", ")
+
+      if turbo_frame_request?
+        render turbo_stream: turbo_stream.replace(
+          "redbark-providers-panel",
+          partial: "settings/providers/redbark_panel",
+          locals: { error_message: @error_message }
+        ), status: :unprocessable_entity
+      else
+        redirect_to settings_providers_path, alert: @error_message, status: :see_other
+      end
     end
   end
 

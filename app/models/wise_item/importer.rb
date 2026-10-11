@@ -59,8 +59,6 @@ class WiseItem::Importer
       end
       mark_requires_update_if_credentials_error(e)
       Rails.logger.error "WiseItem::Importer - Failed to fetch balances: #{e.message}"
-      # A rejected token fails the sync instead of completing it with nothing imported
-      raise if credentials_error?(e)
       nil
     rescue => e
       Rails.logger.error "WiseItem::Importer - Unexpected error fetching balances: #{e.class} - #{e.message}"
@@ -148,7 +146,6 @@ class WiseItem::Importer
       cutoff = transfer_cutoff
       activities = []
       cursor = nil
-      seen_cursors = Set.new
 
       loop do
         trace_wise_fetch(operation: "activities", status: "started", level: "info", cursor: cursor, page_size: 100)
@@ -170,23 +167,8 @@ class WiseItem::Importer
 
         break if old_ones.any? || batch.size < 100
 
-        next_cursor = result["cursor"].presence
-        break if next_cursor.nil?
-
-        if seen_cursors.include?(next_cursor)
-          trace_wise_fetch(
-            operation: "activities",
-            status: "failed",
-            level: "warn",
-            cursor: cursor,
-            next_cursor: next_cursor,
-            error: StandardError.new("Wise activities pagination cursor did not advance")
-          )
-          break
-        end
-
-        seen_cursors << next_cursor
-        cursor = next_cursor
+        cursor = result["cursor"]
+        break if cursor.nil?
       end
 
       activities.uniq { |a| a["id"] }
@@ -446,8 +428,6 @@ class WiseItem::Importer
       message = "#{message} for wise_account #{wise_account.id}" if wise_account
       message = "#{message}: #{error.message}" if error
 
-      return Rails.logger.debug(message) unless error
-
       Rails.logger.public_send(level, message)
       DebugLogEntry.capture(
         category: error ? "provider_sync_error" : "provider_sync",
@@ -597,12 +577,8 @@ class WiseItem::Importer
       Time.current
     end
 
-    def credentials_error?(error)
-      error.is_a?(Provider::Wise::WiseError) && error.error_type.in?([ :unauthorized, :access_forbidden ])
-    end
-
     def mark_requires_update_if_credentials_error(error)
-      return unless credentials_error?(error)
+      return unless error.is_a?(Provider::Wise::WiseError) && error.error_type.in?([ :unauthorized, :access_forbidden ])
 
       wise_item.update!(status: :requires_update)
     rescue => e
