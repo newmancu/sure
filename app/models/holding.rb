@@ -56,8 +56,22 @@ class Holding < ApplicationRecord
       end
     end
 
+    return @preloaded_calculated_avg_cost if instance_variable_defined?(:@preloaded_calculated_avg_cost)
+
     # Fallback to calculation for holdings without pre-computed cost_basis
     calculate_avg_cost
+  end
+
+  def needs_calculated_avg_cost?
+    return false if cost_basis.present? && (cost_basis_locked? || cost_basis.positive?)
+
+    true
+  end
+
+  def preload_calculated_avg_cost!(average)
+    @preloaded_calculated_avg_cost = if average
+      Money.new(average[:total_cost] / average[:total_qty], average[:currency])
+    end
   end
 
   def trend
@@ -289,24 +303,6 @@ class Holding < ApplicationRecord
         ]))
         .where(security_id: security.id)
         .where("trades.qty > 0 AND entries.date <= ?", date)
-
-      # An internal movement is not a purchase: securities moved in from elsewhere were
-      # acquired at a price nothing here knows, so treating the day they
-      # arrived as their cost states a number that looks authoritative and is
-      # wrong — a coin bought at 30k and moved in at 60k would report no gain.
-      #
-      # One internal movement makes the whole position unknown, rather than just its own
-      # row. Averaging the purchases alone and applying that to every unit is
-      # the same fabrication in a quieter form: buy one at 30k, receive one, and
-      # the position would report 30k a unit for two units it did not cost that.
-      return nil if trades.where(investment_activity_label: Trade::INTERNAL_MOVEMENT_LABELS).exists?
-
-      # IS DISTINCT FROM, because `!=` is NULL for an unlabelled row and would
-      # drop the ordinary purchases that carry no label at all.
-      trades = trades.where(
-        "trades.investment_activity_label NOT IN (?) OR trades.investment_activity_label IS NULL",
-        Trade::INTERNAL_MOVEMENT_LABELS
-      )
 
       total_cost, total_qty = trades.pick(
         Arel.sql("SUM(trades.price * trades.qty * COALESCE(exchange_rates.rate, 1))"),

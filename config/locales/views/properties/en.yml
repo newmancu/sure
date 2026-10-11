@@ -3,7 +3,6 @@ en:
   properties:
     edit:
       edit: Edit %{account}
-      title: Enter property manually
     form:
       address_line1: Street address
       address_line1_placeholder: 123 Main St
@@ -101,7 +100,3 @@ en:
       agri_land:
         short: Agri Land
         long: Agricultural Land
-    form_tabs:
-      address: Address
-      overview: Overview
-      value: Value

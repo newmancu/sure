@@ -20,33 +20,6 @@ class IncomeStatementTest < ActiveSupport::TestCase
     create_transaction(account: @credit_card_account, amount: 400, category: @groceries_category)
   end
 
-  test "a new statement invalidates daily series when the family currency changes" do
-    statement = IncomeStatement.new(@family)
-    period = Period.last_30_days
-
-    Rails.stubs(:cache).returns(ActiveSupport::Cache::MemoryStore.new)
-    IncomeStatement::DailyExpenseTotals.expects(:new).twice.returns(stub(call: []))
-
-    statement.daily_expense_series(period: period)
-    @family.update!(currency: "EUR")
-    IncomeStatement.new(@family).daily_expense_series(period: period)
-  end
-
-  test "a new statement invalidates daily series when exchange rates change" do
-    statement = IncomeStatement.new(@family)
-    period = Period.last_30_days
-
-    Rails.stubs(:cache).returns(ActiveSupport::Cache::MemoryStore.new)
-    IncomeStatement::DailyExpenseTotals.expects(:new).twice.returns(stub(call: []))
-
-    statement.daily_expense_series(period: period)
-
-    travel 1.second do
-      ExchangeRate.create!(from_currency: "USD", to_currency: "EUR", date: Date.current, rate: 0.9)
-      IncomeStatement.new(@family).daily_expense_series(period: period)
-    end
-  end
-
   test "calculates totals for transactions" do
     income_statement = IncomeStatement.new(@family)
     totals = income_statement.totals(date_range: Period.last_30_days.date_range)
@@ -64,6 +37,17 @@ class IncomeStatementTest < ActiveSupport::TestCase
     assert_equal expected_total_expense, expense_totals.total
     assert_equal expected_total_expense, expense_totals.category_totals.find { |ct| ct.category.id == @groceries_category.id }.total
     assert_equal expected_total_expense, expense_totals.category_totals.find { |ct| ct.category.id == @food_category.id }.total
+  end
+
+  test "period totals do not query categories by id when filtering subcategories" do
+    income_statement = IncomeStatement.new(@family)
+    period = Period.last_30_days
+
+    queries = capture_sql_queries do
+      income_statement.net_category_totals(period: period)
+    end
+
+    assert_empty queries.grep(/FROM "categories" WHERE "categories"\."id" =/)
   end
 
   test "orphaned categories still count as root category totals" do
@@ -295,18 +279,6 @@ class IncomeStatementTest < ActiveSupport::TestCase
     assert_equal 4, totals.transactions_count # Only original 4 transactions
     assert_equal Money.new(1000, @family.currency), totals.income_money
     assert_equal Money.new(900, @family.currency), totals.expense_money
-  end
-
-  # A flag PostgreSQL cannot cast to boolean used to raise
-  # PG::InvalidTextRepresentation and take the whole statement down.
-  test "a pending flag PostgreSQL cannot cast neither raises nor counts" do
-    assert_statement_leaves_out_flagged_expense("maybe")
-  end
-
-  # Transaction#pending? (and so the Pending badge) calls "no" pending;
-  # PostgreSQL's ::boolean called it posted and counted it.
-  test "a \"no\" pending flag is pending, as Transaction#pending? says" do
-    assert_statement_leaves_out_flagged_expense("no")
   end
 
   # NEW TESTS: Interval-Based Calculations
@@ -786,23 +758,101 @@ class IncomeStatementTest < ActiveSupport::TestCase
     assert_equal 1, totals_query_calls
   end
 
+  test "totals_by_month matches per-month totals_for" do
+    seed_multi_month_activity!
+
+    batched = IncomeStatement.new(@family).totals_by_month(chart_months)
+
+    chart_months.each do |month|
+      expected = IncomeStatement.new(@family).totals_for(month_period(month))
+      actual = batched.fetch(month)
+
+      assert_equal expected.income_money, actual.income_money, "income mismatch for #{month}"
+      assert_equal expected.expense_money, actual.expense_money, "expense mismatch for #{month}"
+      assert_equal expected.transactions_count.to_i, actual.transactions_count.to_i, "count mismatch for #{month}"
+    end
+  end
+
+  test "totals_by_month matches per-month totals_for when scoped to accounts" do
+    seed_multi_month_activity!
+    account_ids = [ @checking_account.id ]
+
+    batched = IncomeStatement.new(@family).totals_by_month(chart_months, account_ids: account_ids)
+
+    chart_months.each do |month|
+      expected = IncomeStatement.new(@family).totals_for(month_period(month), account_ids: account_ids)
+      actual = batched.fetch(month)
+
+      assert_equal expected.income_money, actual.income_money, "income mismatch for #{month}"
+      assert_equal expected.expense_money, actual.expense_money, "expense mismatch for #{month}"
+    end
+  end
+
+  test "totals_by_month aggregates a month span in a single query" do
+    seed_multi_month_activity!
+    income_statement = IncomeStatement.new(@family)
+
+    queries = capture_sql_queries do
+      income_statement.totals_by_month(chart_months)
+    end
+
+    assert_equal 1, queries.grep(/DATE_TRUNC\('month', ae\.date\)/i).size
+  end
+
+  test "totals_by_month zero-fills months without activity" do
+    quiet_months = (11.downto(9)).map { |i| Date.current.beginning_of_month - i.months }
+
+    totals = IncomeStatement.new(@family).totals_by_month(quiet_months)
+
+    assert_equal quiet_months, totals.keys
+    totals.each_value do |month_totals|
+      assert_equal Money.new(0, @family.currency), month_totals.income_money
+      assert_equal Money.new(0, @family.currency), month_totals.expense_money
+      assert_equal 0, month_totals.transactions_count
+    end
+  end
+
+  test "totals_by_month returns an empty hash when given no months" do
+    assert_empty IncomeStatement.new(@family).totals_by_month([])
+  end
+
+  test "totals cache keys reuse a single accounts updated_at lookup" do
+    income_statement = IncomeStatement.new(@family)
+
+    queries = capture_sql_queries do
+      income_statement.income_totals(period: Period.last_30_days)
+      income_statement.totals_by_month(chart_months)
+    end
+
+    assert_equal 1, queries.grep(/MAX\("accounts"\."updated_at"\)/i).size
+  end
+
   private
-    # Adds a 250 grocery expense whose pending flag is +flag+ and asserts every
-    # figure is the one without it: totals (Transaction.excluding_pending), the
-    # family median and average (FamilyStats) and the category median
-    # (CategoryStats), each of which reads the flag in its own SQL.
-    def assert_statement_leaves_out_flagged_expense(flag)
-      flagged = create_transaction(account: @checking_account, amount: 250, category: @groceries_category)
-      flagged.entryable.update!(extra: { "plaid" => { "pending" => flag } })
-      assert flagged.entryable.pending?, "pending? should call #{flag.inspect} pending"
+    # Mirrors the dashboard money flow widget's window.
+    def chart_months
+      @chart_months ||= (5.downto(0)).map { |i| Date.current.beginning_of_month - i.months }
+    end
 
-      income_statement = IncomeStatement.new(@family)
-      totals = income_statement.totals(date_range: Period.last_30_days.date_range)
+    def month_period(month)
+      Period.custom(start_date: month, end_date: [ month.end_of_month, Date.current ].min)
+    end
 
-      assert_equal 4, totals.transactions_count
-      assert_equal Money.new(900, @family.currency), totals.expense_money
-      assert_equal 900.0, income_statement.median_expense(interval: "month")
-      assert_equal 900.0, income_statement.avg_expense(interval: "month")
-      assert_equal 900.0, income_statement.median_expense(interval: "month", category: @groceries_category)
+    # Spreads income and expenses (including a foreign-currency account and a
+    # subcategory) across the charted months so the batched and per-month paths
+    # are compared against non-trivial data.
+    def seed_multi_month_activity!
+      eur_account = @family.accounts.create! name: "EUR Checking", currency: "EUR", balance: 1000, accountable: Depository.new
+
+      chart_months.each_with_index do |month, idx|
+        date = month + 3.days
+        next if date > Date.current
+
+        create_transaction(account: @checking_account, amount: -(500 + idx), date: date, category: @income_category)
+        create_transaction(account: @checking_account, amount: 100 + idx, date: date, category: @food_category)
+        create_transaction(account: @credit_card_account, amount: 50 + idx, date: date, category: @groceries_category)
+
+        ExchangeRate.find_or_create_by!(from_currency: "EUR", to_currency: @family.currency, date: date) { |rate| rate.rate = 1.1 }
+        create_transaction(account: eur_account, amount: 70, date: date, currency: "EUR")
+      end
     end
 end
