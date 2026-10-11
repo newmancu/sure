@@ -73,39 +73,10 @@ class Account < ApplicationRecord
       .distinct
   }
 
-  # Accounts every active member of the account's family can access (owned or
-  # shared with them), the same test as accessible_by applied to all of them.
-  # Family-wide surfaces such as the insights feed name accounts and amounts
-  # to everyone, so they draw only from this set.
-  scope :accessible_by_all_active_members, -> {
-    where(<<~SQL.squish)
-      NOT EXISTS (
-        SELECT 1 FROM users
-        WHERE users.family_id = accounts.family_id
-          AND users.active = TRUE
-          AND users.id IS DISTINCT FROM accounts.owner_id
-          AND NOT EXISTS (
-            SELECT 1 FROM account_shares
-            WHERE account_shares.account_id = accounts.id
-              AND account_shares.user_id = users.id
-          )
-      )
-    SQL
-  }
-
   # Accounts a user can write to (owned or shared with full_control)
   scope :writable_by, ->(user) {
     left_joins(:account_shares)
       .where("accounts.owner_id = :uid OR (account_shares.user_id = :uid AND account_shares.permission = 'full_control')", uid: user.id)
-      .distinct
-  }
-
-  # Accounts a user can annotate (category, tags, notes, merchant): owned,
-  # or shared with full_control or read_write
-  scope :annotatable_by, ->(user) {
-    left_joins(:account_shares)
-      .where("accounts.owner_id = :uid OR (account_shares.user_id = :uid AND account_shares.permission IN (:permissions))",
-             uid: user.id, permissions: AccountShare::ANNOTATE_PERMISSIONS)
       .distinct
   }
 
@@ -204,10 +175,7 @@ class Account < ApplicationRecord
       attrs = attributes.dup
       attrs[:cash_balance] = attrs[:balance] unless attrs.key?(:cash_balance)
       account = new(attrs)
-      # Presence is read from the raw value: a blank form field arrives as ""
-      # and would convert to a very present-looking 0.
-      raw_initial_balance = attributes.dig(:accountable_attributes, :initial_balance)
-      initial_balance = raw_initial_balance.to_d if raw_initial_balance.present?
+      initial_balance = attributes.dig(:accountable_attributes, :initial_balance)&.to_d
 
       transaction do
         account.save!
@@ -218,29 +186,6 @@ class Account < ApplicationRecord
           date: opening_balance_date
         )
         raise result.error if result.error
-
-        # When the opening balance differs from the entered current balance
-        # (a loan created with its original principal), the opening anchor is
-        # the account's only entry — the initial sync would recalculate
-        # today's balance back to it, silently discarding what the user just
-        # typed. Anchor today's balance too so both survive.
-        #
-        # Only when the opening anchor is on an earlier day: the opening date
-        # is user-supplied and may be today, and a same-day reconciliation
-        # would be matched to the opening anchor by date and overwrite it.
-        # On its own date the opening balance wins.
-        if initial_balance && initial_balance != account.balance && manager.opening_date < Date.current
-          # An explicit reconciliation, not CurrentBalanceManager: for cash
-          # accounts its transaction-adjustment strategy computes a zero delta
-          # here (account.balance already holds the entered value) and would
-          # only rewrite the opening anchor, leaving today's balance unanchored
-          # for the first sync.
-          reconciliation = Account::ReconciliationManager.new(account).reconcile_balance(
-            balance: account.balance,
-            date: Date.current
-          )
-          raise reconciliation.error_message unless reconciliation.success?
-        end
 
         account.auto_share_with_family! if account.family.share_all_by_default?
       end
@@ -378,7 +323,9 @@ class Account < ApplicationRecord
     end
 
     def create_from_binance_account(binance_account)
-      create_from_crypto_exchange_account(binance_account, family: binance_account.binance_item.family)
+      account = create_from_crypto_exchange_account(binance_account, family: binance_account.binance_item.family)
+      account.set_opening_anchor_balance(balance: 0)
+      account
     end
 
     def create_from_ibkr_account(ibkr_account)
@@ -423,40 +370,8 @@ class Account < ApplicationRecord
       create_and_sync(attributes, skip_initial_sync: true)
     end
 
-    TRADE_REPUBLIC_ACCOUNT_TYPES = {
-      "portfolio" => [ "Investment", "brokerage", "Trade Republic Portfolio" ],
-      "cash" => [ "Depository", "checking", "Trade Republic Cash" ],
-      # The exchange subtype is the Crypto subtype that supports trades.
-      "crypto" => [ "Crypto", "exchange", "Trade Republic Crypto" ]
-    }.freeze
-
-    def create_from_trade_republic_account(trade_republic_account)
-      family = trade_republic_account.trade_republic_item.family
-      accountable_type, subtype, default_name = TRADE_REPUBLIC_ACCOUNT_TYPES.fetch(trade_republic_account.kind)
-
-      attributes = {
-        family: family,
-        name: trade_republic_account.name.presence || default_name,
-        balance: 0,
-        cash_balance: 0,
-        currency: trade_republic_account.currency.presence || family.currency,
-        accountable_type: accountable_type,
-        accountable_attributes: {
-          subtype: subtype
-        }
-      }
-
-      create_and_sync(attributes, skip_initial_sync: true)
-    end
-
     def create_from_kraken_account(kraken_account)
       create_from_crypto_exchange_account(kraken_account, family: kraken_account.kraken_item.family)
-    end
-
-    # Creates a manual Crypto account for a newly-selected CoinSpot account,
-    # owned by the connection's family.
-    def create_from_coinspot_account(coinspot_account)
-      create_from_crypto_exchange_account(coinspot_account, family: coinspot_account.coinspot_item.family)
     end
 
     # Self-custody assets are wallets, not exchanges: no trade entry by hand,
@@ -485,26 +400,12 @@ class Account < ApplicationRecord
     private
 
       def create_from_crypto_exchange_account(provider_account, family:)
-        # The provider record carries the exchange's *reporting* currency -- Kraken
-        # quotes everything in USD -- which says nothing about what the user
-        # values the account in. The account's own currency is the one its
-        # balance and holdings are shown in, so it is the family's; entries keep
-        # whatever currency they were made in and convert at display, as on
-        # every other account.
-        provider_currency = provider_account.currency.presence || family.currency
-        balance = (provider_account.current_balance || 0).to_d
-        # With no rate the figure cannot be stated in the family currency, and
-        # relabelling it would be wrong by the whole rate. Zero is honest: the
-        # first sync writes the converted balance minutes later, and the
-        # opening anchor is zeroed below regardless.
-        balance = convert_provider_balance(balance, from: provider_currency, to: family.currency) || 0
-
         attributes = {
           family: family,
           name: provider_account.name,
-          balance: balance,
+          balance: (provider_account.current_balance || 0).to_d,
           cash_balance: 0,
-          currency: family.currency,
+          currency: provider_account.currency.presence || family.currency,
           accountable_type: "Crypto",
           accountable_attributes: {
             subtype: "exchange",
@@ -512,38 +413,7 @@ class Account < ApplicationRecord
           }
         }
 
-        # An exchange account's ledger is imported from inception, so it opens at
-        # zero. Without this it inherits create_and_sync's default: an opening
-        # balance equal to what the account is worth *today*, dated two years ago
-        # -- so an exchange older than that imports its whole history on top of
-        # its present value, and every entry before the anchor sits ahead of its
-        # own opening balance.
-        #
-        # Through the manager, not set_opening_anchor_balance: that queues a
-        # sync, which is what skip_initial_sync below just declined. Running
-        # before the provider link exists, it would see one zero anchor and no
-        # entries and write that zero over the balance set here.
-        #
-        # Both in one transaction: creation commits on its own, so a failure
-        # while zeroing the anchor would otherwise leave an account behind
-        # carrying today's balance as its opening one, and the retry would
-        # create a second.
-        account = nil
-        transaction do
-          account = create_and_sync(attributes, skip_initial_sync: true)
-          result = Account::OpeningBalanceManager.new(account).set_opening_balance(balance: 0)
-          raise result.error if result.error
-        end
-
-        account
-      end
-
-      def convert_provider_balance(amount, from:, to:)
-        return amount if from == to || amount.zero?
-
-        Money.new(amount, from).exchange_to(to).amount
-      rescue Money::ConversionError
-        nil
+        create_and_sync(attributes, skip_initial_sync: true)
       end
 
       def build_simplefin_accountable_attributes(simplefin_account, account_type, subtype)
@@ -799,22 +669,12 @@ class Account < ApplicationRecord
       if Current.user.present? && Current.user.family_id == family_id
         self.owner = Current.user
       else
-        # `id` breaks ties on `created_at`. Two users of the same role can share
-        # a timestamp (they are created in one transaction, or the column is
-        # backfilled), and ordering on `created_at` alone leaves the winner to
-        # the query plan — so the same family can get a different default owner
-        # from one call to the next.
-        self.owner =
-          family&.users&.where(role: "admin")&.order(:created_at, :id)&.first ||
-          family&.users&.where(role: "super_admin")&.order(:created_at, :id)&.first ||
-          family&.users&.order(:created_at, :id)&.first
+        self.owner = family&.users&.find_by(role: %w[admin super_admin]) || family&.users&.order(:created_at)&.first
       end
     end
 
     def owner_belongs_to_family
-      owner_user = User.lock.find_by(id: owner_id)
-      return if owner_user&.family_id == family_id
-
+      return if User.where(id: owner_id, family_id: family_id).exists?
       errors.add(:owner, :invalid, message: "must belong to the same family as the account")
     end
 
@@ -839,7 +699,6 @@ class Account < ApplicationRecord
       transaction_ids = entries.where(entryable_type: "Transaction").pluck(:entryable_id)
 
       transfers = Transfer.where(inflow_transaction_id: transaction_ids).or(Transfer.where(outflow_transaction_id: transaction_ids))
-                         .includes(inflow_transaction: { entry: { account: :family } }, outflow_transaction: { entry: { account: :family } })
 
       transfers.find_each(&:destroy!)
     end
