@@ -28,8 +28,6 @@ en:
     index:
       chats: "Chats"
       new_chat: "New chat"
-    new:
-      default_title: "New chat %{timestamp}"
     update:
       success: "Chat updated"
     ai_consent:
