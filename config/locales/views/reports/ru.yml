@@ -75,19 +75,20 @@ ru:
     invalid_date_range: Дата окончания не может быть раньше даты начала. Даты были
       поменяны местами.
     investment_flows:
-      contributions: Пополнения
+      contributions: Взносы
       contributions_description: Средства, добавленные в инвестиции
-      description: "Отслеживайте движение средств на ваших инвестиционных счетах: пополнения и выводы."
+      description: Отслеживайте движение средств в и из ваших инвестиционных счетов
+        через взносы и изъятия.
       net_flow: Чистый поток
-      net_flow_description: Общее чистое изменение
+      net_flow_description: Общая чистая изменяемость
       title: Инвестиционные потоки
-      withdrawals: Выводы
-      withdrawals_description: Средства, выведенные из инвестиций
+      withdrawals: Изъятия
+      withdrawals_description: Средства, изъятые из инвестиций
     investment_performance:
       accounts: Инвестиционные счета
       and_more: "+%{count} ещё"
-      contributions: Пополнения за период
-      gains_by_tax_treatment: Доходы по налоговому режиму
+      contributions: Взносы за период
+      gains_by_tax_treatment: Доходы по налоговому учёту
       holding: Актив
       holdings: Активы
       holdings_count:
@@ -115,9 +116,9 @@ ru:
       value: Стоимость
       view_details: Посмотреть детали
       weight: Доля
-      withdrawals: Выводы за период
+      withdrawals: Изъятия за период
     net_worth:
-      assets_vs_liabilities: Активы и обязательства
+      assets_vs_liabilities: Активы против обязательств
       current_net_worth: Текущая чистая стоимость
       no_assets: Нет активов
       no_liabilities: Нет обязательств
@@ -129,7 +130,7 @@ ru:
       document_title: Финансовый отчёт
       generated_on: Создан %{date}
       investments:
-        contributions: Пополнения
+        contributions: Взносы
         holding: Актив
         period_return: Доходность за период
         portfolio_value: Стоимость портфеля
@@ -140,14 +141,14 @@ ru:
         total_return: Общая доходность
         value: Стоимость
         weight: Доля
-        withdrawals: Выводы
+        withdrawals: Изъятия
       net_worth:
         assets: Активы
         current_balance: Текущий баланс
         liabilities: Обязательства
         no_liabilities: Нет обязательств
         this_period: за этот период
-        title: Чистая стоимость
+        title: Свободные средства
       spending:
         amount: Сумма
         category: Категория
@@ -173,7 +174,7 @@ ru:
         income: Доход
         month: Месяц
         net: Чистый
-        savings_rate: Норма сбережений
+        savings_rate: Уровень сбережений
         title: Ежемесячные тренды
     summary:
       budget_performance: Выполнение бюджета
@@ -251,7 +252,7 @@ ru:
       net: Чистый
       no_data: Нет данных о трендах
       no_spending_data: Нет данных о расходах за этот период
-      savings_rate: Норма сбережений
+      savings_rate: Уровень сбережений
       spending_patterns: Модели расходов
       title: Тренды и анализ
       total: Итого
