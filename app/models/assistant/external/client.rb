@@ -18,10 +18,9 @@ class Assistant::External::Client
     SocketError
   ].freeze
 
-  def initialize(url:, token:, model: "openclaw", agent_id: "main", session_key: "agent:main:main")
+  def initialize(url:, token:, agent_id: "main", session_key: "agent:main:main")
     @url = url
     @token = token # pipelock:ignore Credential in URL
-    @model = model
     @agent_id = agent_id
     @session_key = session_key
   end
@@ -157,7 +156,7 @@ class Assistant::External::Client
       request["X-Session-Key"] = @session_key
 
       payload = {
-        model: @model,
+        model: @agent_id,
         messages: messages,
         stream: true
       }
