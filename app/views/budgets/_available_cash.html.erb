@@ -3,7 +3,12 @@
 <%# Beside the plan, never inside it. The figures above answer "what did I plan
     to spend"; these answer "what do I actually have". Folding one into the
     other leaves the reader unsure which number drives the split, so the panel
-    keeps its own frame and its own heading. %>
+    keeps its own frame and its own heading.
+
+    The subtitle names the relationship rather than denying one. "Beside the
+    plan above, not part of it" told the reader what this is not, and left
+    them holding two figures that both look like an answer to "how much have
+    I got left" with nothing to choose between them. See #3218. %>
 <div class="w-full bg-container rounded-xl shadow-border-xs p-4">
   <div class="flex items-start justify-between gap-3 mb-3">
     <div class="min-w-0">
@@ -18,26 +23,24 @@
         ) %>
   </div>
 
-  <%# Hand-built, not DS::DetailRow: its fixed label/value colours clash with
-      the secondary earmark and the primary, larger free figure. %>
   <dl class="space-y-2">
     <div class="flex items-baseline justify-between gap-3">
       <dt class="text-sm text-secondary"><%= t(".available") %></dt>
-      <dd class="text-sm text-primary tabular-nums privacy-sensitive">
+      <dd class="text-lg font-medium text-primary tabular-nums privacy-sensitive">
         <%= format_money budget.available_cash_money %>
       </dd>
     </div>
 
-    <div class="flex items-baseline justify-between gap-3 border-b border-subdued pb-2">
+    <div class="flex items-baseline justify-between gap-3">
       <dt class="text-sm text-secondary"><%= t(".earmarked") %></dt>
       <dd class="text-sm text-secondary tabular-nums privacy-sensitive">
         −<%= format_money budget.earmarked_for_goals_money %>
       </dd>
     </div>
 
-    <div class="flex items-baseline justify-between gap-3 -mx-2 px-2 py-2 rounded-lg bg-surface-inset">
+    <div class="flex items-baseline justify-between gap-3 border-t border-subdued pt-2">
       <dt class="text-sm font-medium text-primary"><%= t(".free") %></dt>
-      <dd class="text-2xl font-medium text-primary tabular-nums privacy-sensitive">
+      <dd class="text-lg font-medium text-primary tabular-nums privacy-sensitive">
         <%= format_money budget.free_cash_money %>
       </dd>
     </div>
