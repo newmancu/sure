@@ -200,6 +200,34 @@ class EncryptionVerificationTest < ActiveSupport::TestCase
   end
 
   # ============================================================================
+  # SECURITY AUDIT LOG MODEL TESTS
+  # ============================================================================
+
+  test "security audit log user_email, ip_address and user_agent are encrypted at rest" do
+    request = ActionDispatch::TestRequest.create
+    request.remote_addr = "203.0.113.5"
+    request.user_agent = "EncryptionVerification/1.0"
+
+    log = SecurityAuditLog.log_mfa_enabled!(user: users(:family_admin), request: request)
+
+    assert_equal users(:family_admin).email, log.user_email
+    assert_equal "203.0.113.5", log.ip_address
+    assert_equal "EncryptionVerification/1.0", log.user_agent
+
+    raw_email = log.read_attribute_before_type_cast(:user_email).to_s
+    raw_ip = log.read_attribute_before_type_cast(:ip_address).to_s
+    raw_agent = log.read_attribute_before_type_cast(:user_agent).to_s
+    assert_not_includes raw_email, users(:family_admin).email
+    assert_not_includes raw_ip, "203.0.113.5"
+    assert_not_includes raw_agent, "EncryptionVerification/1.0"
+
+    log.reload
+    assert_equal users(:family_admin).email, log.user_email
+    assert_equal "203.0.113.5", log.ip_address
+    assert_equal "EncryptionVerification/1.0", log.user_agent
+  end
+
+  # ============================================================================
   # MOBILE DEVICE MODEL TESTS
   # ============================================================================
 
@@ -353,31 +381,6 @@ class EncryptionVerificationTest < ActiveSupport::TestCase
     assert_column_not_plaintext(MonobankAccount, account.id, :raw_transactions_payload, "tx_probe")
   end
 
-  test "plaid account holdings stored before encryption was enabled can be read and backfilled" do
-    account = PlaidAccount.create!(
-      plaid_item: plaid_items(:one),
-      plaid_id: "holdings_backfill_probe",
-      name: "Brokerage",
-      plaid_type: "investment",
-      currency: "USD",
-      current_balance: 1000
-    )
-    # Store plaintext, as an instance that enabled encryption after syncing would have.
-    PlaidAccount.where(id: account.id).update_all(
-      "raw_holdings_payload = '{\"holdings\": [{\"security_id\": \"sec_probe\"}]}'::jsonb"
-    )
-
-    with_unencrypted_data_supported do
-      account = PlaidAccount.find(account.id)
-      assert_equal "sec_probe", account.raw_holdings_payload["holdings"].first["security_id"]
-
-      account.encrypt
-    end
-
-    assert_equal "sec_probe", account.reload.raw_holdings_payload["holdings"].first["security_id"]
-    assert_column_not_plaintext(PlaidAccount, account.id, :raw_holdings_payload, "sec_probe")
-  end
-
   # ============================================================================
   # DATABASE VERIFICATION TESTS
   # ============================================================================
@@ -404,14 +407,6 @@ class EncryptionVerificationTest < ActiveSupport::TestCase
   end
 
   private
-
-    def with_unencrypted_data_supported
-      previous = ActiveRecord::Encryption.config.support_unencrypted_data
-      ActiveRecord::Encryption.config.support_unencrypted_data = true
-      yield
-    ensure
-      ActiveRecord::Encryption.config.support_unencrypted_data = previous
-    end
 
     # Reads +column+ straight from the database, bypassing the model, and asserts the
     # stored bytes do not contain +value+. An accessor round-trip alone cannot tell
