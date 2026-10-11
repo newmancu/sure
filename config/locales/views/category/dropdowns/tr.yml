@@ -8,5 +8,4 @@ tr:
       show:
         clear: Kategoriyi temizle
         no_categories: Hiç kategori bulunamadı
-        recent: Son kullanılanlar
         search_placeholder: Ara
