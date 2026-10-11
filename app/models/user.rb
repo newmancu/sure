@@ -161,6 +161,17 @@ class User < ApplicationRecord
     super_admin? || role == "admin"
   end
 
+  # Setting values are shared by every family on the instance, so changing them
+  # is a super admin's job: a family admin is anyone who signed up. A
+  # self-hosted instance with a single family has no other tenant to protect,
+  # and installs that predate the super_admin role may not have one, so that
+  # family's admins keep access there.
+  def manages_instance_settings?
+    return true if super_admin?
+
+    admin? && Rails.application.config.app_mode.self_hosted? && Family.count == 1
+  end
+
   def accessible_accounts
     family.accounts.accessible_by(self)
   end
@@ -651,14 +662,6 @@ class User < ApplicationRecord
   # Per-widget height preset override ("compact" | "auto" | "tall"); nil = use default.
   def dashboard_section_height(section_key)
     preferences&.dig("dashboard_section_layout", section_key, "height")
-  end
-
-  CASHFLOW_SANKEY_GROUPINGS = IncomeStatement::CashFlowGraph::GROUPINGS.keys.freeze
-
-  # Preview cash-flow Sankey: flows by category (default) or through each account.
-  def cashflow_sankey_group_by
-    group_by = preferences&.dig("cashflow_sankey_group_by")
-    CASHFLOW_SANKEY_GROUPINGS.include?(group_by) ? group_by : "category"
   end
 
   # Per-widget column-span override ("single" | "full"); nil = use default.
