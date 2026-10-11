@@ -6,33 +6,15 @@ module Assistant
     "external" => Assistant::External
   }.freeze
 
-  # Tools for users who opted into preview features in Settings -> Preferences.
-  #
-  # Statement Vault + provenance tools back the wealth agent-harness workflow
-  # documented in docs/llm-guides/wealth-agent-harness.md. GetValuations is the
-  # read pair for RecordValuation; GetInsights reads the Insights feed, which is
-  # itself preview-gated app-wide.
-  #
-  # The bills tools back the preview-gated Bills subsystem.
+  # Statement Vault + provenance tools, for users who opted into preview features
+  # in Settings -> Preferences. They back the wealth agent-harness workflow
+  # documented in docs/llm-guides/wealth-agent-harness.md.
   PREVIEW_FUNCTION_CLASSES = [
     Function::UploadAccountStatement,
     Function::ListAccountStatements,
     Function::GetAccountStatement,
     Function::GetStatementCoverage,
-    Function::RecordValuation,
-    Function::GetValuations,
-    Function::GetInsights,
-    # Bills: the whole subsystem is preview-gated, so its tools ride the same
-    # per-user flag as the surfaces they operate on. Each tool additionally
-    # re-checks the family's recurring feature gate and the user's
-    # account-access scope itself.
-    Function::GetBills,
-    Function::GetBillDetails,
-    Function::GetPaycheckPlan,
-    Function::GetBillAudit,
-    Function::CreateBill,
-    Function::UpdateBill,
-    Function::RecordBillPayment
+    Function::RecordValuation
   ].freeze
 
   class << self
@@ -56,7 +38,6 @@ module Assistant
     def function_classes(user = nil)
       classes = [
         Function::GetTransactions,
-        Function::GetRecurringTransactions,
         Function::GetAccounts,
         Function::GetHoldings,
         Function::GetBalanceSheet,
@@ -65,18 +46,13 @@ module Assistant
         Function::ImportBankStatement,
         Function::SearchFamilyFiles,
         Function::CreateGoal,
-        Function::SetOpeningBalance,
         Function::GetTags,
         Function::CreateTag,
         Function::UpdateTag,
         Function::GetCategories,
         Function::CreateCategory,
         Function::UpdateCategory,
-        Function::GetMerchants,
-        Function::UpdateTransaction,
-        Function::CreateTransaction,
-        Function::DeleteTransaction,
-        Function::UpdateBudget
+        Function::UpdateTransaction
       ]
 
       classes += PREVIEW_FUNCTION_CLASSES if user&.preview_features_enabled?
