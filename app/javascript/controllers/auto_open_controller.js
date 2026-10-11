@@ -1,5 +1,4 @@
 import { Controller } from "@hotwired/stimulus";
-import replaceUrl from "utils/replace_url";
 
 // Connects to data-controller="auto-open"
 // Auto-opens a <details> element based on URL param
@@ -19,7 +18,7 @@ export default class extends Controller {
       const newUrl = params.toString()
         ? `${window.location.pathname}?${params.toString()}${window.location.hash}`
         : `${window.location.pathname}${window.location.hash}`;
-      replaceUrl(newUrl);
+      window.history.replaceState({}, "", newUrl);
 
       // Scroll into view after opening
       requestAnimationFrame(() => {
