@@ -4,7 +4,6 @@ class Depository < ApplicationRecord
   DEFAULT_SUBTYPE = "checking"
 
   SUBTYPES = {
-    "cash" => { short: "Cash", long: "Cash" },
     "checking" => { short: "Checking", long: "Checking" },
     "savings" => { short: "Savings", long: "Savings" },
     "hsa" => { short: "HSA", long: "Health Savings Account" },

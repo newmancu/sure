@@ -84,15 +84,13 @@ export function sanitizeSelfHostedFeedback(event) {
   if (!event || ![
     "sankey_preview_displayed",
     "sankey_preview_feedback_clicked",
-    "new_sankey_match",
-    "new_sankey_mismatch",
     "survey shown",
     "survey sent",
     "survey dismissed",
   ].includes(event.event)) return null;
   // The browser SDK carries its public ingestion token inside properties.
   const allowed = new Set([
-    "token", "distinct_id", "sure_version", "preview_version", "surface", "state", "rating", "$survey_id",
+    "token", "distinct_id", "preview_version", "surface", "state", "rating", "$survey_id",
   ]);
   event.properties = Object.fromEntries(
     Object.entries(event.properties || {}).filter(([key]) =>
@@ -101,31 +99,20 @@ export function sanitizeSelfHostedFeedback(event) {
   );
   delete event.$set;
   delete event.$set_once;
-  // Use the browser connection IP for PostHog location enrichment.
-  event.properties.$geoip_disable = false;
+  event.properties.$geoip_disable = true;
   event.properties.$process_person_profile = false;
   return event;
 }
 
-export function initializeSelfHostedFeedback(posthog, key, host, loaded, sureVersion) {
+export function initializeSelfHostedFeedback(posthog, key, host, loaded) {
   try {
     if (!key || posthog?.sankeyFeedback || posthog?.has_opted_out_capturing?.()) return;
     posthog?.init?.(key, {
       ...selfHostedFeedbackOptions(host),
       // The SDK assigns named instances after their loaded callback returns.
-      loaded: (client) => {
-        client.register({ sure_version: sureVersion });
-        queueMicrotask(loaded);
-      },
+      loaded: () => queueMicrotask(loaded),
     }, "sankeyFeedback");
   } catch {
     // Blocked analytics must not prevent chart setup or navigation.
   }
-}
-
-// Only the outcome leaves the browser, never the compared graphs.
-// The controller deduplicates successful SDK captures for each graph load.
-export function captureSankeyComparison(posthog, result) {
-  if (!["match", "mismatch"].includes(result)) return false;
-  return capturePreviewEvent(posthog, `new_sankey_${result}`);
 }

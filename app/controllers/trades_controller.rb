@@ -19,13 +19,6 @@ class TradesController < ApplicationController
 
     return unless require_account_permission!(@account)
 
-    # A deposit or withdrawal also books an entry on the other account, so that
-    # account needs the same write permission, as in TransfersController#create.
-    if create_params[:transfer_account_id].present?
-      transfer_account = accessible_accounts.find(create_params[:transfer_account_id])
-      return unless require_account_permission!(transfer_account)
-    end
-
     @model = Trade::CreateForm.new(create_params.merge(account: @account)).create
 
     if @model.persisted?
@@ -116,7 +109,7 @@ class TradesController < ApplicationController
 
       # Income trades (Dividend/Interest) store amounts as negative (inflow convention).
       # The form displays the absolute value, so we re-negate before saving.
-      if %w[Dividend Interest].include?(@entry.trade&.investment_activity_label) && update_params[:amount].present?
+      if Trade::INCOME_LABELS.include?(@entry.trade&.investment_activity_label) && update_params[:amount].present?
         update_params = update_params.merge(amount: -update_params[:amount].to_d.abs)
       end
 
