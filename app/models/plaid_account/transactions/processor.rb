@@ -42,17 +42,13 @@ class PlaidAccount::Transactions::Processor
       plaid_account.current_account
     end
 
-    # Entries are imported through Account::ProviderImportAdapter, which keys them
-    # on external_id + source and leaves plaid_id empty. Only entries that predate
-    # the adapter carry plaid_id, so a removal has to look in both places.
     def remove_plaid_transaction(raw_transaction)
-      transaction_id = raw_transaction["transaction_id"]
-      return if transaction_id.blank?
-
-      account.entries
-             .where(external_id: transaction_id, source: PlaidEntry::Processor::SOURCE)
-             .or(account.entries.where(plaid_id: transaction_id))
-             .destroy_all
+      id = raw_transaction["transaction_id"]
+      # Entries are keyed by external_id + source under the current import path; fall back to the
+      # legacy plaid_id column for rows synced before the external_id migration.
+      entry = account.entries.find_by(external_id: id, source: "plaid") ||
+              account.entries.find_by(plaid_id: id)
+      entry&.destroy
     end
 
     # Since we find_or_create_by transactions, we don't need a distinction between added/modified
