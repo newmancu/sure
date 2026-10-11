@@ -39,7 +39,6 @@ mk:
       default: "%d/%m/%Y"
       long: "%B %e, %Y"
       short: "%e %b"
-      short_with_year: "%b %-d, %Y"
     month_names:
     -
     - Јануари
