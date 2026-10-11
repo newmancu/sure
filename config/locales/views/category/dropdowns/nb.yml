@@ -8,5 +8,4 @@ nb:
       show:
         clear: Fjern kategori
         no_categories: Ingen kategorier funnet
-        recent: Nylige
         search_placeholder: Søk

@@ -16,7 +16,6 @@ en:
     budgets: Budgets
     categories: Categories
     categorize: Categorize
-    changelog: What's new
     chats: Chats
     coinbase_items: Coinbase
     coinstats_items: CoinStats
@@ -30,7 +29,6 @@ en:
     exports: Exports
     family_exports: Exports
     family_merchants: Merchants
-    feedback: Feedback
     guides: Guides
     holdings: Holdings
     home: Home
@@ -41,6 +39,7 @@ en:
     indexa_capital_items: Indexa Capital
     intro: Intro
     investments: Investments
+    insurances: Insurance
     invitations: Invitations
     invite_codes: Invite codes
     kraken_items: Kraken
@@ -53,7 +52,6 @@ en:
     mercury_items: Mercury
     messages: Messages
     mfa: Two-factor authentication
-    monobank_items: Monobank
     oidc_accounts: SSO accounts
     onboardings: Onboarding
     other_assets: Other assets
@@ -61,14 +59,12 @@ en:
     payments: Payments
     pending_duplicate_merges: Duplicate review
     plaid_items: Plaid
-    plan: Plan
     preferences: Preferences
     profile: Profile Info
     profiles: Profile Info
     properties: Properties
     providers: Providers
     recurring_transactions: Recurring
-    redbark_items: Redbark
     registrations: Sign up
     reports: Reports
     rules: Rules
@@ -83,7 +79,6 @@ en:
     sso_identities: SSO connections
     sso_providers: SSO providers
     subscriptions: Subscription
-    system_health: System Health
     tags: Tags
     trades: Trades
     transactions: Transactions

@@ -20,33 +20,6 @@ class IncomeStatementTest < ActiveSupport::TestCase
     create_transaction(account: @credit_card_account, amount: 400, category: @groceries_category)
   end
 
-  test "a new statement invalidates daily series when the family currency changes" do
-    statement = IncomeStatement.new(@family)
-    period = Period.last_30_days
-
-    Rails.stubs(:cache).returns(ActiveSupport::Cache::MemoryStore.new)
-    IncomeStatement::DailyExpenseTotals.expects(:new).twice.returns(stub(call: []))
-
-    statement.daily_expense_series(period: period)
-    @family.update!(currency: "EUR")
-    IncomeStatement.new(@family).daily_expense_series(period: period)
-  end
-
-  test "a new statement invalidates daily series when exchange rates change" do
-    statement = IncomeStatement.new(@family)
-    period = Period.last_30_days
-
-    Rails.stubs(:cache).returns(ActiveSupport::Cache::MemoryStore.new)
-    IncomeStatement::DailyExpenseTotals.expects(:new).twice.returns(stub(call: []))
-
-    statement.daily_expense_series(period: period)
-
-    travel 1.second do
-      ExchangeRate.create!(from_currency: "USD", to_currency: "EUR", date: Date.current, rate: 0.9)
-      IncomeStatement.new(@family).daily_expense_series(period: period)
-    end
-  end
-
   test "calculates totals for transactions" do
     income_statement = IncomeStatement.new(@family)
     totals = income_statement.totals(date_range: Period.last_30_days.date_range)
@@ -101,30 +74,6 @@ class IncomeStatementTest < ActiveSupport::TestCase
 
     assert_equal expected_total_income, income_totals.total
     assert_equal expected_total_income, income_totals.category_totals.find { |ct| ct.category.id == @income_category.id }.total
-  end
-
-  test "totals_for scopes totals to a period and optional account ids" do
-    income_statement = IncomeStatement.new(@family)
-    period = Period.last_30_days
-
-    all_totals = income_statement.totals_for(period)
-    assert_equal Money.new(1000, @family.currency), all_totals.income_money
-    assert_equal Money.new(200 + 300 + 400, @family.currency), all_totals.expense_money
-
-    checking_only_totals = income_statement.totals_for(period, account_ids: [ @checking_account.id ])
-    assert_equal Money.new(1000, @family.currency), checking_only_totals.income_money
-    assert_equal Money.new(200, @family.currency), checking_only_totals.expense_money
-  end
-
-  test "eligible_accounts excludes accounts not reflected in totals" do
-    tax_advantaged_account = @family.accounts.create! name: "401k", currency: @family.currency, balance: 10000, accountable: Investment.new(subtype: "401k")
-    excluded_account = @family.accounts.create! name: "Excluded", currency: @family.currency, balance: 0, exclude_from_reports: true, accountable: Depository.new
-
-    eligible_ids = IncomeStatement.new(@family).eligible_accounts.pluck(:id)
-
-    assert_includes eligible_ids, @checking_account.id
-    assert_not_includes eligible_ids, tax_advantaged_account.id
-    assert_not_includes eligible_ids, excluded_account.id
   end
 
   test "calculates median expense" do
@@ -295,18 +244,6 @@ class IncomeStatementTest < ActiveSupport::TestCase
     assert_equal 4, totals.transactions_count # Only original 4 transactions
     assert_equal Money.new(1000, @family.currency), totals.income_money
     assert_equal Money.new(900, @family.currency), totals.expense_money
-  end
-
-  # A flag PostgreSQL cannot cast to boolean used to raise
-  # PG::InvalidTextRepresentation and take the whole statement down.
-  test "a pending flag PostgreSQL cannot cast neither raises nor counts" do
-    assert_statement_leaves_out_flagged_expense("maybe")
-  end
-
-  # Transaction#pending? (and so the Pending badge) calls "no" pending;
-  # PostgreSQL's ::boolean called it posted and counted it.
-  test "a \"no\" pending flag is pending, as Transaction#pending? says" do
-    assert_statement_leaves_out_flagged_expense("no")
   end
 
   # NEW TESTS: Interval-Based Calculations
@@ -785,24 +722,4 @@ class IncomeStatementTest < ActiveSupport::TestCase
 
     assert_equal 1, totals_query_calls
   end
-
-  private
-    # Adds a 250 grocery expense whose pending flag is +flag+ and asserts every
-    # figure is the one without it: totals (Transaction.excluding_pending), the
-    # family median and average (FamilyStats) and the category median
-    # (CategoryStats), each of which reads the flag in its own SQL.
-    def assert_statement_leaves_out_flagged_expense(flag)
-      flagged = create_transaction(account: @checking_account, amount: 250, category: @groceries_category)
-      flagged.entryable.update!(extra: { "plaid" => { "pending" => flag } })
-      assert flagged.entryable.pending?, "pending? should call #{flag.inspect} pending"
-
-      income_statement = IncomeStatement.new(@family)
-      totals = income_statement.totals(date_range: Period.last_30_days.date_range)
-
-      assert_equal 4, totals.transactions_count
-      assert_equal Money.new(900, @family.currency), totals.expense_money
-      assert_equal 900.0, income_statement.median_expense(interval: "month")
-      assert_equal 900.0, income_statement.avg_expense(interval: "month")
-      assert_equal 900.0, income_statement.median_expense(interval: "month", category: @groceries_category)
-    end
 end

@@ -1,6 +1,5 @@
 class InsightsController < ApplicationController
-  before_action :require_preview_features!
-  before_action :set_insight, only: %i[acknowledge unacknowledge]
+  before_action :set_insight, only: %i[dismiss undismiss]
 
   def index
     load_feed
@@ -11,18 +10,12 @@ class InsightsController < ApplicationController
     # hits this GET before the user actually navigates, so skip the write
     # for prefetch requests or badges would clear on hover.
     unless prefetch_request?
-      Current.family.insights.visible.active.update_all(status: "read", read_at: Time.current, updated_at: Time.current)
+      Current.family.insights.active.update_all(status: "read", read_at: Time.current, updated_at: Time.current)
     end
   end
 
-  def acknowledge
-    @insight.acknowledge!
-    # Both surfaces: the response carries streams for the /insights list and the
-    # dashboard widget, and each page applies only the ones whose targets it has.
-    # The list (not just the acknowledged card) is reloaded so its empty state
-    # can take over when the last insight goes.
-    load_feed
-    load_widget_feed
+  def dismiss
+    @insight.dismiss!
 
     respond_to do |format|
       format.turbo_stream
@@ -30,10 +23,9 @@ class InsightsController < ApplicationController
     end
   end
 
-  def unacknowledge
-    @insight.unacknowledge!
+  def undismiss
+    @insight.undismiss!
     load_feed
-    load_widget_feed
 
     respond_to do |format|
       format.turbo_stream
@@ -54,21 +46,12 @@ class InsightsController < ApplicationController
 
   private
     def set_insight
-      # Not `visible`: unacknowledge targets acknowledged rows. The account
-      # check still applies, so a hidden row can't be changed by id.
-      @insight = Current.family.insights.about_shared_accounts.find(params[:id])
+      @insight = Current.family.insights.find(params[:id])
     end
 
     def load_feed
       @insights = Current.family.insights.visible.ordered.to_a
       @unread_ids = @insights.select(&:active?).map(&:id).to_set
-    end
-
-    # Acknowledging is reachable from the dashboard widget as well as this page,
-    # so the response re-renders the widget's top three. Removing a row there
-    # should promote the next insight into the freed slot, not leave a gap.
-    def load_widget_feed
-      @feed_insights = Current.family.insights.visible.ordered.limit(Insight::FEED_LIMIT).to_a
     end
 
     # Turbo sends X-Sec-Purpose (the fetch spec forbids setting Sec-Purpose

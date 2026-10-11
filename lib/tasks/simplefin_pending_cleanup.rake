@@ -16,7 +16,7 @@ namespace :simplefin do
     pending_entries = Entry.joins(
       "INNER JOIN transactions ON transactions.id = entries.entryable_id AND entries.entryable_type = 'Transaction'"
     ).where(source: "simplefin")
-     .where(Transaction.pending_sql("transactions", providers: %w[simplefin]))
+     .where("transactions.extra -> 'simplefin' ->> 'pending' = ?", "true")
      .includes(:account)
 
     puts "Found #{pending_entries.count} pending SimpleFIN transactions"
@@ -35,7 +35,7 @@ namespace :simplefin do
        .where(currency: pending_entry.currency)
        .where(date: pending_entry.date..(pending_entry.date + date_window.days)) # Posted must be ON or AFTER pending
        .where.not(id: pending_entry.id)
-       .where(Transaction.not_pending_sql("transactions", providers: %w[simplefin]))
+       .where("transactions.extra -> 'simplefin' ->> 'pending' != ? OR transactions.extra -> 'simplefin' ->> 'pending' IS NULL", "true")
        .first
 
       if posted_match
@@ -86,7 +86,10 @@ namespace :simplefin do
     excluded_pending = Entry.joins(
       "INNER JOIN transactions ON transactions.id = entries.entryable_id AND entries.entryable_type = 'Transaction'"
     ).where(excluded: true)
-     .where(Transaction.pending_sql("transactions", providers: %w[simplefin plaid]))
+     .where(<<~SQL.squish)
+       (transactions.extra -> 'simplefin' ->> 'pending')::boolean = true
+       OR (transactions.extra -> 'plaid' ->> 'pending')::boolean = true
+     SQL
 
     puts "Found #{excluded_pending.count} excluded pending transactions to evaluate"
     puts ""
@@ -102,7 +105,10 @@ namespace :simplefin do
         .where(currency: pending_entry.currency)
         .where(amount: pending_entry.amount)
         .where(date: pending_entry.date..(pending_entry.date + date_window.days))
-        .where(Transaction.not_pending_sql("transactions", providers: %w[simplefin plaid]))
+        .where(<<~SQL.squish)
+          (transactions.extra -> 'simplefin' ->> 'pending')::boolean IS NOT TRUE
+          AND (transactions.extra -> 'plaid' ->> 'pending')::boolean IS NOT TRUE
+        SQL
         .exists?
 
       unless valid_match
@@ -136,7 +142,7 @@ namespace :simplefin do
     pending_entries = Entry.joins(
       "INNER JOIN transactions ON transactions.id = entries.entryable_id AND entries.entryable_type = 'Transaction'"
     ).where(source: "simplefin")
-     .where(Transaction.pending_sql("transactions", providers: %w[simplefin]))
+     .where("transactions.extra -> 'simplefin' ->> 'pending' = ?", "true")
      .includes(:account)
      .order(date: :desc)
 

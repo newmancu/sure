@@ -50,9 +50,7 @@ class Provider::Anthropic::ChatParser
             id: block_value(block, :id),
             call_id: block_value(block, :id),
             function_name: block_value(block, :name),
-            # A tool_use block with no arguments streams in as an empty string.
-            # Normalize it to an empty JSON object so downstream JSON.parse succeeds.
-            function_args: input.is_a?(String) ? input.presence || "{}" : (input || {}).to_json
+            function_args: input.is_a?(String) ? input : input.to_json
           )
         end
     end
