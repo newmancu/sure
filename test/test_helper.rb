@@ -27,7 +27,8 @@ require "rack/test"
 require "tempfile"
 require "uri"
 require Rails.root.join("test/support/sql_query_capture").to_s
-require Rails.root.join("test/support/rake_task_test_helper").to_s
+
+require_relative "support/ci_system_test_timing_plugin" if ENV["CI_SYSTEM_TEST_TIMING"] == "true"
 
 VCR.configure do |config|
   config.cassette_library_dir = "test/vcr_cassettes"
