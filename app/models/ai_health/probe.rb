@@ -75,11 +75,10 @@ class AiHealth
     # Seconds each probe request is allowed to run. Single source of truth:
     # both the probes (instance methods below) and AiHealth's System Health
     # reporting resolve the effective timeout through here so the two can
-    # never drift. Precedence: AI_HEALTH_PROBE_TIMEOUT > the Self-Hosting
-    # setting > DEFAULT_TIMEOUT, with non-positive values treated as unset.
+    # never drift. Honors AI_HEALTH_PROBE_TIMEOUT; falls back to
+    # DEFAULT_TIMEOUT when unset or non-positive.
     def self.timeout
-      seconds = ENV["AI_HEALTH_PROBE_TIMEOUT"].to_s.strip.to_i
-      seconds = Setting.ai_health_probe_timeout.to_i unless seconds.positive?
+      seconds = ENV.fetch("AI_HEALTH_PROBE_TIMEOUT", DEFAULT_TIMEOUT).to_i
       seconds.positive? ? seconds : DEFAULT_TIMEOUT
     end
 
