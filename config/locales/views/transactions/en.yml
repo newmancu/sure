@@ -61,11 +61,7 @@ en:
       updated: Transaction updated
     new:
       new_transaction: New transaction
-    transaction_category:
-      set_on_outflow: "The category belongs to the outgoing side of this transfer and can only be changed there"
     show:
-      category_set_on_hidden_outflow: "This is the incoming side of a transfer. Its category belongs to the outgoing side, on an account you cannot access, and can only be changed there."
-      category_set_on_outflow: "This is the incoming side of a transfer. Its category belongs to the outgoing side and can only be changed there, so budgets count it once."
       keep_both: No, keep both
       loan_payment: Loan Payment
       mark_recurring: Mark as Recurring
@@ -102,6 +98,7 @@ en:
       pending_duplicate_merger_title: Duplicate of Posted Transaction?
       pending_duplicate_merger_description: Manually merge this pending transaction with its posted version.
       pending_duplicate_merger_button: Open merger
+      merge_split_parent_blocked: Unsplit this transaction before merging with the posted version.
       merchant_label: Merchant
       name_label: Name
       nature: Type

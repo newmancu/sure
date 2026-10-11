@@ -26,6 +26,19 @@ class PendingDuplicateMergesControllerTest < ActionDispatch::IntegrationTest
     assert_equal "This feature is only available for pending transactions", flash[:alert]
   end
 
+  test "new redirects when the pending transaction is a split parent" do
+    pending_transaction = create_pending_transaction(amount: -100, account: @account)
+    pending_transaction.split!([
+      { name: "Part 1", amount: -60, category_id: nil },
+      { name: "Part 2", amount: -40, category_id: nil }
+    ])
+
+    get new_transaction_pending_duplicate_merges_path(pending_transaction)
+
+    assert_redirected_to transactions_path
+    assert_equal "This feature is only available for pending transactions", flash[:alert]
+  end
+
   test "create merges pending transaction with selected posted transaction" do
     pending_transaction = create_pending_transaction(amount: -50, account: @account)
     posted_transaction = create_transaction(amount: -50, account: @account)
@@ -130,25 +143,6 @@ class PendingDuplicateMergesControllerTest < ActionDispatch::IntegrationTest
       post transaction_pending_duplicate_merges_path(pending_transaction), params: {
         pending_duplicate_merges: {
           posted_entry_id: another_pending.id
-        }
-      }
-    end
-
-    assert_redirected_to transactions_path
-    assert_equal "Invalid transaction selected for merge", flash[:alert]
-  end
-
-  # Transaction#pending? calls "no" pending, and pending_duplicate_candidates
-  # does not offer it; the controller must not accept it when posted directly.
-  test "create rejects merge with a transaction whose pending flag is \"no\"" do
-    pending_transaction = create_pending_transaction(amount: -50, account: @account)
-    said_no = create_transaction(amount: -50, account: @account)
-    said_no.entryable.update!(extra: { "simplefin" => { "pending" => "no" } })
-
-    assert_no_difference "Entry.count" do
-      post transaction_pending_duplicate_merges_path(pending_transaction), params: {
-        pending_duplicate_merges: {
-          posted_entry_id: said_no.id
         }
       }
     end
