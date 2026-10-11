@@ -407,6 +407,19 @@ class Family < ApplicationRecord
     Merchant.where(id: merchant_ids)
   end
 
+  # Generates missing Brandfetch logos for provider merchants that have a
+  # website, so records that got their website before Brandfetch was configured
+  # self-heal (issue #2925). Returns the number of logos generated.
+  #
+  # Logos are cosmetic: a failure here must not fail the callers (post-sync
+  # rule application, LLM merchant enhancement).
+  def backfill_provider_merchant_logos
+    ProviderMerchant.where(id: transactions.select(:merchant_id)).backfill_logos
+  rescue StandardError => e
+    Rails.logger.error("Failed to backfill provider merchant logos for family #{id}: #{e.message}")
+    0
+  end
+
   def available_merchants
     assigned_ids = transactions.where.not(merchant_id: nil).pluck(:merchant_id).uniq
     recently_unlinked_ids = FamilyMerchantAssociation
@@ -515,7 +528,7 @@ class Family < ApplicationRecord
       if duplicates.any?
         duplicate_ids = duplicates.map(&:id)
         categories.where(parent_id: duplicate_ids).update_all(parent_id: keeper.id)
-        Transaction.reassign_category!(transactions.where(category_id: duplicate_ids), keeper.id)
+        Transaction.where(category_id: duplicate_ids).update_all(category_id: keeper.id)
         BudgetCategory.where(category_id: duplicate_ids).update_all(category_id: keeper.id)
         categories.where(id: duplicate_ids).delete_all
       end
