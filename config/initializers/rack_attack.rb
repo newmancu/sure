@@ -143,6 +143,34 @@ class Rack::Attack
     credential_guess_email.call(request) if request.post? && credential_guess_path.call(request, "/api/v1/auth/sso_link")
   end
 
+  # Creating/updating a Trade Republic connection can submit brokerage
+  # credentials, just like the explicit login actions. Share their budgets
+  # so switching actions cannot bypass the limit. Status polling and QR
+  # cancellation submit no credentials and must not exhaust this budget.
+  trade_republic_auth_item_id = ->(request) do
+    match = if request.post?
+      request.path.match(%r{\A/trade_republic_items/([^/.?]+)/(?:initiate_login|complete_login|initiate_qr_login)(?:\.[^./?]+)?\z})
+    elsif request.patch? || request.put?
+      request.path.match(%r{\A/trade_republic_items/([^/.?]+)(?:\.[^./?]+)?\z})
+    end
+
+    # Rails decodes route params and accepts UUIDs with different casing,
+    # braces or omitted hyphens. All spellings must share the same budget.
+    item_id = Rack::Utils.unescape_path(match[1]) if match
+    # Leave invalid UTF-8 route parameters to Rails' bad-request handling.
+    item_id.delete("{}-").downcase if item_id&.valid_encoding?
+  end
+
+  throttle("trade_republic_auth/ip", limit: 10, period: 1.minute) do |request|
+    if (request.post? && credential_guess_path.call(request, "/trade_republic_items")) || trade_republic_auth_item_id.call(request)
+      request.ip
+    end
+  end
+
+  throttle("trade_republic_auth/item", limit: 10, period: 1.minute) do |request|
+    trade_republic_auth_item_id.call(request)
+  end
+
   # FinanceKit publisher endpoints belong to this section: both the upload and
   # the receipt read authenticate a bearer token against a stored SHA-256
   # digest (FinancekitItem#authenticate_credential?), the same
