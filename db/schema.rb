@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
+ActiveRecord::Schema[8.1].define(version: 2026_09_27_161700) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
   enable_extension "pgcrypto"
@@ -918,7 +918,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
     t.index ["account_id"], name: "index_financekit_account_lineages_on_account_id"
     t.index ["family_id", "account_id"], name: "financekit_lineage_canonical_account", unique: true, where: "(account_id IS NOT NULL)"
     t.index ["family_id"], name: "index_financekit_account_lineages_on_family_id"
-    t.check_constraint "account_origin IS NULL OR (account_origin::text = ANY (ARRAY['created'::character varying::text, 'linked'::character varying::text]))", name: "financekit_lineage_account_origin"
+    t.check_constraint "account_origin IS NULL OR (account_origin::text = ANY (ARRAY['created'::character varying, 'linked'::character varying]::text[]))", name: "financekit_lineage_account_origin"
   end
 
   create_table "financekit_accounts", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
@@ -1579,10 +1579,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
 
   create_table "loans", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.datetime "created_at", null: false
-    t.decimal "down_payment", precision: 19, scale: 4
     t.decimal "initial_balance", precision: 19, scale: 4
-    t.decimal "insurance_rate", precision: 8, scale: 4
-    t.string "insurance_rate_type"
     t.decimal "interest_rate", precision: 10, scale: 3
     t.jsonb "locked_attributes", default: {}
     t.string "rate_type"
@@ -1591,9 +1588,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
     t.integer "term_months"
     t.datetime "updated_at", null: false
     t.jsonb "variable_rate_schedule", default: {}, null: false
-    t.check_constraint "down_payment IS NULL OR down_payment >= 0::numeric", name: "chk_loans_down_payment_non_negative"
-    t.check_constraint "insurance_rate IS NULL OR insurance_rate >= 0::numeric", name: "chk_loans_insurance_rate_non_negative"
-    t.check_constraint "insurance_rate_type IS NULL OR (insurance_rate_type::text = ANY (ARRAY['level_term'::character varying::text, 'decreasing_life'::character varying::text]))", name: "chk_loans_insurance_rate_type"
   end
 
   create_table "lunchflow_accounts", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
@@ -1611,7 +1605,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
     t.jsonb "raw_holdings_payload"
     t.jsonb "raw_payload"
     t.jsonb "raw_transactions_payload"
-    t.boolean "treat_balance_as_available_credit", default: false, null: false
     t.datetime "updated_at", null: false
     t.index ["account_id"], name: "index_lunchflow_accounts_on_account_id"
     t.index ["lunchflow_item_id", "account_id"], name: "index_lunchflow_accounts_on_item_and_account_id", unique: true, where: "(account_id IS NOT NULL)"
@@ -1736,8 +1729,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
     t.string "currency", null: false
     t.decimal "current_balance", precision: 19, scale: 4
     t.datetime "history_synced_from"
+    t.string "iban"
     t.boolean "ignored", default: false, null: false
     t.jsonb "institution_metadata"
+    t.string "masked_pan"
     t.uuid "monobank_item_id", null: false
     t.string "name", null: false
     t.string "provider"
@@ -1945,6 +1940,57 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
     t.index ["plaid_id"], name: "index_plaid_items_on_plaid_id", unique: true
   end
 
+  create_table "pluggy_accounts", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.string "account_number"
+    t.string "account_status"
+    t.string "account_type"
+    t.boolean "activities_fetch_pending", default: false, null: false
+    t.decimal "cash_balance", precision: 19, scale: 4
+    t.datetime "created_at", null: false
+    t.string "currency"
+    t.decimal "current_balance", precision: 19, scale: 4
+    t.jsonb "institution_metadata"
+    t.datetime "last_activities_sync"
+    t.datetime "last_holdings_sync"
+    t.string "name"
+    t.string "pluggy_account_id"
+    t.uuid "pluggy_item_id", null: false
+    t.string "provider"
+    t.jsonb "raw_activities_payload", default: [], null: false
+    t.jsonb "raw_holdings_payload", default: [], null: false
+    t.jsonb "raw_payload"
+    t.jsonb "raw_transactions_payload"
+    t.date "sync_start_date"
+    t.datetime "updated_at", null: false
+    t.index ["pluggy_account_id"], name: "index_pluggy_accounts_on_pluggy_account_id"
+    t.index ["pluggy_item_id"], name: "index_pluggy_accounts_on_pluggy_item_id"
+    t.index ["pluggy_item_id", "pluggy_account_id"], name: "index_pluggy_accounts_on_item_and_account_id", unique: true
+  end
+
+  create_table "pluggy_items", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.string "client_id"
+    t.string "client_secret"
+    t.datetime "created_at", null: false
+    t.uuid "family_id", null: false
+    t.string "institution_color"
+    t.string "institution_domain"
+    t.string "institution_id"
+    t.string "institution_name"
+    t.string "institution_url"
+    t.string "name"
+    t.boolean "pending_account_setup", default: false
+    t.string "pluggy_item_id"
+    t.jsonb "raw_institution_payload"
+    t.jsonb "raw_payload"
+    t.boolean "scheduled_for_deletion", default: false
+    t.string "status", default: "good"
+    t.datetime "sync_start_date"
+    t.datetime "updated_at", null: false
+    t.index ["family_id"], name: "index_pluggy_items_on_family_id"
+    t.index ["pluggy_item_id"], name: "index_pluggy_items_on_pluggy_item_id"
+    t.index ["status"], name: "index_pluggy_items_on_status"
+  end
+
   create_table "properties", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.string "area_unit"
     t.integer "area_value"
@@ -1985,6 +2031,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
   end
 
   create_table "questrade_accounts", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.string "account_number"
     t.string "account_status"
     t.string "account_type"
     t.boolean "activities_fetch_pending", default: false
@@ -2182,6 +2229,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
   end
 
   create_table "redbark_accounts", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
+    t.string "account_number"
     t.string "account_status"
     t.string "account_type"
     t.string "connection_id"
@@ -2331,20 +2379,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
     t.datetime "updated_at", null: false
     t.index ["security_id", "date", "currency"], name: "index_security_prices_on_security_id_and_date_and_currency", unique: true
     t.index ["security_id"], name: "index_security_prices_on_security_id"
-  end
-
-  create_table "security_splits", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
-    t.datetime "created_at", null: false
-    t.integer "denominator", null: false
-    t.date "ex_date", null: false
-    t.integer "numerator", null: false
-    t.uuid "security_id", null: false
-    t.string "source", null: false
-    t.datetime "updated_at", null: false
-    t.index ["security_id", "ex_date"], name: "index_security_splits_on_security_id_and_ex_date", unique: true
-    t.index ["security_id"], name: "index_security_splits_on_security_id"
-    t.check_constraint "numerator <> denominator", name: "security_splits_not_one_to_one"
-    t.check_constraint "numerator > 0 AND denominator > 0", name: "security_splits_positive_terms"
   end
 
   create_table "sessions", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
@@ -2640,7 +2674,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
 
   create_table "tool_calls", id: :uuid, default: -> { "gen_random_uuid()" }, force: :cascade do |t|
     t.datetime "created_at", null: false
-    t.jsonb "extra_content"
     t.jsonb "function_arguments"
     t.string "function_name"
     t.jsonb "function_result"
@@ -2685,7 +2718,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
     t.boolean "scheduled_for_deletion", default: false, null: false
     t.text "session_blob"
     t.string "status", default: "good", null: false
-    t.jsonb "timeline_cursors", default: {}, null: false
     t.datetime "updated_at", null: false
     t.index ["family_id", "brokerage_account_id"], name: "index_trade_republic_items_on_family_id_and_brokerage_account", unique: true, where: "((brokerage_account_id IS NOT NULL) AND (scheduled_for_deletion = false))"
     t.index ["family_id"], name: "index_trade_republic_items_on_family_id"
@@ -2841,7 +2873,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
     t.string "locale"
     t.datetime "onboarded_at"
     t.string "otp_backup_codes", default: [], array: true
-    t.datetime "otp_last_used_at"
     t.boolean "otp_required", default: false, null: false
     t.string "otp_secret"
     t.string "password_digest"
@@ -3063,6 +3094,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
   add_foreign_key "plaid_accounts", "plaid_items"
   add_foreign_key "plaid_items", "families"
   add_foreign_key "plaid_items", "users", column: "owner_id", on_delete: :nullify
+  add_foreign_key "pluggy_accounts", "pluggy_items"
+  add_foreign_key "pluggy_items", "families"
   add_foreign_key "push_subscriptions", "users"
   add_foreign_key "questrade_accounts", "questrade_items"
   add_foreign_key "questrade_items", "families"
@@ -3092,7 +3125,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_08_120000) do
   add_foreign_key "rule_runs", "rules"
   add_foreign_key "rules", "families"
   add_foreign_key "security_prices", "securities"
-  add_foreign_key "security_splits", "securities", on_delete: :cascade
   add_foreign_key "sessions", "impersonation_sessions", column: "active_impersonator_session_id", on_delete: :nullify
   add_foreign_key "sessions", "users"
   add_foreign_key "simplefin_accounts", "simplefin_items"

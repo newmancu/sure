@@ -5,7 +5,7 @@ class Family < ApplicationRecord
 
   include FioConnectable
   include Syncable, AutoTransferMatchable, Subscribeable, VectorSearchable
-  include PlaidConnectable, SimplefinConnectable, LunchflowConnectable, AkahuConnectable, EnableBankingConnectable
+  include PlaidConnectable, SimplefinConnectable, LunchflowConnectable, AkahuConnectable, EnableBankingConnectable, PluggyConnectable
   include CoinbaseConnectable, BinanceConnectable, KrakenConnectable, CoinspotConnectable, CoinstatsConnectable, SnaptradeConnectable, MercuryConnectable, BrexConnectable, SophtronConnectable
   include IndexaCapitalConnectable, IbkrConnectable, WiseConnectable
   include UpConnectable
@@ -515,7 +515,7 @@ class Family < ApplicationRecord
       if duplicates.any?
         duplicate_ids = duplicates.map(&:id)
         categories.where(parent_id: duplicate_ids).update_all(parent_id: keeper.id)
-        Transaction.reassign_category!(transactions.where(category_id: duplicate_ids), keeper.id)
+        Transaction.where(category_id: duplicate_ids).update_all(category_id: keeper.id)
         BudgetCategory.where(category_id: duplicate_ids).update_all(category_id: keeper.id)
         categories.where(id: duplicate_ids).delete_all
       end
