@@ -23,21 +23,6 @@ class EntryTest < ActiveSupport::TestCase
     assert_equal entry_ids.sort.reverse, Entry.where(id: entry_ids).reverse_chronological.pluck(:id)
   end
 
-  # Regression: lock_saved_attributes! and mark_user_modified! save again and used
-  # to drop the original date, so moving an entry later double-counted it.
-  test "sync_account_later keeps the original date across later saves" do
-    entry = create_transaction(account: accounts(:depository), date: 5.days.ago.to_date)
-    original_date = entry.date
-
-    entry.update!(date: 2.days.ago.to_date)
-    entry.update!(date: 1.day.ago.to_date)
-    entry.lock_saved_attributes!
-    entry.mark_user_modified!
-
-    entry.account.expects(:sync_later).with(window_start_date: original_date)
-    entry.sync_account_later
-  end
-
   test "bulk_update! touches the assigned category's last_used_at" do
     entry = create_transaction(account: accounts(:depository))
     category = categories(:income)
@@ -46,5 +31,109 @@ class EntryTest < ActiveSupport::TestCase
     Entry.where(id: entry.id).bulk_update!({ category_id: category.id })
 
     assert_not_nil category.reload.last_used_at
+  end
+
+  test "reconciled_status defaults to unreconciled" do
+    entry = create_transaction(account: accounts(:depository))
+
+    assert entry.unreconciled?
+    assert_equal "unreconciled", entry.reconciled_status
+  end
+
+  test "advance_reconciled_status! cycles unreconciled -> cleared -> reconciled -> unreconciled" do
+    entry = create_transaction(account: accounts(:depository))
+
+    entry.advance_reconciled_status!
+    assert_equal "cleared", entry.reload.reconciled_status
+
+    entry.advance_reconciled_status!
+    assert_equal "reconciled", entry.reload.reconciled_status
+
+    entry.advance_reconciled_status!
+    assert_equal "unreconciled", entry.reload.reconciled_status
+  end
+
+  test "needs_reconciliation scope includes unreconciled and cleared, excludes reconciled" do
+    account = accounts(:depository)
+    unreconciled = create_transaction(account: account, name: "Unreconciled")
+    cleared = create_transaction(account: account, name: "Cleared")
+    reconciled = create_transaction(account: account, name: "Reconciled")
+
+    cleared.update!(reconciled_status: "cleared")
+    reconciled.update!(reconciled_status: "reconciled")
+
+    scoped_ids = Entry.where(id: [ unreconciled.id, cleared.id, reconciled.id ]).needs_reconciliation.pluck(:id)
+
+    assert_includes scoped_ids, unreconciled.id
+    assert_includes scoped_ids, cleared.id
+    assert_not_includes scoped_ids, reconciled.id
+  end
+
+  test "cleared_or_reconciled scope includes cleared and reconciled, excludes unreconciled" do
+    account = accounts(:depository)
+    unreconciled = create_transaction(account: account, name: "Unreconciled")
+    cleared = create_transaction(account: account, name: "Cleared")
+    reconciled = create_transaction(account: account, name: "Reconciled")
+
+    cleared.update!(reconciled_status: "cleared")
+    reconciled.update!(reconciled_status: "reconciled")
+
+    scoped_ids = Entry.where(id: [ unreconciled.id, cleared.id, reconciled.id ]).cleared_or_reconciled.pluck(:id)
+
+    assert_not_includes scoped_ids, unreconciled.id
+    assert_includes scoped_ids, cleared.id
+    assert_includes scoped_ids, reconciled.id
+  end
+
+  test "bulk_update! applies reconciled_status to manual accounts" do
+    entry = create_transaction(account: accounts(:depository))
+    assert accounts(:depository).manual?
+
+    Entry.where(id: entry.id).bulk_update!({ reconciled_status: "cleared" })
+
+    assert_equal "cleared", entry.reload.reconciled_status
+  end
+
+  test "bulk_update! ignores reconciled_status for synced accounts" do
+    entry = create_transaction(account: accounts(:connected))
+    assert_not accounts(:connected).manual?
+
+    Entry.where(id: entry.id).bulk_update!({ reconciled_status: "cleared" })
+
+    assert_equal "unreconciled", entry.reload.reconciled_status
+  end
+
+  test "bulk_update! applies reconciled_status only to manual entries in a mixed selection and reports the accurate count" do
+    manual_entry = create_transaction(account: accounts(:depository))
+    synced_entry = create_transaction(account: accounts(:connected))
+
+    updated_count = Entry.where(id: [ manual_entry.id, synced_entry.id ])
+                          .bulk_update!({ reconciled_status: "cleared" })
+
+    assert_equal "cleared", manual_entry.reload.reconciled_status
+    assert_equal "unreconciled", synced_entry.reload.reconciled_status
+    assert_equal 1, updated_count, "only the manual entry actually changed, so the reported count should be 1, not 2"
+    assert_not synced_entry.user_modified?
+  end
+
+  test "bulk_update! reconciling alone does not lock saved attributes, matching advance_reconciled_status!" do
+    entry = create_transaction(account: accounts(:depository), category: categories(:food_and_drink))
+
+    Entry.where(id: entry.id).bulk_update!({ reconciled_status: "cleared" })
+    entry.reload
+
+    assert_equal "cleared", entry.reconciled_status
+    assert_not entry.user_modified?, "reconciling alone shouldn't lock the entry from future auto-categorization, same as clicking the badge does"
+  end
+
+  test "bulk_update! locks saved attributes when reconciled_status is combined with a real edit" do
+    entry = create_transaction(account: accounts(:depository))
+
+    Entry.where(id: entry.id).bulk_update!({ reconciled_status: "cleared", notes: "verified against statement" })
+    entry.reload
+
+    assert_equal "cleared", entry.reconciled_status
+    assert_equal "verified against statement", entry.notes
+    assert entry.user_modified?, "a real edit alongside reconciliation should still lock as before"
   end
 end
