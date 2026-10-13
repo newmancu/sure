@@ -5,7 +5,11 @@
 
       <%# Show menu if: manual (can add balance) OR non-crypto (can add transactions) %>
       <%# This hides the menu only for linked crypto accounts who have no actions %>
-      <% if !account.linked? || !account.crypto? %>
+      <% if account.valuable? %>
+        <% if account.permission_for(Current.user).in?([ :owner, :full_control ]) %>
+          <%= render DS::Link.new(text: t("accounts.show.activity.new"), href: new_valuable_item_path(account_id: account.id), icon: "plus", variant: :outline, frame: :modal) %>
+        <% end %>
+      <% elsif !account.linked? || !account.crypto? %>
         <%= render DS::Menu.new(variant: "button") do |menu| %>
           <% menu.with_button(text: t("accounts.show.activity.new"), variant: "secondary", icon: "plus") %>
 
@@ -99,24 +103,13 @@
                                     onchange: "document.getElementById('entries-search').requestSubmit()" %>
                   <%= label_tag "q_status_pending", t("accounts.show.activity.pending"), class: "text-sm text-primary" %>
                 </div>
-                <p class="text-xs font-medium text-secondary uppercase pt-1"><%= t("accounts.show.activity.category") %></p>
-                <div class="flex items-center gap-3">
-                  <%= check_box_tag "q[uncategorized]",
-                                    "1",
-                                    params.dig(:q, :uncategorized) == "1",
-                                    id: "q_uncategorized",
-                                    class: "checkbox checkbox--light",
-                                    form: "entries-search",
-                                    onchange: "document.getElementById('entries-search').requestSubmit()" %>
-                  <%= label_tag "q_uncategorized", t("accounts.show.activity.uncategorized_only"), class: "text-sm text-primary" %>
-                </div>
               </div>
             <% end %>
           <% end %>
       <% end %>
       <%= button_tag type: "button",
             id: "toggle-checkboxes-button",
-            aria: { label: t("UI.account.activity_feed.toggle_selection_checkboxes") },
+            aria: { label: t(".toggle_selection_checkboxes") },
             class: "lg:hidden font-medium whitespace-nowrap inline-flex items-center gap-1 rounded-lg px-3 py-2 text-sm text-primary border border-secondary hover:bg-surface-hover",
             data: {
               action: "click->checkbox-toggle#toggle",

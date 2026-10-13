@@ -3,7 +3,7 @@ class Provider::Registry
 
   Error = Class.new(StandardError)
 
-  CONCEPTS = %i[exchange_rates securities llm property_valuations classification]
+  CONCEPTS = %i[exchange_rates securities llm property_valuations]
 
   validates :concept, inclusion: { in: CONCEPTS }
 
@@ -52,6 +52,15 @@ class Provider::Registry
         return nil unless api_key.present?
 
         Provider::TwelveData.new(api_key)
+      end
+
+      def gold_api
+        return nil unless ENV["GOLD_API_KEY"].present? || Setting.gold_api_enabled
+
+        api_key = ENV["GOLD_API_KEY"].presence || Setting.gold_api_key # pipelock:ignore
+        return nil unless api_key.present?
+
+        Provider::GoldApi.new(api_key)
       end
 
       def plaid_us
@@ -103,18 +112,6 @@ class Provider::Registry
         model = ENV["ANTHROPIC_MODEL"].presence || Setting.anthropic_model
 
         Provider::Anthropic.new(access_token, base_url: base_url, model: model)
-      end
-
-      def jev
-        api_key = Provider::Jev.api_key # pipelock:ignore
-
-        return nil unless api_key.present?
-
-        Provider::Jev.new(
-          api_key,
-          endpoint: Provider::Jev.effective_endpoint,
-          model: Provider::Jev.effective_model
-        )
       end
 
       def yahoo_finance
@@ -227,12 +224,6 @@ class Provider::Registry
         %i[twelve_data yahoo_finance tiingo eodhd alpha_vantage mfapi binance_public moex_public tinkoff_invest mansa]
       when :llm
         %i[openai anthropic]
-      when :classification
-        # Only providers implementing Provider::ClassificationConcept#decide
-        # belong here. OpenAI and Anthropic can auto-categorize but cannot
-        # answer typed questions, so they stay under :llm — the eval runner
-        # builds them by name when benchmarking against Jev.
-        %i[jev]
       when :property_valuations
         %i[rentcast realie]
       else

@@ -6,6 +6,8 @@ class Setting < RailsSettings::Base
 
   # Third-party API keys
   field :twelve_data_api_key, type: :string, default: ENV["TWELVE_DATA_API_KEY"]
+  field :gold_api_key, type: :string, default: ENV["GOLD_API_KEY"]
+  field :gold_api_enabled, type: :boolean, default: ENV["GOLD_API_KEY"].present?
   field :openai_access_token, type: :string, default: ENV["OPENAI_ACCESS_TOKEN"]
   field :openai_uri_base, type: :string, default: ENV["OPENAI_URI_BASE"]
   field :openai_model, type: :string, default: ENV["OPENAI_MODEL"]
@@ -15,14 +17,6 @@ class Setting < RailsSettings::Base
   field :anthropic_model, type: :string, default: ENV["ANTHROPIC_MODEL"]
   field :anthropic_base_url, type: :string, default: ENV["ANTHROPIC_BASE_URL"]
   field :llm_provider, type: :string, default: ENV.fetch("LLM_PROVIDER", "openai")
-
-  # Jev (TypeSafe) — a classification provider, not an LLM. Reachable either
-  # through OpenRouter's Decisions API (the default) or TypeSafe's own endpoint.
-  # Deliberately no OPENROUTER_API_KEY fallback: an operator holding that key
-  # for an unrelated purpose should not silently enable Jev.
-  field :jev_api_key, type: :string, default: ENV["JEV_API_KEY"]
-  field :jev_endpoint, type: :string, default: ENV["JEV_ENDPOINT"]
-  field :jev_model, type: :string, default: ENV["JEV_MODEL"]
 
   # LLM token budget (applies to every outbound LLM call: chat, auto-categorize,
   # merchant detection, enhance-merchants, PDF processing). Defaults track
@@ -38,14 +32,8 @@ class Setting < RailsSettings::Base
   # generate would otherwise always trip the watchdog. Read via
   # `Chat.response_timeout`, which applies ENV > Setting > default precedence.
   field :ai_response_timeout, type: :integer, default: ENV["AI_RESPONSE_TIMEOUT"]&.to_i
-  # Per-request bound for the admin "Run checks" AI probes on System Health.
-  # The PDF probes do a full extraction round trip, which cloud models often
-  # can't finish inside the 5s default. Read via `AiHealth::Probe.timeout`,
-  # which applies ENV > Setting > default precedence.
-  field :ai_health_probe_timeout, type: :integer, default: ENV["AI_HEALTH_PROBE_TIMEOUT"]&.to_i
   field :external_assistant_url, type: :string
   field :external_assistant_token, type: :string
-  field :external_assistant_model, type: :string
   field :external_assistant_agent_id, type: :string
   field :brand_fetch_client_id, type: :string, default: ENV["BRAND_FETCH_CLIENT_ID"]
   field :brand_fetch_high_res_logos, type: :boolean, default: ENV.fetch("BRAND_FETCH_HIGH_RES_LOGOS", "false") == "true"
@@ -110,6 +98,7 @@ class Setting < RailsSettings::Base
   module EncryptedSettingFields
     ENCRYPTED_FIELDS = %i[
       twelve_data_api_key
+      gold_api_key
       tiingo_api_key
       eodhd_api_key
       alpha_vantage_api_key
@@ -119,7 +108,6 @@ class Setting < RailsSettings::Base
       realie_api_key
       openai_access_token
       anthropic_access_token
-      jev_api_key
       external_assistant_token
     ].freeze
 
@@ -213,9 +201,6 @@ class Setting < RailsSettings::Base
   field :require_invite_for_signup, type: :boolean, default: false
   field :require_email_confirmation, type: :boolean, default: ENV.fetch("REQUIRE_EMAIL_CONFIRMATION", "true") == "true"
   field :invite_only_default_family_id, type: :string, default: nil
-  # Opt-in for self-hosted demo refresh. Managed hosting retains its scheduled behavior.
-  field :demo_family_refresh_enabled, type: :boolean, default: false
-  field :demo_family_refresh_family_id, type: :string, default: nil
 
   def self.validate_onboarding_state!(state)
     return if ONBOARDING_STATES.include?(state)

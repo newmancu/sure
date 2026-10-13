@@ -6,6 +6,8 @@ class TradesController < ApplicationController
   # Defaults to a buy trade
   def new
     @account = accessible_accounts.find_by(id: params[:account_id])
+    raise ActiveRecord::RecordNotFound if @account && !@account.supports_trades?
+
     @model = Current.family.entries.new(
       account: @account,
       currency: @account ? @account.currency : Current.family.currency,
@@ -19,12 +21,7 @@ class TradesController < ApplicationController
 
     return unless require_account_permission!(@account)
 
-    # A deposit or withdrawal also books an entry on the other account, so that
-    # account needs the same write permission, as in TransfersController#create.
-    if create_params[:transfer_account_id].present?
-      transfer_account = accessible_accounts.find(create_params[:transfer_account_id])
-      return unless require_account_permission!(transfer_account)
-    end
+    raise ActiveRecord::RecordNotFound unless @account.supports_trades?
 
     @model = Trade::CreateForm.new(create_params.merge(account: @account)).create
 

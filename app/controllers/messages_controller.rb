@@ -1,13 +1,7 @@
 class MessagesController < ApplicationController
-  include RequiresAiConsent
-  include FeatureGuardable
+  guard_feature unless: -> { Current.user.ai_enabled? }
 
   before_action :set_chat
-  before_action :guard_ai_enabled, only: :create
-  # report_timeout is polled by the watchdog JS, which expects a plain status
-  # code rather than an HTML redirect, so it keeps the old 403 guard instead
-  # of the consent-redirect used by :create.
-  guard_feature unless: -> { Current.user.ai_enabled? }, only: :report_timeout
 
   def create
     @message = UserMessage.new(
@@ -51,9 +45,5 @@ class MessagesController < ApplicationController
 
     def message_params
       params.require(:message).permit(:content, :ai_model)
-    end
-
-    def guard_ai_enabled
-      redirect_unless_ai_enabled(chat_path(@chat))
     end
 end
