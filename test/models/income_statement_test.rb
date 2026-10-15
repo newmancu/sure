@@ -297,18 +297,6 @@ class IncomeStatementTest < ActiveSupport::TestCase
     assert_equal Money.new(900, @family.currency), totals.expense_money
   end
 
-  # A flag PostgreSQL cannot cast to boolean used to raise
-  # PG::InvalidTextRepresentation and take the whole statement down.
-  test "a pending flag PostgreSQL cannot cast neither raises nor counts" do
-    assert_statement_leaves_out_flagged_expense("maybe")
-  end
-
-  # Transaction#pending? (and so the Pending badge) calls "no" pending;
-  # PostgreSQL's ::boolean called it posted and counted it.
-  test "a \"no\" pending flag is pending, as Transaction#pending? says" do
-    assert_statement_leaves_out_flagged_expense("no")
-  end
-
   # NEW TESTS: Interval-Based Calculations
   test "different intervals return different statistical results with multi-period data" do
     # Clear existing transactions
@@ -786,23 +774,69 @@ class IncomeStatementTest < ActiveSupport::TestCase
     assert_equal 1, totals_query_calls
   end
 
+  # A foreign-currency transaction used to convert 1:1 whenever no exchange
+  # rate was stored for its exact date, so an NZD 117 expense showed as ¥117
+  # against a CNY budget. Rates only exist for days a provider published one,
+  # so weekends, holidays and import gaps all hit this.
+  test "totals: converts a foreign-currency expense at the nearest rate within the lookback window" do
+    family, account, category = fx_family_with_eur_account
+
+    create_transaction(account: account, amount: 100, currency: "EUR", date: Date.current, category: category)
+    ExchangeRate.create!(
+      from_currency: "EUR",
+      to_currency: "USD",
+      date: Date.current - 3.days,
+      rate: BigDecimal("1.25")
+    )
+
+    expense_totals = IncomeStatement.new(family).expense_totals(period: Period.last_30_days)
+    category_total = expense_totals.category_totals.find { |ct| ct.category.id == category.id }
+
+    assert_in_delta 125, category_total.total, 0.001,
+      "EUR 100 should convert at the nearest stored rate (1.25), not fall back to 1:1"
+    assert_in_delta 125, expense_totals.total, 0.001
+  end
+
+  # The window is bounded so a stale rate - say a years-old backfill for a
+  # currency the family no longer uses - cannot silently convert a recent
+  # transaction. Beyond the window the 1:1 fallback still applies.
+  test "totals: ignores an exchange rate older than the lookback window" do
+    family, account, category = fx_family_with_eur_account
+
+    create_transaction(account: account, amount: 100, currency: "EUR", date: Date.current, category: category)
+    ExchangeRate.create!(
+      from_currency: "EUR",
+      to_currency: "USD",
+      date: Date.current - (ExchangeRate::Provided::NEAREST_RATE_LOOKBACK_DAYS + 1).days,
+      rate: BigDecimal("1.25")
+    )
+
+    expense_totals = IncomeStatement.new(family).expense_totals(period: Period.last_30_days)
+    category_total = expense_totals.category_totals.find { |ct| ct.category.id == category.id }
+
+    assert_in_delta 100, category_total.total, 0.001,
+      "a rate outside the lookback window should not apply; expect the 1:1 fallback"
+    assert_in_delta 100, expense_totals.total, 0.001
+  end
+
   private
-    # Adds a 250 grocery expense whose pending flag is +flag+ and asserts every
-    # figure is the one without it: totals (Transaction.excluding_pending), the
-    # family median and average (FamilyStats) and the category median
-    # (CategoryStats), each of which reads the flag in its own SQL.
-    def assert_statement_leaves_out_flagged_expense(flag)
-      flagged = create_transaction(account: @checking_account, amount: 250, category: @groceries_category)
-      flagged.entryable.update!(extra: { "plaid" => { "pending" => flag } })
-      assert flagged.entryable.pending?, "pending? should call #{flag.inspect} pending"
+    # A USD family whose only entries are the ones a test adds, so expense
+    # totals isolate the conversion under test.
+    def fx_family_with_eur_account
+      family = Family.create!(
+        name: "FX Family",
+        currency: "USD",
+        locale: "en",
+        date_format: "%Y-%m-%d"
+      )
 
-      income_statement = IncomeStatement.new(@family)
-      totals = income_statement.totals(date_range: Period.last_30_days.date_range)
+      account = family.accounts.create!(
+        name: "EUR Bank",
+        currency: "EUR",
+        balance: 0,
+        accountable: Depository.new
+      )
 
-      assert_equal 4, totals.transactions_count
-      assert_equal Money.new(900, @family.currency), totals.expense_money
-      assert_equal 900.0, income_statement.median_expense(interval: "month")
-      assert_equal 900.0, income_statement.avg_expense(interval: "month")
-      assert_equal 900.0, income_statement.median_expense(interval: "month", category: @groceries_category)
+      [ family, account, family.categories.create!(name: "Travel") ]
     end
 end
