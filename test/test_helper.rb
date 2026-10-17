@@ -27,7 +27,6 @@ require "rack/test"
 require "tempfile"
 require "uri"
 require Rails.root.join("test/support/sql_query_capture").to_s
-require Rails.root.join("test/support/rake_task_test_helper").to_s
 
 VCR.configure do |config|
   config.cassette_library_dir = "test/vcr_cassettes"
@@ -116,6 +115,15 @@ module ActiveSupport
 
     def user_password_test
       "maybetestpassword817983172"
+    end
+
+    # Writes the email column directly, bypassing encryption, to simulate a
+    # row stored before encryption was active and not yet backfilled.
+    def store_legacy_plaintext_email(user, email = user.email)
+      ActiveRecord::Base.connection.execute(
+        ActiveRecord::Base.sanitize_sql([ "UPDATE users SET email = ? WHERE id = ?", email, user.id ])
+      )
+      email
     end
 
     def uploaded_file(filename:, content_type:, content: "date,amount\n2024-01-01,1\n")
